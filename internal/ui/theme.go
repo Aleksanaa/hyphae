@@ -1,6 +1,9 @@
 package ui
 
-import "github.com/gdamore/tcell/v2"
+import (
+	"github.com/gdamore/tcell/v2"
+	"github.com/rivo/tview"
+)
 
 // Theme holds the color palette used across the UI.
 var Theme = struct {
@@ -52,6 +55,16 @@ var Theme = struct {
 
 	StatusBg:   tcell.NewRGBColor(24, 24, 40),
 	StatusText: tcell.NewRGBColor(140, 145, 175),
+}
+
+func init() {
+	// tview's default PrimitiveBackgroundColor is tcell.ColorBlack. When tview
+	// renders a wide character (emoji, CJK) it explicitly writes a space at
+	// column x+1 using the current style. If that style's background differs
+	// from our Theme.Background the phantom space is visually distinct.
+	// Aligning these makes the phantom space invisible.
+	tview.Styles.PrimitiveBackgroundColor = Theme.Background
+	tview.Styles.PrimaryTextColor = Theme.Text
 }
 
 // tviewColor converts a tcell.Color to a tview-compatible color string.

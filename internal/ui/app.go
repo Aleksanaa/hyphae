@@ -87,13 +87,23 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 		return nil
 
 	case event.Key() == tcell.KeyCtrlC:
-		// Interrupt running agent turn. Never quit — use Ctrl+D for that.
 		if a.sendCancel != nil {
+			// Agent is running — interrupt it.
 			a.sendCancel()
 			a.sendCancel = nil
 			if sess, ok := a.manager.Active(); ok {
 				sess.SetStatus(session.StatusIdle)
 				a.redrawActive()
+			}
+		} else {
+			// Agent is idle — copy hovered message to clipboard.
+			text := a.layout.Chat.HoveredContent()
+			if text != "" {
+				if err := writeClipboard(text); err != nil {
+					a.layout.Status.SetError(err.Error())
+				} else {
+					a.layout.Status.SetMessage("copied to clipboard")
+				}
 			}
 		}
 		return nil

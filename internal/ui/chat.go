@@ -2,7 +2,6 @@ package ui
 
 import (
 	"fmt"
-	"regexp"
 	"strings"
 
 	"github.com/gdamore/tcell/v2"
@@ -11,15 +10,16 @@ import (
 	"github.com/aleksana/hypane/internal/session"
 )
 
-// tagRe matches tview color/style tags so we can measure visible width.
-var tagRe = regexp.MustCompile(`\[[^\[]*\]`)
 
-// ChatView displays the conversation history for a session.
+// ChatView displays the conversation as individually bordered message boxes.
 type ChatView struct {
 	*tview.TextView
-	messages   []session.Message
-	lastWidth  int
-	TotalLines int // number of rendered lines, read by Scrollbar
+	messages     []session.Message
+	lastWidth    int
+	TotalLines   int // read by Scrollbar
+	hoverIdx     int // index into renderedMsgs; -1 = none
+	renderedMsgs []session.Message
+	msgStartLine []int // document line where each renderedMsg's top border starts
 }
 
 // NewChatView creates the scrollable message display.
@@ -27,26 +27,16 @@ func NewChatView() *ChatView {
 	tv := tview.NewTextView()
 	tv.SetDynamicColors(true)
 	tv.SetScrollable(true)
-	tv.SetWordWrap(true)
-	tv.SetBorder(true)
-	tv.SetTitle(" conversation ")
-	tv.SetTitleColor(Theme.Header)
-	tv.SetBorderColor(Theme.Border)
+	tv.SetWordWrap(false) // we manage layout manually
+	tv.SetBorder(false)   // no outer frame; messages have their own boxes
 	tv.SetBackgroundColor(Theme.Background)
-
-	return &ChatView{TextView: tv}
+	return &ChatView{TextView: tv, hoverIdx: -1}
 }
 
-// SetFocused updates the border color to show keyboard focus.
-func (cv *ChatView) SetFocused(focused bool) {
-	if focused {
-		cv.SetBorderColor(Theme.BorderFocus)
-	} else {
-		cv.SetBorderColor(Theme.Border)
-	}
-}
+// SetFocused is called by focus/blur hooks; no visible border to update.
+func (cv *ChatView) SetFocused(_ bool) {}
 
-// Draw overrides tview's draw to rebuild text whenever the width changes.
+// Draw rebuilds text on resize, renders via tview, then draws the hover overlay.
 func (cv *ChatView) Draw(screen tcell.Screen) {
 	_, _, w, _ := cv.GetInnerRect()
 	if w > 0 && w != cv.lastWidth {
@@ -54,6 +44,43 @@ func (cv *ChatView) Draw(screen tcell.Screen) {
 		cv.buildText(w)
 	}
 	cv.TextView.Draw(screen)
+	cv.drawHoverOverlay(screen)
+}
+
+// drawHoverOverlay recolors box-border characters for the hovered message.
+func (cv *ChatView) drawHoverOverlay(screen tcell.Screen) {
+	if cv.hoverIdx < 0 || cv.hoverIdx >= len(cv.msgStartLine) {
+		return
+	}
+	ix, iy, iw, ih := cv.GetInnerRect()
+	scrollY, _ := cv.GetScrollOffset()
+
+	startDoc := cv.msgStartLine[cv.hoverIdx]
+	endDoc := cv.TotalLines
+	if cv.hoverIdx+1 < len(cv.msgStartLine) {
+		endDoc = cv.msgStartLine[cv.hoverIdx+1]
+	}
+
+	for doc := startDoc; doc < endDoc; doc++ {
+		sy := iy + (doc - scrollY)
+		if sy < iy || sy >= iy+ih {
+			continue
+		}
+		for x := ix; x < ix+iw; x++ {
+			r, comb, style, _ := screen.GetContent(x, sy)
+			if isBoxBorderRune(r) {
+				screen.SetContent(x, sy, r, comb, style.Foreground(Theme.BorderFocus))
+			}
+		}
+	}
+}
+
+func isBoxBorderRune(r rune) bool {
+	switch r {
+	case '┌', '┐', '└', '┘', '─', '│':
+		return true
+	}
+	return false
 }
 
 // Render stores the message list and rebuilds the display text.
@@ -68,8 +95,59 @@ func (cv *ChatView) Render(messages []session.Message) {
 	cv.TextView.ScrollToEnd()
 }
 
+// HoveredContent returns the raw content of whichever message the mouse is over.
+func (cv *ChatView) HoveredContent() string {
+	if cv.hoverIdx < 0 || cv.hoverIdx >= len(cv.renderedMsgs) {
+		return ""
+	}
+	return cv.renderedMsgs[cv.hoverIdx].Content
+}
+
+// MouseHandler wraps TextView's handler to update hover state on mouse move.
+func (cv *ChatView) MouseHandler() func(tview.MouseAction, *tcell.EventMouse, func(tview.Primitive)) (bool, tview.Primitive) {
+	orig := cv.TextView.MouseHandler()
+	return func(action tview.MouseAction, event *tcell.EventMouse, setFocus func(tview.Primitive)) (bool, tview.Primitive) {
+		_, iy, _, _ := cv.GetInnerRect()
+		scrollY, _ := cv.GetScrollOffset()
+		_, my := event.Position()
+
+		switch action {
+		case tview.MouseMove, tview.MouseLeftClick:
+			cv.hoverIdx = cv.findMsgAt((my - iy) + scrollY)
+		}
+
+		if orig != nil {
+			return orig(action, event, setFocus)
+		}
+		return false, nil
+	}
+}
+
+func (cv *ChatView) findMsgAt(docLine int) int {
+	for i, start := range cv.msgStartLine {
+		end := cv.TotalLines
+		if i+1 < len(cv.msgStartLine) {
+			end = cv.msgStartLine[i+1]
+		}
+		if docLine >= start && docLine < end {
+			return i
+		}
+	}
+	return -1
+}
+
+// ─── text construction ───────────────────────────────────────────────────────
+
 func (cv *ChatView) buildText(width int) {
+	maxW := width * 4 / 5
+	if maxW < 20 {
+		maxW = 20
+	}
+
 	var b strings.Builder
+	var renderedMsgs []session.Message
+	var msgStartLine []int
+
 	first := true
 	for _, msg := range cv.messages {
 		if msg.Role == session.RoleTool {
@@ -79,92 +157,200 @@ func (cv *ChatView) buildText(width int) {
 			b.WriteString("\n")
 		}
 		first = false
-		renderMessage(&b, msg, width)
+
+		msgStartLine = append(msgStartLine, strings.Count(b.String(), "\n"))
+		renderedMsgs = append(renderedMsgs, msg)
+		renderMessageBox(&b, msg, width, maxW)
 	}
+
+	cv.renderedMsgs = renderedMsgs
+	cv.msgStartLine = msgStartLine
+
 	text := b.String()
 	cv.TotalLines = strings.Count(text, "\n") + 1
 	cv.TextView.SetText(text)
 }
 
-func renderMessage(b *strings.Builder, msg session.Message, width int) {
-	// Each side occupies at most 4/5 of the available width.
-	maxW := width * 4 / 5
+// renderMessageBox writes a single bordered message box into b.
+//
+// The box width is compact: sized to the actual content, capped at maxW.
+// User boxes are flush to the right edge; assistant boxes are flush to the left.
+//
+// Box anatomy:
+//   ┌─ label ──────────┐
+//   │ content line     │
+//   └──────────────────┘
+func renderMessageBox(b *strings.Builder, msg session.Message, width, maxW int) {
+	bc := tviewColor(Theme.Border)
+
+	dash := func(n int) string {
+		if n < 0 {
+			n = 0
+		}
+		return strings.Repeat("─", n)
+	}
+
+	// boxLine renders one content row padded to fill contentW columns.
+	mkBoxLine := func(contentW int) func(inner string, vlen int) string {
+		return func(inner string, vlen int) string {
+			pad := contentW - vlen
+			if pad < 0 {
+				pad = 0
+			}
+			return fmt.Sprintf("[%s]│[-] %s%s [%s]│[-]", bc, inner, strings.Repeat(" ", pad), bc)
+		}
+	}
 
 	switch msg.Role {
 	case session.RoleUser:
-		label := fmt.Sprintf("[%s]you[-]", tviewColor(Theme.UserColor))
-		fmt.Fprintln(b, rightAlign(label, width-2))
-		for _, line := range wordWrap(msg.Content, maxW) {
-			fmt.Fprintln(b, rightAlign(tview.Escape(line), width-2))
+		// label overhead: ┌─ you ┐ = 8 visible cols minimum
+		maxContentW := maxW - 4
+		lines := wordWrap(msg.Content, maxContentW)
+		actualW := 0
+		for _, l := range lines {
+			if n := tview.TaggedStringWidth(l); n > actualW {
+				actualW = n
+			}
 		}
+		boxW := max(8, actualW+4)
+		contentW := boxW - 4
+		leftPad := width - boxW
+		if leftPad < 0 {
+			leftPad = 0
+		}
+		p := strings.Repeat(" ", leftPad)
+		uc := tviewColor(Theme.UserColor)
+		boxLine := mkBoxLine(contentW)
+
+		// ┌─ you ──...──┐  "─ you " = 6 visible cols
+		b.WriteString(p + fmt.Sprintf("[%s]┌─ [%s]you [%s]%s┐[-]", bc, uc, bc, dash(boxW-8)) + "\n")
+		for _, line := range lines {
+			b.WriteString(p + boxLine(tview.Escape(line), tview.TaggedStringWidth(line)) + "\n")
+		}
+		b.WriteString(p + fmt.Sprintf("[%s]└%s┘[-]", bc, dash(boxW-2)) + "\n")
 
 	case session.RoleAssistant:
+		ac := tviewColor(Theme.AssistantColor)
+		mc := tviewColor(Theme.Muted)
+
 		if msg.Error != nil {
-			fmt.Fprintf(b, "[%s]error: %s[-]\n",
-				tviewColor(Theme.ErrorColor), tview.Escape(msg.Error.Error()))
+			ec := tviewColor(Theme.ErrorColor)
+			maxContentW := maxW - 4
+			lines := wordWrap(msg.Error.Error(), maxContentW)
+			actualW := 0
+			for _, l := range lines {
+				if n := tview.TaggedStringWidth(l); n > actualW {
+					actualW = n
+				}
+			}
+			// ┌─ error ┐ = 10 visible cols minimum
+			boxW := max(10, actualW+4)
+			contentW := boxW - 4
+			boxLine := mkBoxLine(contentW)
+
+			b.WriteString(fmt.Sprintf("[%s]┌─ [%s]error [%s]%s┐[-]", bc, ec, bc, dash(boxW-10)) + "\n")
+			for _, line := range lines {
+				inner := fmt.Sprintf("[%s]%s[-]", ec, tview.Escape(line))
+				b.WriteString(boxLine(inner, tview.TaggedStringWidth(line)) + "\n")
+			}
+			b.WriteString(fmt.Sprintf("[%s]└%s┘[-]", bc, dash(boxW-2)) + "\n")
 			return
 		}
-		label := fmt.Sprintf("[%s]assistant[-]", tviewColor(Theme.AssistantColor))
-		if msg.Partial {
-			label += fmt.Sprintf(" [%s]…[-]", tviewColor(Theme.Muted))
-		}
-		fmt.Fprintf(b, "  %s\n", label)
-		for _, line := range wordWrap(msg.Content, maxW-2) {
-			fmt.Fprintf(b, "  %s\n", tview.Escape(line))
+
+		maxContentW := maxW - 4
+		lines := wordWrap(msg.Content, maxContentW)
+		actualW := 0
+		for _, l := range lines {
+			if n := tview.TaggedStringWidth(l); n > actualW {
+				actualW = n
+			}
 		}
 		for _, tu := range msg.ToolUses {
-			renderToolUse(b, tu)
+			if _, vlen := fmtToolUse(tu); vlen > actualW {
+				actualW = vlen
+			}
 		}
+		// ┌─ assistant ┐ = 14 cols, ┌─ assistant … ┐ = 16 cols
+		minBoxW := 14
+		if msg.Partial {
+			minBoxW = 16
+		}
+		boxW := max(minBoxW, actualW+4)
+		contentW := boxW - 4
+		boxLine := mkBoxLine(contentW)
+
+		partialFrag := ""
+		extraW := 0
+		if msg.Partial {
+			partialFrag = fmt.Sprintf("[%s]… [-]", mc)
+			extraW = 2
+		}
+		// ┌─ assistant ──...──┐  "─ assistant " = 12 visible cols
+		b.WriteString(fmt.Sprintf("[%s]┌─ [%s]assistant [%s]%s%s┐[-]",
+			bc, ac, bc, partialFrag, dash(boxW-14-extraW)) + "\n")
+		for _, line := range lines {
+			b.WriteString(boxLine(tview.Escape(line), tview.TaggedStringWidth(line)) + "\n")
+		}
+		for _, tu := range msg.ToolUses {
+			inner, vlen := fmtToolUse(tu)
+			b.WriteString(boxLine(inner, vlen) + "\n")
+		}
+		b.WriteString(fmt.Sprintf("[%s]└%s┘[-]", bc, dash(boxW-2)) + "\n")
 	}
 }
 
-func renderToolUse(b *strings.Builder, tu session.ToolUse) {
+// fmtToolUse returns the colored inline string and its visible terminal column width.
+func fmtToolUse(tu session.ToolUse) (string, int) {
 	arg := formatInput(tu.Input)
+	toolC := tviewColor(Theme.ToolColor)
+	mutedC := tviewColor(Theme.Muted)
+
+	var s string
 	switch tu.State {
 	case "running":
-		fmt.Fprintf(b, "  [%s]▶ %s[-][%s]%s[-] [%s]…[-]\n",
-			tviewColor(Theme.ToolColor), tview.Escape(tu.Name),
-			tviewColor(Theme.Muted), arg,
-			tviewColor(Theme.Muted))
+		s = fmt.Sprintf("[%s]▶ %s[-][%s]%s[-] [%s]…[-]",
+			toolC, tview.Escape(tu.Name), mutedC, arg, mutedC)
 	case "done":
-		fmt.Fprintf(b, "  [%s]▶ %s[-][%s]%s[-] [%s]✓[-]\n",
-			tviewColor(Theme.ToolColor), tview.Escape(tu.Name),
-			tviewColor(Theme.Muted), arg,
-			tviewColor(Theme.SuccessColor))
+		s = fmt.Sprintf("[%s]▶ %s[-][%s]%s[-] [%s]✓[-]",
+			toolC, tview.Escape(tu.Name), mutedC, arg, tviewColor(Theme.SuccessColor))
 	case "error":
-		fmt.Fprintf(b, "  [%s]▶ %s[-][%s]%s[-] [%s]✗ %s[-]\n",
-			tviewColor(Theme.ToolColor), tview.Escape(tu.Name),
-			tviewColor(Theme.Muted), arg,
-			tviewColor(Theme.ErrorColor), tview.Escape(tu.Output))
+		s = fmt.Sprintf("[%s]▶ %s[-][%s]%s[-] [%s]✗ %s[-]",
+			toolC, tview.Escape(tu.Name), mutedC, arg, tviewColor(Theme.ErrorColor), tview.Escape(tu.Output))
 	default:
-		fmt.Fprintf(b, "  [%s]▷ %s[-][%s]%s[-]\n",
-			tviewColor(Theme.ToolColor), tview.Escape(tu.Name),
-			tviewColor(Theme.Muted), arg)
+		s = fmt.Sprintf("[%s]▷ %s[-][%s]%s[-]",
+			toolC, tview.Escape(tu.Name), mutedC, arg)
 	}
+	return s, visibleLen(s)
 }
 
-// wordWrap splits text into lines of at most maxW runes, breaking on word boundaries.
+// ─── text helpers ─────────────────────────────────────────────────────────────
+
+// wordWrap splits text into lines of at most maxW columns as measured by tview
+// (uniseg grapheme clusters), breaking on word boundaries.
 func wordWrap(text string, maxW int) []string {
 	if maxW <= 0 {
 		maxW = 40
 	}
 	var out []string
 	for _, para := range strings.Split(text, "\n") {
-		if len([]rune(para)) <= maxW {
+		if tview.TaggedStringWidth(para) <= maxW {
 			out = append(out, para)
 			continue
 		}
 		words := strings.Fields(para)
 		cur := ""
+		curW := 0
 		for _, w := range words {
-			wlen := len([]rune(w))
-			if cur == "" {
-				cur = w
-			} else if len([]rune(cur))+1+wlen <= maxW {
+			wW := tview.TaggedStringWidth(w)
+			switch {
+			case cur == "":
+				cur, curW = w, wW
+			case curW+1+wW <= maxW:
 				cur += " " + w
-			} else {
+				curW += 1 + wW
+			default:
 				out = append(out, cur)
-				cur = w
+				cur, curW = w, wW
 			}
 		}
 		if cur != "" {
@@ -177,18 +363,11 @@ func wordWrap(text string, maxW int) []string {
 	return out
 }
 
-// rightAlign pads s so its visible right edge sits at column width.
-func rightAlign(s string, width int) string {
-	pad := width - visibleLen(s)
-	if pad <= 0 {
-		return s
-	}
-	return strings.Repeat(" ", pad) + s
-}
-
-// visibleLen returns the display width of s after stripping tview color tags.
+// visibleLen returns the terminal column width of s as tview would render it.
+// It strips tview color tags and uses the same uniseg-based measurement tview uses
+// internally, so wide characters (emoji, CJK, etc.) are counted correctly.
 func visibleLen(s string) int {
-	return len([]rune(tagRe.ReplaceAllString(s, "")))
+	return tview.TaggedStringWidth(s)
 }
 
 func formatInput(input string) string {
@@ -196,8 +375,9 @@ func formatInput(input string) string {
 		return "()"
 	}
 	input = strings.TrimSpace(input)
-	if len(input) > 50 {
-		input = input[:47] + "..."
+	runes := []rune(input)
+	if len(runes) > 50 {
+		input = string(runes[:47]) + "..."
 	}
 	return "(" + input + ")"
 }
