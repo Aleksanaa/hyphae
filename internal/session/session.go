@@ -1,0 +1,232 @@
+package session
+
+import (
+	"fmt"
+	"sync"
+	"sync/atomic"
+)
+
+// Role is the speaker of a message.
+type Role string
+
+const (
+	RoleUser      Role = "user"
+	RoleAssistant Role = "assistant"
+	RoleTool      Role = "tool"
+)
+
+// Status mirrors the agent's current state.
+type Status string
+
+const (
+	StatusIdle    Status = "idle"
+	StatusRunning Status = "running"
+	StatusError   Status = "error"
+)
+
+// ToolUse is a tool call made by the assistant.
+type ToolUse struct {
+	ID     string
+	Name   string
+	Input  string // JSON
+	Output string
+	State  string // "running" | "done" | "error"
+}
+
+// ToolResult is the response to a tool call.
+type ToolResult struct {
+	ID      string
+	Content string
+	IsError bool
+}
+
+// Message is one turn in the conversation.
+type Message struct {
+	Role       Role
+	Content    string
+	ToolUses   []ToolUse   // assistant turns only
+	ToolResult *ToolResult // tool turns only
+	Partial    bool        // streaming in progress
+	Error      error       // set if the turn failed
+}
+
+// Session holds the full local state for one conversation.
+type Session struct {
+	mu      sync.RWMutex
+	ID      string
+	Title   string
+	Status  Status
+	WorkDir string
+	msgs    []Message
+}
+
+// NewSession creates an empty session.
+func NewSession(id, workDir string) *Session {
+	return &Session{
+		ID:      id,
+		WorkDir: workDir,
+		Status:  StatusIdle,
+	}
+}
+
+// AddMessage appends a message and returns its index.
+func (s *Session) AddMessage(m Message) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	idx := len(s.msgs)
+	s.msgs = append(s.msgs, m)
+	// Use first user message as title
+	if s.Title == "" && m.Role == RoleUser && m.Content != "" {
+		t := m.Content
+		if len(t) > 40 {
+			t = t[:37] + "…"
+		}
+		s.Title = t
+	}
+	return idx
+}
+
+// AppendTextDelta appends streaming text to the message at idx.
+func (s *Session) AppendTextDelta(idx int, delta string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if idx < len(s.msgs) {
+		s.msgs[idx].Content += delta
+	}
+}
+
+// FinalizeMessage marks a message as complete with its final content and tool uses.
+func (s *Session) FinalizeMessage(idx int, content string, toolUses []ToolUse) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if idx < len(s.msgs) {
+		s.msgs[idx].Content = content
+		s.msgs[idx].ToolUses = toolUses
+		s.msgs[idx].Partial = false
+		for i := range s.msgs[idx].ToolUses {
+			s.msgs[idx].ToolUses[i].State = "running"
+		}
+	}
+}
+
+// SetToolResult updates the tool use state within an assistant message.
+func (s *Session) SetToolResult(msgIdx int, callID, output string, isError bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if msgIdx >= len(s.msgs) {
+		return
+	}
+	for i, tu := range s.msgs[msgIdx].ToolUses {
+		if tu.ID == callID {
+			s.msgs[msgIdx].ToolUses[i].Output = output
+			if isError {
+				s.msgs[msgIdx].ToolUses[i].State = "error"
+			} else {
+				s.msgs[msgIdx].ToolUses[i].State = "done"
+			}
+			return
+		}
+	}
+}
+
+// SetMessageError marks an assistant message as failed.
+func (s *Session) SetMessageError(idx int, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if idx < len(s.msgs) {
+		s.msgs[idx].Partial = false
+		s.msgs[idx].Error = err
+	}
+}
+
+// SetStatus changes the session status.
+func (s *Session) SetStatus(st Status) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.Status = st
+}
+
+// Snapshot returns a copy of messages and current status for rendering.
+func (s *Session) Snapshot() ([]Message, Status) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	msgs := make([]Message, len(s.msgs))
+	copy(msgs, s.msgs)
+	return msgs, s.Status
+}
+
+// Manager tracks all sessions and which is active.
+type Manager struct {
+	mu       sync.RWMutex
+	sessions map[string]*Session
+	order    []string
+	activeID string
+	counter  atomic.Int64
+	workDir  string
+}
+
+// NewManager creates an empty manager.
+func NewManager(workDir string) *Manager {
+	return &Manager{
+		sessions: make(map[string]*Session),
+		workDir:  workDir,
+	}
+}
+
+// New creates a fresh session and adds it to the front.
+func (m *Manager) New() *Session {
+	n := m.counter.Add(1)
+	id := fmt.Sprintf("session-%d", n)
+	s := NewSession(id, m.workDir)
+
+	m.mu.Lock()
+	m.sessions[id] = s
+	m.order = append([]string{id}, m.order...)
+	m.mu.Unlock()
+
+	return s
+}
+
+// Get returns the session by ID.
+func (m *Manager) Get(id string) (*Session, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	s, ok := m.sessions[id]
+	return s, ok
+}
+
+// SetActive marks the active session ID.
+func (m *Manager) SetActive(id string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.activeID = id
+}
+
+// ActiveID returns the current active session ID.
+func (m *Manager) ActiveID() string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.activeID
+}
+
+// Active returns the active session if set.
+func (m *Manager) Active() (*Session, bool) {
+	id := m.ActiveID()
+	if id == "" {
+		return nil, false
+	}
+	return m.Get(id)
+}
+
+// All returns sessions in display order.
+func (m *Manager) All() []*Session {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]*Session, 0, len(m.order))
+	for _, id := range m.order {
+		if s, ok := m.sessions[id]; ok {
+			out = append(out, s)
+		}
+	}
+	return out
+}
