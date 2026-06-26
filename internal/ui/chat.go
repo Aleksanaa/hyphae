@@ -138,10 +138,99 @@ func (cv *ChatView) findMsgAt(docLine int) int {
 
 // ─── text construction ───────────────────────────────────────────────────────
 
+var hyphaeArt = []string{
+	`                   /`,
+	`             .---'`,
+	`            /`,
+	`       .---+----.`,
+	`      /          \`,
+	`     /            '---.`,
+	`    +                  \`,
+	`     \              .---+---.`,
+	`      '----.       /         \`,
+	`            \     /           '`,
+	`         .---+---+`,
+	`        /        \`,
+	`       /          '----.`,
+	`  .---+                 \`,
+	` /     \                 +---.`,
+	`/       '---.           /     \`,
+	`+              \         +      '`,
+	` \              +-------+`,
+	`  '----.       /         \`,
+	`        \     /           '----.`,
+	`         '---+                  \`,
+	`              \                  +`,
+	`               '----.            |`,
+	`                     \           |`,
+}
+
+func (cv *ChatView) renderWelcome(b *strings.Builder, width int) {
+	_, _, _, viewH := cv.GetInnerRect()
+	subtitle := "terminal coding agent"
+
+	totalH := len(hyphaeArt) + 2
+	topPad := (viewH - totalH) / 2
+	if topPad < 0 {
+		topPad = 0
+	}
+
+	ac := tviewColor(Theme.Accent)
+	mc := tviewColor(Theme.Muted)
+
+	artW := 0
+	for _, line := range hyphaeArt {
+		if w := len(line); w > artW {
+			artW = w
+		}
+	}
+
+	for i := 0; i < topPad; i++ {
+		b.WriteString("\n")
+	}
+
+	hPad := (width - artW) / 2
+	if hPad < 0 {
+		hPad = 0
+	}
+	pad := strings.Repeat(" ", hPad)
+
+	for _, line := range hyphaeArt {
+		b.WriteString(fmt.Sprintf("[%s]%s%s[-]\n", ac, pad, tview.Escape(line)))
+	}
+
+	b.WriteString("\n")
+
+	subPad := (width - len(subtitle)) / 2
+	if subPad < 0 {
+		subPad = 0
+	}
+	b.WriteString(fmt.Sprintf("[%s]%s%s[-]\n", mc, strings.Repeat(" ", subPad), subtitle))
+}
+
 func (cv *ChatView) buildText(width int) {
 	maxW := width * 4 / 5
 	if maxW < 20 {
 		maxW = 20
+	}
+
+	hasDisplayable := false
+	for _, msg := range cv.messages {
+		if msg.Role != session.RoleTool {
+			hasDisplayable = true
+			break
+		}
+	}
+
+	if !hasDisplayable {
+		var b strings.Builder
+		cv.renderWelcome(&b, width)
+		cv.renderedMsgs = nil
+		cv.msgStartLine = nil
+		text := b.String()
+		cv.TotalLines = strings.Count(text, "\n") + 1
+		cv.TextView.SetText(text)
+		return
 	}
 
 	var b strings.Builder
