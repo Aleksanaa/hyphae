@@ -15,10 +15,12 @@ const ApprovalHeight = 5
 // It sits between the chat and input in the layout. When hidden its height is 0.
 type ApprovalView struct {
 	*tview.Box
-	command    string
-	reasoning  string
-	selected   string // "allow" | "deny"
-	denyText   string
+	toolName  string
+	argLabel  string
+	argValue  string
+	reasoning string
+	selected  string // "allow" | "deny"
+	denyText  string
 	denyCursor int // rune index into denyText
 
 	lastClickSide string
@@ -43,15 +45,33 @@ func (av *ApprovalView) IsVisible() bool   { return av.visible }
 func (av *ApprovalView) GetSelected() string { return av.selected }
 func (av *ApprovalView) SetSelected(s string) { av.selected = s }
 
-func (av *ApprovalView) Show(argsJSON, reasoning string) {
-	command := argsJSON
+func (av *ApprovalView) Show(toolName, argsJSON, reasoning string) {
+	av.toolName = toolName
 	var args map[string]any
 	if err := json.Unmarshal([]byte(argsJSON), &args); err == nil {
-		if cmd, ok := args["command"].(string); ok {
-			command = cmd
+		switch toolName {
+		case "run_shell":
+			av.argLabel = "command"
+			if v, ok := args["command"].(string); ok {
+				av.argValue = v
+			} else {
+				av.argValue = argsJSON
+			}
+		case "web_fetch":
+			av.argLabel = "url"
+			if v, ok := args["url"].(string); ok {
+				av.argValue = v
+			} else {
+				av.argValue = argsJSON
+			}
+		default:
+			av.argLabel = "args"
+			av.argValue = argsJSON
 		}
+	} else {
+		av.argLabel = "args"
+		av.argValue = argsJSON
 	}
-	av.command = command
 	av.reasoning = reasoning
 	av.selected = "allow"
 	av.denyText = ""
@@ -120,7 +140,7 @@ func (av *ApprovalView) Draw(screen tcell.Screen) {
 	screen.SetContent(col, y, ' ', nil, borderSt)
 	col++
 	toolSt := tcell.StyleDefault.Foreground(Theme.PendingColor)
-	for _, r := range []rune("run_shell") {
+	for _, r := range []rune(av.toolName) {
 		screen.SetContent(col, y, r, nil, toolSt)
 		col++
 	}
@@ -139,8 +159,8 @@ func (av *ApprovalView) Draw(screen tcell.Screen) {
 	inner := x + 2             // content starts after "│ "
 	innerW := w - 4            // width between "│ " and " │"
 
-	// ── row 1: command ❯ <command> ────────────────────────────────────────
-	prefix := []rune("command ❯ ")
+	// ── row 1: <label> ❯ <value> ──────────────────────────────────────────
+	prefix := []rune(av.argLabel + " ❯ ")
 	col = inner
 	for _, r := range prefix {
 		if col >= x+w-1 {
@@ -150,7 +170,7 @@ func (av *ApprovalView) Draw(screen tcell.Screen) {
 		col++
 	}
 	maxCmd := innerW - len(prefix)
-	for _, r := range []rune(truncateStr(av.command, maxCmd)) {
+	for _, r := range []rune(truncateStr(av.argValue, maxCmd)) {
 		if col >= x+w-1 {
 			break
 		}

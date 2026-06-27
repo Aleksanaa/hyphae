@@ -207,7 +207,7 @@ func (a *App) handleAgentEvents(sessionID string, ch <-chan agent.Event) {
 				msgs, status := sess.Snapshot()
 				a.layout.Chat.Render(msgs)
 				a.layout.Status.SetDefault(a.cfg.Model, status)
-				a.layout.Approval.Show(tool.Input, tool.Reasoning)
+				a.layout.Approval.Show(tool.Name, tool.Input, tool.Reasoning)
 				a.layout.ShowApproval()
 				a.tapp.SetFocus(a.layout.Approval)
 				a.layout.Approval.SetCallbacks(

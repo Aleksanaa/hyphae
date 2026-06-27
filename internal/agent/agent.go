@@ -11,11 +11,11 @@ import (
 
 const systemPrompt = `You are a skilled coding assistant. You help the user read, write, and reason about code.
 
-You have tools to read and write files, list directories, run shell commands, and search for text. Use them methodically: understand the task, explore when needed, make targeted changes, and verify your work.
+You have tools to read and write files, list directories, run shell commands, fetch web pages, and search for text. Use them methodically: understand the task, explore when needed, make targeted changes, and verify your work.
 
 Be concise in explanations. Show code changes directly. When running commands, prefer short, focused ones.
 
-When calling any tool, always fill in the "reasoning" field with one short sentence explaining why you are calling it. This is shown to the user before the tool runs.`
+run_shell and web_fetch require user approval before executing. Always fill in the "reasoning" field with one short sentence explaining why — it is shown to the user in the approval prompt.`
 
 // EventType classifies an agent event sent to the UI.
 type EventType string
@@ -124,8 +124,8 @@ func (a *Agent) loop(ctx context.Context, sess *session.Session, ch chan<- Event
 
 			te := &ToolEvent{CallID: tc.ID, Name: tc.Function.Name, Input: tc.Function.Arguments}
 
-			// run_shell requires user approval; extract reasoning from args.
-			if tc.Function.Name == "run_shell" {
+			// Some tools require user approval before running.
+			if requiresApproval(tc.Function.Name) {
 				te.Reasoning, te.Input = extractReasoning(tc.Function.Arguments)
 				sess.SetToolState(msgIdx, tc.ID, "pending")
 				respCh := make(chan ApprovalResult, 1)
@@ -141,7 +141,7 @@ func (a *Agent) loop(ctx context.Context, sess *session.Session, ch chan<- Event
 					return
 				}
 				if !approval.Allowed {
-					denied := "Command execution denied by user."
+					denied := "Execution denied by user."
 					if approval.DenyReason != "" {
 						denied += " Reason: " + approval.DenyReason
 					}
@@ -160,7 +160,7 @@ func (a *Agent) loop(ctx context.Context, sess *session.Session, ch chan<- Event
 				}
 			}
 
-			if tc.Function.Name == "run_shell" {
+			if requiresApproval(tc.Function.Name) {
 				sess.SetToolState(msgIdx, tc.ID, "running")
 			}
 
@@ -239,6 +239,15 @@ func buildMessages(sess *session.Session) []llm.ChatMessage {
 		}
 	}
 	return msgs
+}
+
+// requiresApproval returns true for tools that need user confirmation before running.
+func requiresApproval(name string) bool {
+	switch name {
+	case "run_shell", "web_fetch":
+		return true
+	}
+	return false
 }
 
 // extractReasoning pulls the "reasoning" field out of run_shell args JSON.

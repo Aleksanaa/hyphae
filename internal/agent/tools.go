@@ -143,6 +143,40 @@ var builtinTools = []toolDef{
 		schema: llm.Tool{
 			Type: "function",
 			Function: llm.ToolFunction{
+				Name:        "web_fetch",
+				Description: "Fetch content from an HTTP or HTTPS URL and return it as text, markdown, or HTML. Markdown is the default. Use a more targeted tool when one is available.",
+				Parameters: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"url":       map[string]any{"type": "string", "description": "The HTTP or HTTPS URL to fetch content from"},
+						"format":    map[string]any{"type": "string", "enum": []string{"text", "markdown", "html"}, "description": "Output format. Defaults to markdown."},
+						"timeout":   map[string]any{"type": "number", "description": "Optional timeout in seconds (max 120). Defaults to 30."},
+						"reasoning": map[string]any{"type": "string", "description": "One short sentence explaining why this URL is being fetched"},
+					},
+					"required": []string{"url", "reasoning"},
+				},
+			},
+		},
+		execute: func(ctx context.Context, args map[string]any, workDir string) (string, error) {
+			rawURL := str(args, "url")
+			format := str(args, "format")
+			if format == "" {
+				format = "markdown"
+			}
+			timeout := 0
+			if t, ok := args["timeout"].(float64); ok {
+				timeout = int(t)
+			}
+			if rawURL == "" {
+				return "", fmt.Errorf("url is required")
+			}
+			return fetchURL(ctx, rawURL, format, timeout)
+		},
+	},
+	{
+		schema: llm.Tool{
+			Type: "function",
+			Function: llm.ToolFunction{
 				Name:        "search_files",
 				Description: "Search for a text pattern across files. Returns matching lines with file names.",
 				Parameters: map[string]any{
