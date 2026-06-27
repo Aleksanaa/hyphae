@@ -34,7 +34,9 @@ type ChatView struct {
 	messages     []session.Message
 	lastWidth    int
 	TotalLines   int // read by Scrollbar
-	hoverIdx     int // index into renderedMsgs; -1 = none
+	hoverIdx        int // index into renderedMsgs; -1 = none
+	selectedIdx     int // box highlighted by last click; -1 = none
+	lastSelectedIdx int // selectedIdx at last buildText call; -2 = never built
 	renderedMsgs []session.Message
 	msgStartLine []int // document line where each renderedMsg's top border starts
 
@@ -65,55 +67,29 @@ func NewChatView() *ChatView {
 	tv.SetBorder(false)   // no outer frame; messages have their own boxes
 	tv.SetBackgroundColor(Theme.Background)
 	return &ChatView{
-		TextView:     tv,
-		hoverIdx:     -1,
-		anchorBox:    -1,
-		selCursorBox: -1,
-		mdCache:      make(map[string][]mdBlock),
+		TextView:        tv,
+		hoverIdx:        -1,
+		selectedIdx:     -1,
+		lastSelectedIdx: -2,
+		anchorBox:       -1,
+		selCursorBox:    -1,
+		mdCache:         make(map[string][]mdBlock),
 	}
 }
 
 // SetFocused is called by focus/blur hooks; no visible border to update.
 func (cv *ChatView) SetFocused(_ bool) {}
 
-// Draw rebuilds text on resize, renders via tview, then draws overlays.
+// Draw rebuilds text when width or hover changes, then renders and draws overlays.
 func (cv *ChatView) Draw(screen tcell.Screen) {
 	_, _, w, _ := cv.GetInnerRect()
-	if w > 0 && w != cv.lastWidth {
+	if w > 0 && (w != cv.lastWidth || cv.selectedIdx != cv.lastSelectedIdx) {
 		cv.lastWidth = w
+		cv.lastSelectedIdx = cv.selectedIdx
 		cv.buildText(w)
 	}
 	cv.TextView.Draw(screen)
-	cv.drawHoverOverlay(screen)
 	cv.drawSelectionOverlay(screen)
-}
-
-// drawHoverOverlay recolors box-border characters for the hovered message.
-func (cv *ChatView) drawHoverOverlay(screen tcell.Screen) {
-	if cv.hoverIdx < 0 || cv.hoverIdx >= len(cv.msgStartLine) {
-		return
-	}
-	ix, iy, iw, ih := cv.GetInnerRect()
-	scrollY, _ := cv.GetScrollOffset()
-
-	startDoc := cv.msgStartLine[cv.hoverIdx]
-	endDoc := cv.TotalLines
-	if cv.hoverIdx+1 < len(cv.msgStartLine) {
-		endDoc = cv.msgStartLine[cv.hoverIdx+1]
-	}
-
-	for doc := startDoc; doc < endDoc; doc++ {
-		sy := iy + (doc - scrollY)
-		if sy < iy || sy >= iy+ih {
-			continue
-		}
-		for x := ix; x < ix+iw; x++ {
-			r, comb, style, _ := screen.GetContent(x, sy)
-			if isBoxBorderRune(r) {
-				screen.SetContent(x, sy, r, comb, style.Foreground(Theme.BorderFocus))
-			}
-		}
-	}
 }
 
 // drawSelectionOverlay dispatches to partial (within-box) or whole-box drawing.
@@ -244,13 +220,6 @@ func (cv *ChatView) drawWholeSel(screen tcell.Screen) {
 	}
 }
 
-func isBoxBorderRune(r rune) bool {
-	switch r {
-	case '┌', '┐', '└', '┘', '─', '│':
-		return true
-	}
-	return false
-}
 
 // Render stores the message list and rebuilds the display text.
 func (cv *ChatView) Render(messages []session.Message) {
@@ -334,6 +303,7 @@ func (cv *ChatView) MouseHandler() func(tview.MouseAction, *tcell.EventMouse, fu
 
 		case tview.MouseLeftClick:
 			cv.hoverIdx = cv.findMsgAt(docLine)
+			cv.selectedIdx = cv.hoverIdx
 		}
 
 		return consumed, capture
@@ -499,7 +469,8 @@ func (cv *ChatView) buildText(width int) {
 
 		msgStartLine = append(msgStartLine, strings.Count(b.String(), "\n"))
 		renderedMsgs = append(renderedMsgs, msg)
-		lp, bw := cv.renderMessageBox(&b, msg, width, maxW)
+		msgIdx := len(renderedMsgs) - 1
+		lp, bw := cv.renderMessageBox(&b, msg, width, maxW, msgIdx == cv.selectedIdx)
 		boxLeft = append(boxLeft, lp)
 		boxRight = append(boxRight, lp+bw)
 	}
@@ -526,8 +497,12 @@ func (cv *ChatView) buildText(width int) {
 // renderMessageBox writes a bordered message box into b and returns the box's
 // leftPad and boxW so the caller can record geometry without a separate pass.
 // It uses cv.mdCache so that resize re-wraps without re-parsing markdown.
-func (cv *ChatView) renderMessageBox(b *strings.Builder, msg session.Message, width, maxW int) (leftPad, boxW int) {
-	bc := tviewColor(Theme.Border)
+func (cv *ChatView) renderMessageBox(b *strings.Builder, msg session.Message, width, maxW int, isHovered bool) (leftPad, boxW int) {
+	borderColor := Theme.Border
+	if isHovered {
+		borderColor = Theme.BorderFocus
+	}
+	bc := tviewColor(borderColor)
 
 	dash := func(n int) string {
 		if n < 0 {
@@ -684,7 +659,10 @@ func (cv *ChatView) HasSelection() bool { return cv.selActive }
 
 // ClearHover clears the hover highlight; called via SetMouseCapture when the
 // mouse moves outside the chat view's rect (which the chat handler never sees).
-func (cv *ChatView) ClearHover() { cv.hoverIdx = -1 }
+func (cv *ChatView) ClearHover() {
+	cv.hoverIdx = -1
+	cv.selectedIdx = -1
+}
 
 func (cv *ChatView) ClearSelection() {
 	cv.selActive = false
