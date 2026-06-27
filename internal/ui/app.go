@@ -55,6 +55,14 @@ func New(cfg *config.Config) *App {
 	input.TextArea.SetBlurFunc(func() { input.SetFocused(false) })
 
 	a.tapp.EnableMouse(true)
+	a.tapp.SetMouseCapture(func(event *tcell.EventMouse, action tview.MouseAction) (*tcell.EventMouse, tview.MouseAction) {
+		_, iy, _, ih := chat.GetInnerRect()
+		_, my := event.Position()
+		if my < iy || my >= iy+ih {
+			chat.ClearHover()
+		}
+		return event, action
+	})
 	a.tapp.SetInputCapture(a.handleGlobalKey)
 	a.tapp.SetRoot(layout.Root, true).SetFocus(input.TextArea)
 

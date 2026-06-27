@@ -266,7 +266,7 @@ func (cv *ChatView) HoveredContent() string {
 func (cv *ChatView) MouseHandler() func(tview.MouseAction, *tcell.EventMouse, func(tview.Primitive)) (bool, tview.Primitive) {
 	orig := cv.TextView.MouseHandler()
 	return func(action tview.MouseAction, event *tcell.EventMouse, setFocus func(tview.Primitive)) (bool, tview.Primitive) {
-		_, iy, _, _ := cv.GetInnerRect()
+		_, iy, _, ih := cv.GetInnerRect()
 		scrollY, _ := cv.GetScrollOffset()
 		mx, my := event.Position()
 		docLine := (my - iy) + scrollY
@@ -276,6 +276,15 @@ func (cv *ChatView) MouseHandler() func(tview.MouseAction, *tcell.EventMouse, fu
 		var capture tview.Primitive
 		if orig != nil {
 			consumed, capture = orig(action, event, setFocus)
+		}
+
+		// When the event's y is outside our rect, clear stale hover and bail.
+		// The Flex layout calls every child's handler until consumed; without
+		// this clear, a hover set while in the chat persists through redraws
+		// triggered by input-box clicks.
+		if my < iy || my >= iy+ih {
+			cv.hoverIdx = -1
+			return consumed, capture
 		}
 
 		switch action {
@@ -652,6 +661,17 @@ func fmtToolUse(tu session.ToolUse) (string, int) {
 
 // HasSelection reports whether there is an active drag selection.
 func (cv *ChatView) HasSelection() bool { return cv.selActive }
+
+// ClearHover clears the hover highlight; called via SetMouseCapture when the
+// mouse moves outside the chat view's rect (which the chat handler never sees).
+func (cv *ChatView) ClearHover() { cv.hoverIdx = -1 }
+
+func (cv *ChatView) ClearSelection() {
+	cv.selActive = false
+	cv.dragging = false
+	cv.anchorBox = -1
+	cv.selCursorBox = -1
+}
 
 // SelectedText returns the plain text covered by the current drag selection.
 // In partial mode (cursor inside anchor box) it extracts the column range.
