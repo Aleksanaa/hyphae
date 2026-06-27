@@ -525,13 +525,15 @@ func renderMessageBox(b *strings.Builder, msg session.Message, width, maxW int) 
 	}
 
 	// boxLine renders one content row padded to fill contentW columns.
+	// [-:-:-] before the padding resets any style from the inner content so
+	// the trailing space and border character are unaffected.
 	mkBoxLine := func(contentW int) func(inner string, vlen int) string {
 		return func(inner string, vlen int) string {
 			pad := contentW - vlen
 			if pad < 0 {
 				pad = 0
 			}
-			return fmt.Sprintf("[%s]│[-] %s%s [%s]│[-]", bc, inner, strings.Repeat(" ", pad), bc)
+			return fmt.Sprintf("[%s]│[-] %s[-:-:-]%s [%s]│[-]", bc, inner, strings.Repeat(" ", pad), bc)
 		}
 	}
 
@@ -592,7 +594,7 @@ func renderMessageBox(b *strings.Builder, msg session.Message, width, maxW int) 
 		}
 
 		maxContentW := maxW - 4
-		lines := wordWrap(msg.Content, maxContentW)
+		lines := renderMarkdown(msg.Content, maxContentW)
 		actualW := 0
 		for _, l := range lines {
 			if n := tview.TaggedStringWidth(l); n > actualW {
@@ -623,7 +625,7 @@ func renderMessageBox(b *strings.Builder, msg session.Message, width, maxW int) 
 		b.WriteString(fmt.Sprintf("[%s]┌─ [%s]assistant [%s]%s%s┐[-]",
 			bc, ac, bc, partialFrag, dash(boxW-14-extraW)) + "\n")
 		for _, line := range lines {
-			b.WriteString(boxLine(tview.Escape(line), tview.TaggedStringWidth(line)) + "\n")
+			b.WriteString(boxLine(line, tview.TaggedStringWidth(line)) + "\n")
 		}
 		for _, tu := range msg.ToolUses {
 			inner, vlen := fmtToolUse(tu)
@@ -818,9 +820,11 @@ func computeMsgContent(msg session.Message, width, maxW int) (allLines []string,
 		if msg.Error != nil {
 			return wordWrap(msg.Error.Error(), maxContentW), 0
 		}
-		lines := wordWrap(msg.Content, maxContentW)
-		all := make([]string, len(lines))
-		copy(all, lines)
+		raw := renderMarkdown(msg.Content, maxContentW)
+		all := make([]string, len(raw))
+		for i, l := range raw {
+			all[i] = stripTags(l)
+		}
 		for _, tu := range msg.ToolUses {
 			inner, _ := fmtToolUse(tu)
 			all = append(all, stripTags(inner))
@@ -860,7 +864,7 @@ func computeBoxGeom(msg session.Message, width, maxW int) (leftPad, boxW int) {
 			}
 			return 0, max(10, actualW+4)
 		}
-		lines := wordWrap(msg.Content, maxContentW)
+		lines := renderMarkdown(msg.Content, maxContentW)
 		actualW := 0
 		for _, l := range lines {
 			if n := tview.TaggedStringWidth(l); n > actualW {
