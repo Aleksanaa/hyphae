@@ -553,7 +553,7 @@ func (cv *ChatView) renderMessageBox(b *strings.Builder, msg session.Message, wi
 		b.WriteString(p + fmt.Sprintf("[%s]└%s┘[-]", bc, dash(boxW-2)) + "\n")
 
 	case session.RoleAssistant:
-		ac := tviewColor(Theme.AssistantColor)
+		ac := tviewColor(Theme.ApexColor)
 		mc := tviewColor(Theme.Muted)
 
 		if msg.Error != nil {
@@ -598,10 +598,10 @@ func (cv *ChatView) renderMessageBox(b *strings.Builder, msg session.Message, wi
 				actualW = vlen
 			}
 		}
-		// ┌─ assistant ┐ = 14 cols, ┌─ assistant … ┐ = 16 cols
-		minBoxW := 14
+		// ┌─ apex ┐ = 9 cols, ┌─ apex … ┐ = 11 cols
+		minBoxW := 9
 		if msg.Partial {
-			minBoxW = 16
+			minBoxW = 11
 		}
 		boxW = max(minBoxW, actualW+4)
 		contentW := boxW - 4
@@ -613,9 +613,9 @@ func (cv *ChatView) renderMessageBox(b *strings.Builder, msg session.Message, wi
 			partialFrag = fmt.Sprintf("[%s]… [-]", mc)
 			extraW = 2
 		}
-		// ┌─ assistant ──...──┐  "─ assistant " = 12 visible cols
-		b.WriteString(fmt.Sprintf("[%s]┌─ [%s]assistant [%s]%s%s┐[-]",
-			bc, ac, bc, partialFrag, dash(boxW-14-extraW)) + "\n")
+		// ┌─ apex ──...──┐  "─ apex " = 7 visible cols
+		b.WriteString(fmt.Sprintf("[%s]┌─ [%s]apex [%s]%s%s┐[-]",
+			bc, ac, bc, partialFrag, dash(boxW-9-extraW)) + "\n")
 		for _, line := range lines {
 			b.WriteString(boxLine(line, tview.TaggedStringWidth(line)) + "\n")
 		}

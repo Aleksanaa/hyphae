@@ -30,7 +30,11 @@ func (sb *Scrollbar) Draw(screen tcell.Screen) {
 	_, _, _, pageH := sb.chat.GetInnerRect()
 
 	trackSt := tcell.StyleDefault.Background(Theme.Surface).Foreground(Theme.Muted)
-	thumbSt := tcell.StyleDefault.Background(Theme.Accent)
+	thumbColor := Theme.Border
+	if sb.dragging {
+		thumbColor = Theme.Accent
+	}
+	thumbSt := tcell.StyleDefault.Background(thumbColor)
 
 	for i := range h {
 		screen.SetContent(x, y+i, ' ', nil, trackSt)

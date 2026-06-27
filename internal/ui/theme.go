@@ -18,7 +18,7 @@ var Theme = struct {
 
 	// Message roles
 	UserColor      tcell.Color
-	AssistantColor tcell.Color
+	ApexColor      tcell.Color
 	ToolColor      tcell.Color
 	ShellColor     tcell.Color
 	SystemColor    tcell.Color
@@ -42,7 +42,7 @@ var Theme = struct {
 	Accent:  tcell.NewRGBColor(130, 170, 255),
 
 	UserColor:      tcell.NewRGBColor(100, 200, 255),
-	AssistantColor: tcell.NewRGBColor(220, 220, 230),
+	ApexColor:      tcell.NewRGBColor(180, 140, 220),
 	ToolColor:      tcell.NewRGBColor(130, 200, 130),
 	ShellColor:     tcell.NewRGBColor(200, 160, 100),
 	SystemColor:    tcell.NewRGBColor(160, 140, 200),

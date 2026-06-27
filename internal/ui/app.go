@@ -48,6 +48,7 @@ func New(cfg *config.Config) *App {
 	input := NewInputView(a.sendMessage)
 	layout := NewLayout(chat, scrollbar, input, status)
 	a.layout = layout
+	status.SetDefault(cfg.Model, session.StatusIdle)
 
 	chat.TextView.SetFocusFunc(func() { chat.SetFocused(true) })
 	chat.TextView.SetBlurFunc(func() { chat.SetFocused(false) })
