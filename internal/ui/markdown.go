@@ -66,11 +66,36 @@ func (b *headingBlock) renderLines(maxW int) []string {
 	return out
 }
 
-func (b *codeBlock) renderLines(_ int) []string {
+func (b *codeBlock) renderLines(maxW int) []string {
 	cc := tviewColor(Theme.ShellColor)
-	out := make([]string, len(b.lines))
-	for i, line := range b.lines {
-		out[i] = fmt.Sprintf("[%s]%s[-:-:-]", cc, tview.Escape(line))
+	var out []string
+	for _, line := range b.lines {
+		// Measure after escaping: raw code may contain "[word]" sequences that
+		// tview's tag parser treats as zero-width style tags, so
+		// TaggedStringWidth(line) would undercount and skip needed wrapping.
+		escaped := tview.Escape(line)
+		if maxW <= 0 || tview.TaggedStringWidth(escaped) <= maxW {
+			out = append(out, fmt.Sprintf("[%s]%s[-:-:-]", cc, escaped))
+			continue
+		}
+		// Wrap by iterating runes of the unescaped line; individual runes are
+		// safe to measure (a lone '[' never forms a complete tag).
+		runes := []rune(line)
+		start, lineW := 0, 0
+		for i, r := range runes {
+			rW := tview.TaggedStringWidth(string(r))
+			if lineW+rW > maxW {
+				out = append(out, fmt.Sprintf("[%s]%s[-:-:-]", cc, tview.Escape(string(runes[start:i]))))
+				start, lineW = i, 0
+			}
+			lineW += rW
+		}
+		if start < len(runes) {
+			out = append(out, fmt.Sprintf("[%s]%s[-:-:-]", cc, tview.Escape(string(runes[start:]))))
+		}
+	}
+	if len(out) == 0 {
+		out = []string{""}
 	}
 	return out
 }
