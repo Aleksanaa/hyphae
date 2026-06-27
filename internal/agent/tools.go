@@ -121,9 +121,10 @@ var builtinTools = []toolDef{
 				Parameters: map[string]any{
 					"type": "object",
 					"properties": map[string]any{
-						"command": map[string]any{"type": "string", "description": "Shell command to run"},
+						"command":   map[string]any{"type": "string", "description": "Shell command to run"},
+						"reasoning": map[string]any{"type": "string", "description": "One short sentence explaining why this command is being run"},
 					},
-					"required": []string{"command"},
+					"required": []string{"command", "reasoning"},
 				},
 			},
 		},

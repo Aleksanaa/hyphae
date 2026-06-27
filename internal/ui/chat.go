@@ -593,9 +593,13 @@ func (cv *ChatView) renderMessageBox(b *strings.Builder, msg session.Message, wi
 				actualW = n
 			}
 		}
+		var tuLines []string
 		for _, tu := range msg.ToolUses {
-			if _, vlen := fmtToolUse(tu); vlen > actualW {
-				actualW = vlen
+			for _, l := range fmtToolUseLines(tu, maxContentW) {
+				if n := tview.TaggedStringWidth(l); n > actualW {
+					actualW = n
+				}
+				tuLines = append(tuLines, l)
 			}
 		}
 		// ┌─ apex ┐ = 9 cols, ┌─ apex … ┐ = 11 cols
@@ -619,37 +623,51 @@ func (cv *ChatView) renderMessageBox(b *strings.Builder, msg session.Message, wi
 		for _, line := range lines {
 			b.WriteString(boxLine(line, tview.TaggedStringWidth(line)) + "\n")
 		}
-		for _, tu := range msg.ToolUses {
-			inner, vlen := fmtToolUse(tu)
-			b.WriteString(boxLine(inner, vlen) + "\n")
+		for _, line := range tuLines {
+			b.WriteString(boxLine(line, tview.TaggedStringWidth(line)) + "\n")
 		}
 		b.WriteString(fmt.Sprintf("[%s]└%s┘[-]", bc, dash(boxW-2)) + "\n")
 	}
 	return
 }
 
-// fmtToolUse returns the colored inline string and its visible terminal column width.
-func fmtToolUse(tu session.ToolUse) (string, int) {
+// fmtToolUseLines formats a tool use into one or more tview-tagged lines.
+// Output text for error states is word-wrapped to maxW columns (the indent of
+// 2 is already accounted for, so callers pass maxContentW directly).
+func fmtToolUseLines(tu session.ToolUse, maxW int) []string {
 	arg := formatInput(tu.Input)
 	toolC := tviewColor(Theme.ToolColor)
 	mutedC := tviewColor(Theme.Muted)
+	errC := tviewColor(Theme.ErrorColor)
 
-	var s string
 	switch tu.State {
+	case "pending":
+		return []string{fmt.Sprintf("[%s]⏸ %s[-][%s]%s[-] [%s]waiting…[-]",
+			tviewColor(Theme.PendingColor), tview.Escape(tu.Name), mutedC, arg, mutedC)}
 	case "running":
-		s = fmt.Sprintf("[%s]▶ %s[-][%s]%s[-] [%s]…[-]",
-			toolC, tview.Escape(tu.Name), mutedC, arg, mutedC)
+		return []string{fmt.Sprintf("[%s]▶ %s[-][%s]%s[-] [%s]…[-]",
+			toolC, tview.Escape(tu.Name), mutedC, arg, mutedC)}
 	case "done":
-		s = fmt.Sprintf("[%s]▶ %s[-][%s]%s[-] [%s]✓[-]",
-			toolC, tview.Escape(tu.Name), mutedC, arg, tviewColor(Theme.SuccessColor))
+		return []string{fmt.Sprintf("[%s]▶ %s[-][%s]%s[-] [%s]✓[-]",
+			toolC, tview.Escape(tu.Name), mutedC, arg, tviewColor(Theme.SuccessColor))}
 	case "error":
-		s = fmt.Sprintf("[%s]▶ %s[-][%s]%s[-] [%s]✗ %s[-]",
-			toolC, tview.Escape(tu.Name), mutedC, arg, tviewColor(Theme.ErrorColor), tview.Escape(tu.Output))
+		out := []string{fmt.Sprintf("[%s]✗ %s[-][%s]%s[-]",
+			errC, tview.Escape(tu.Name), mutedC, arg)}
+		if tu.Output != "" {
+			wrapW := maxW - 2
+			if wrapW < 10 {
+				wrapW = 10
+			}
+			prefix := fmt.Sprintf("[%s]  ", errC)
+			for _, l := range wordWrap(tu.Output, wrapW) {
+				out = append(out, prefix+tview.Escape(l)+"[-]")
+			}
+		}
+		return out
 	default:
-		s = fmt.Sprintf("[%s]▷ %s[-][%s]%s[-]",
-			toolC, tview.Escape(tu.Name), mutedC, arg)
+		return []string{fmt.Sprintf("[%s]▷ %s[-][%s]%s[-]",
+			mutedC, tview.Escape(tu.Name), mutedC, arg)}
 	}
-	return s, visibleLen(s)
 }
 
 // ─── selection ───────────────────────────────────────────────────────────────
@@ -822,8 +840,9 @@ func computeMsgContent(msg session.Message, width, maxW int) (allLines []string,
 			all[i] = stripTags(l)
 		}
 		for _, tu := range msg.ToolUses {
-			inner, _ := fmtToolUse(tu)
-			all = append(all, stripTags(inner))
+			for _, l := range fmtToolUseLines(tu, maxContentW) {
+				all = append(all, stripTags(l))
+			}
 		}
 		return all, 0
 	}
@@ -920,12 +939,6 @@ func wrapParagraph(para string, maxW int) []string {
 	return out
 }
 
-// visibleLen returns the terminal column width of s as tview would render it.
-// It strips tview color tags and uses the same uniseg-based measurement tview uses
-// internally, so wide characters (emoji, CJK, etc.) are counted correctly.
-func visibleLen(s string) int {
-	return tview.TaggedStringWidth(s)
-}
 
 func formatInput(input string) string {
 	if input == "" || input == "{}" {

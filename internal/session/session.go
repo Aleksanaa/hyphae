@@ -129,6 +129,21 @@ func (s *Session) SetToolResult(msgIdx int, callID, output string, isError bool)
 	}
 }
 
+// SetToolState sets the State field of a specific tool use within an assistant message.
+func (s *Session) SetToolState(msgIdx int, callID, state string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if msgIdx >= len(s.msgs) {
+		return
+	}
+	for i, tu := range s.msgs[msgIdx].ToolUses {
+		if tu.ID == callID {
+			s.msgs[msgIdx].ToolUses[i].State = state
+			return
+		}
+	}
+}
+
 // SetMessageError marks an assistant message as failed.
 func (s *Session) SetMessageError(idx int, err error) {
 	s.mu.Lock()

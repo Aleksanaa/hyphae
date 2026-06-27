@@ -26,9 +26,10 @@ var Theme = struct {
 	SuccessColor   tcell.Color
 
 	// Borders & chrome
-	Border      tcell.Color
-	BorderFocus tcell.Color
-	Header      tcell.Color
+	Border        tcell.Color
+	BorderFocus   tcell.Color
+	Header        tcell.Color
+	PendingColor  tcell.Color // amber — awaiting approval
 
 	// Status bar
 	StatusBg   tcell.Color
@@ -49,9 +50,10 @@ var Theme = struct {
 	ErrorColor:     tcell.NewRGBColor(220, 80, 80),
 	SuccessColor:   tcell.NewRGBColor(80, 200, 120),
 
-	Border:      tcell.NewRGBColor(50, 55, 75),
-	BorderFocus: tcell.NewRGBColor(100, 120, 200),
-	Header:      tcell.NewRGBColor(130, 170, 255),
+	Border:       tcell.NewRGBColor(50, 55, 75),
+	BorderFocus:  tcell.NewRGBColor(100, 120, 200),
+	Header:       tcell.NewRGBColor(130, 170, 255),
+	PendingColor: tcell.NewRGBColor(210, 165, 40),
 
 	StatusBg:   tcell.NewRGBColor(24, 24, 40),
 	StatusText: tcell.NewRGBColor(140, 145, 175),

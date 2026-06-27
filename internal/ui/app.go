@@ -46,7 +46,8 @@ func New(cfg *config.Config) *App {
 	scrollbar := NewScrollbar(chat)
 	status := NewStatusBar()
 	input := NewInputView(a.sendMessage)
-	layout := NewLayout(chat, scrollbar, input, status)
+	approval := NewApprovalView()
+	layout := NewLayout(chat, scrollbar, input, status, approval)
 	a.layout = layout
 	status.SetDefault(cfg.Model, session.StatusIdle)
 
@@ -91,6 +92,22 @@ func (a *App) Stop() {
 
 // handleGlobalKey intercepts application-level shortcuts.
 func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
+	// When the approval bar is active, Tab cycles Allow/Deny and Esc denies.
+	if a.layout.Approval.IsVisible() {
+		switch event.Key() {
+		case tcell.KeyTab, tcell.KeyBacktab:
+			if a.layout.Approval.GetSelected() == "allow" {
+				a.layout.Approval.SetSelected("deny")
+			} else {
+				a.layout.Approval.SetSelected("allow")
+			}
+			return nil
+		case tcell.KeyEscape:
+			a.layout.Approval.Deny("")
+			return nil
+		}
+	}
+
 	switch {
 	case event.Key() == tcell.KeyCtrlD:
 		a.Stop()
@@ -109,6 +126,10 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 			// Agent is running — interrupt it.
 			a.sendCancel()
 			a.sendCancel = nil
+			if a.layout.Approval.IsVisible() {
+				a.layout.HideApproval()
+			}
+			a.tapp.SetFocus(a.layout.Input.TextArea)
 			if sess, ok := a.manager.Active(); ok {
 				sess.SetStatus(session.StatusIdle)
 				a.redrawActive()
@@ -179,6 +200,30 @@ func (a *App) handleAgentEvents(sessionID string, ch <-chan agent.Event) {
 		}
 
 		switch ev.Type {
+		case agent.EventToolApproval:
+			respCh := ev.RespCh
+			tool := ev.Tool
+			a.tapp.QueueUpdateDraw(func() {
+				msgs, status := sess.Snapshot()
+				a.layout.Chat.Render(msgs)
+				a.layout.Status.SetDefault(a.cfg.Model, status)
+				a.layout.Approval.Show(tool.Input, tool.Reasoning)
+				a.layout.ShowApproval()
+				a.tapp.SetFocus(a.layout.Approval)
+				a.layout.Approval.SetCallbacks(
+					func() { // Allow
+						a.layout.HideApproval()
+						a.tapp.SetFocus(a.layout.Input.TextArea)
+						respCh <- agent.ApprovalResult{Allowed: true}
+					},
+					func(reason string) { // Deny
+						a.layout.HideApproval()
+						a.tapp.SetFocus(a.layout.Input.TextArea)
+						respCh <- agent.ApprovalResult{Allowed: false, DenyReason: reason}
+					},
+				)
+			})
+
 		case agent.EventTextDelta, agent.EventToolStart, agent.EventToolDone:
 			if isActive {
 				a.tapp.QueueUpdateDraw(func() {

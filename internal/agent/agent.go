@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/aleksana/hypane/internal/llm"
@@ -12,34 +13,45 @@ const systemPrompt = `You are a skilled coding assistant. You help the user read
 
 You have tools to read and write files, list directories, run shell commands, and search for text. Use them methodically: understand the task, explore when needed, make targeted changes, and verify your work.
 
-Be concise in explanations. Show code changes directly. When running commands, prefer short, focused ones.`
+Be concise in explanations. Show code changes directly. When running commands, prefer short, focused ones.
+
+When calling any tool, always fill in the "reasoning" field with one short sentence explaining why you are calling it. This is shown to the user before the tool runs.`
 
 // EventType classifies an agent event sent to the UI.
 type EventType string
 
 const (
-	EventTextDelta  EventType = "text_delta"  // partial assistant text
-	EventToolStart  EventType = "tool_start"  // tool call beginning
-	EventToolDone   EventType = "tool_done"   // tool call finished
-	EventDone       EventType = "done"        // turn complete
-	EventError      EventType = "error"       // unrecoverable error
+	EventTextDelta   EventType = "text_delta"   // partial assistant text
+	EventToolStart   EventType = "tool_start"   // tool call beginning
+	EventToolDone    EventType = "tool_done"    // tool call finished
+	EventDone        EventType = "done"         // turn complete
+	EventError       EventType = "error"        // unrecoverable error
+	EventToolApproval EventType = "tool_approval" // waiting for user approval
 )
+
+// ApprovalResult is the user's response to an approval request.
+type ApprovalResult struct {
+	Allowed    bool
+	DenyReason string
+}
 
 // ToolEvent carries info about a single tool invocation.
 type ToolEvent struct {
-	CallID  string
-	Name    string
-	Input   string // raw JSON args
-	Output  string // filled in on EventToolDone
-	IsError bool
+	CallID    string
+	Name      string
+	Input     string // raw JSON args (reasoning stripped for display)
+	Reasoning string // only set for run_shell
+	Output    string // filled in on EventToolDone
+	IsError   bool
 }
 
 // Event is one item from the agent event stream.
 type Event struct {
-	Type      EventType
-	Text      string    // EventTextDelta
-	Tool      *ToolEvent
-	Err       error     // EventError
+	Type   EventType
+	Text   string     // EventTextDelta
+	Tool   *ToolEvent
+	Err    error      // EventError
+	RespCh chan ApprovalResult // EventToolApproval only; send exactly once
 }
 
 // Agent orchestrates the LLM ↔ tool loop.
@@ -111,6 +123,47 @@ func (a *Agent) loop(ctx context.Context, sess *session.Session, ch chan<- Event
 			}
 
 			te := &ToolEvent{CallID: tc.ID, Name: tc.Function.Name, Input: tc.Function.Arguments}
+
+			// run_shell requires user approval; extract reasoning from args.
+			if tc.Function.Name == "run_shell" {
+				te.Reasoning, te.Input = extractReasoning(tc.Function.Arguments)
+				sess.SetToolState(msgIdx, tc.ID, "pending")
+				respCh := make(chan ApprovalResult, 1)
+				select {
+				case ch <- Event{Type: EventToolApproval, Tool: te, RespCh: respCh}:
+				case <-ctx.Done():
+					return
+				}
+				var approval ApprovalResult
+				select {
+				case approval = <-respCh:
+				case <-ctx.Done():
+					return
+				}
+				if !approval.Allowed {
+					denied := "Command execution denied by user."
+					if approval.DenyReason != "" {
+						denied += " Reason: " + approval.DenyReason
+					}
+					sess.AddMessage(session.Message{
+						Role: session.RoleTool,
+						ToolResult: &session.ToolResult{ID: tc.ID, Content: denied, IsError: true},
+					})
+					sess.SetToolResult(msgIdx, tc.ID, denied, true)
+					te.Output = denied
+					te.IsError = true
+					select {
+					case ch <- Event{Type: EventToolDone, Tool: te}:
+					case <-ctx.Done():
+					}
+					continue
+				}
+			}
+
+			if tc.Function.Name == "run_shell" {
+				sess.SetToolState(msgIdx, tc.ID, "running")
+			}
+
 			select {
 			case ch <- Event{Type: EventToolStart, Tool: te}:
 			case <-ctx.Done():
@@ -186,6 +239,20 @@ func buildMessages(sess *session.Session) []llm.ChatMessage {
 		}
 	}
 	return msgs
+}
+
+// extractReasoning pulls the "reasoning" field out of run_shell args JSON.
+// Returns (reasoning, originalJSON). The original JSON is kept intact so
+// executeTool can still parse the "command" field normally.
+func extractReasoning(argsJSON string) (reasoning, input string) {
+	var args map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+		return "", argsJSON
+	}
+	if r, ok := args["reasoning"]; ok {
+		json.Unmarshal(r, &reasoning)
+	}
+	return reasoning, argsJSON
 }
 
 func toSessionToolUses(tcs []llm.ToolCall) []session.ToolUse {

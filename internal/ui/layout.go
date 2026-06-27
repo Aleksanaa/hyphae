@@ -11,21 +11,21 @@ type Layout struct {
 	Scrollbar *Scrollbar
 	Input     *InputView
 	Status    *StatusBar
+	Approval  *ApprovalView
+	body      *tview.Flex // retained for ResizeItem calls
 }
 
 // NewLayout builds and returns the assembled layout.
-func NewLayout(chat *ChatView, scrollbar *Scrollbar, input *InputView, status *StatusBar) *Layout {
-	// Chat + scrollbar side by side
+func NewLayout(chat *ChatView, scrollbar *Scrollbar, input *InputView, status *StatusBar, approval *ApprovalView) *Layout {
 	chatRow := tview.NewFlex().SetDirection(tview.FlexColumn).
 		AddItem(chat, 0, 1, false).
 		AddItem(scrollbar, 1, 0, false)
 
-	// Main panel: chat row + input
 	body := tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(chatRow, 0, 1, false).
+		AddItem(approval, 0, 0, false). // hidden initially
 		AddItem(input, 6, 0, true)
 
-	// Root: body + status bar
 	root := tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(body, 0, 1, true).
 		AddItem(status, 1, 0, false)
@@ -36,5 +36,18 @@ func NewLayout(chat *ChatView, scrollbar *Scrollbar, input *InputView, status *S
 		Scrollbar: scrollbar,
 		Input:     input,
 		Status:    status,
+		Approval:  approval,
+		body:      body,
 	}
+}
+
+// ShowApproval makes the approval bar visible.
+func (l *Layout) ShowApproval() {
+	l.body.ResizeItem(l.Approval, ApprovalHeight, 0)
+}
+
+// HideApproval collapses the approval bar.
+func (l *Layout) HideApproval() {
+	l.Approval.visible = false
+	l.body.ResizeItem(l.Approval, 0, 0)
 }
