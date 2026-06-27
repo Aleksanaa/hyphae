@@ -87,7 +87,15 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 		return nil
 
 	case event.Key() == tcell.KeyCtrlC:
-		if a.sendCancel != nil {
+		if a.layout.Chat.HasSelection() {
+			// Active drag selection — copy it.
+			text := a.layout.Chat.SelectedText()
+			if text != "" {
+				if err := writeClipboard(text); err != nil {
+					a.layout.Status.SetError(err.Error())
+				}
+			}
+		} else if a.sendCancel != nil {
 			// Agent is running — interrupt it.
 			a.sendCancel()
 			a.sendCancel = nil
@@ -96,13 +104,11 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 				a.redrawActive()
 			}
 		} else {
-			// Agent is idle — copy hovered message to clipboard.
+			// Agent is idle, no selection — copy hovered message.
 			text := a.layout.Chat.HoveredContent()
 			if text != "" {
 				if err := writeClipboard(text); err != nil {
 					a.layout.Status.SetError(err.Error())
-				} else {
-					a.layout.Status.SetMessage("copied to clipboard")
 				}
 			}
 		}
