@@ -7,132 +7,469 @@ import (
 	"github.com/rivo/tview"
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/ast"
+	"github.com/yuin/goldmark/extension"
+	extast "github.com/yuin/goldmark/extension/ast"
 	goldtext "github.com/yuin/goldmark/text"
 )
 
-var mdGold = goldmark.New()
+var mdGold = goldmark.New(
+	goldmark.WithExtensions(
+		extension.Table,
+		extension.Strikethrough,
+	),
+)
 
-// renderMarkdown parses src as Markdown and returns tview-tagged lines wrapped
-// to maxW visible columns. Each element is one logical display line.
-func renderMarkdown(src string, maxW int) []string {
-	if maxW <= 0 {
-		maxW = 40
-	}
-	source := []byte(src)
-	reader := goldtext.NewReader(source)
-	doc := mdGold.Parser().Parse(reader)
+// ─── block IR (width-independent) ────────────────────────────────────────────
 
-	var lines []string
-	renderBlocks(doc, source, maxW, &lines)
-	if len(lines) == 0 {
-		lines = []string{""}
-	}
-	return lines
+// mdBlock is a parsed, width-independent markdown block. renderLines re-wraps
+// it to the given visible column width — called on every resize, never re-parses.
+type mdBlock interface {
+	renderLines(maxW int) []string
 }
 
-// ─── block rendering ─────────────────────────────────────────────────────────
+type paragraphBlock struct{ spans []mdSpan }
+type headingBlock struct {
+	level int
+	spans []mdSpan
+}
+type codeBlock struct{ lines []string }
+type thematicBreakBlock struct{}
+type blockquoteBlock struct{ items []mdBlock }
+type listBlock struct {
+	ordered bool
+	start   int
+	items   []listItemBlock
+}
+type listItemBlock struct{ blocks []mdBlock }
+type tableBlock struct {
+	alignments []extast.Alignment
+	header     [][]mdSpan
+	rows       [][][]mdSpan
+}
+type groupBlock struct{ items []mdBlock } // fallback for unknown block nodes
 
-func renderBlocks(node ast.Node, source []byte, maxW int, out *[]string) {
-	for n := node.FirstChild(); n != nil; n = n.NextSibling() {
-		renderBlock(n, source, maxW, out)
-	}
+// ─── renderLines implementations ─────────────────────────────────────────────
+
+func (b *paragraphBlock) renderLines(maxW int) []string {
+	return wrapSpans(b.spans, maxW)
 }
 
-func renderBlock(n ast.Node, source []byte, maxW int, out *[]string) {
-	switch n.Kind() {
-	case ast.KindParagraph, ast.KindTextBlock:
-		spans := collectSpans(n, source, mdStyle{})
-		*out = append(*out, wrapSpans(spans, maxW)...)
-
-	case ast.KindHeading:
-		h := n.(*ast.Heading)
-		prefix := strings.Repeat("#", h.Level) + " "
-		plain := spansPlain(collectSpans(n, source, mdStyle{}))
-		ac := tviewColor(Theme.Accent)
-		wrapped := tview.WordWrap(tview.Escape(prefix+plain), maxW)
-		for _, l := range wrapped {
-			*out = append(*out, fmt.Sprintf("[%s][::b]%s[-:-:-]", ac, l))
-		}
-
-	case ast.KindFencedCodeBlock:
-		segs := n.(*ast.FencedCodeBlock).Lines()
-		cc := tviewColor(Theme.ShellColor)
-		for i := 0; i < segs.Len(); i++ {
-			seg := segs.At(i)
-			line := strings.TrimRight(string(seg.Value(source)), "\n")
-			*out = append(*out, fmt.Sprintf("[%s]%s[-:-:-]", cc, tview.Escape(line)))
-		}
-
-	case ast.KindCodeBlock:
-		segs := n.(*ast.CodeBlock).Lines()
-		cc := tviewColor(Theme.ShellColor)
-		for i := 0; i < segs.Len(); i++ {
-			seg := segs.At(i)
-			line := strings.TrimRight(string(seg.Value(source)), "\n")
-			*out = append(*out, fmt.Sprintf("[%s]%s[-:-:-]", cc, tview.Escape(line)))
-		}
-
-	case ast.KindList:
-		renderList(n.(*ast.List), source, maxW, out, 0)
-
-	case ast.KindBlockquote:
-		mc := tviewColor(Theme.Muted)
-		var inner []string
-		renderBlocks(n, source, maxW-2, &inner)
-		for _, l := range inner {
-			*out = append(*out, fmt.Sprintf("[%s]▎[-:-:-] %s", mc, l))
-		}
-
-	case ast.KindThematicBreak:
-		mc := tviewColor(Theme.Muted)
-		*out = append(*out, fmt.Sprintf("[%s]%s[-:-:-]", mc, strings.Repeat("─", maxW)))
-
-	default:
-		renderBlocks(n, source, maxW, out)
+func (b *headingBlock) renderLines(maxW int) []string {
+	prefix := strings.Repeat("#", b.level) + " "
+	plain := spansPlain(b.spans)
+	ac := tviewColor(Theme.Accent)
+	wrapped := tview.WordWrap(tview.Escape(prefix+plain), maxW)
+	out := make([]string, len(wrapped))
+	for i, l := range wrapped {
+		out[i] = fmt.Sprintf("[%s][::b]%s[-:-:-]", ac, l)
 	}
+	return out
 }
 
-func renderList(list *ast.List, source []byte, maxW int, out *[]string, depth int) {
-	indent := strings.Repeat("  ", depth)
-	num := list.Start
-	for item := list.FirstChild(); item != nil; item = item.NextSibling() {
+func (b *codeBlock) renderLines(_ int) []string {
+	cc := tviewColor(Theme.ShellColor)
+	out := make([]string, len(b.lines))
+	for i, line := range b.lines {
+		out[i] = fmt.Sprintf("[%s]%s[-:-:-]", cc, tview.Escape(line))
+	}
+	return out
+}
+
+func (b *thematicBreakBlock) renderLines(maxW int) []string {
+	mc := tviewColor(Theme.Muted)
+	return []string{fmt.Sprintf("[%s]%s[-:-:-]", mc, strings.Repeat("─", maxW))}
+}
+
+func (b *blockquoteBlock) renderLines(maxW int) []string {
+	mc := tviewColor(Theme.Muted)
+	innerW := maxW - 2
+	if innerW < 1 {
+		innerW = 1
+	}
+	var inner []string
+	for _, item := range b.items {
+		inner = append(inner, item.renderLines(innerW)...)
+	}
+	out := make([]string, len(inner))
+	for i, l := range inner {
+		out[i] = fmt.Sprintf("[%s]▎[-:-:-] %s", mc, l)
+	}
+	return out
+}
+
+func (b *listBlock) renderLines(maxW int) []string {
+	num := b.start
+	var out []string
+	for _, item := range b.items {
 		var bullet string
-		if list.IsOrdered() {
+		if b.ordered {
 			bullet = fmt.Sprintf("%d. ", num)
 			num++
 		} else {
 			bullet = "• "
 		}
-		prefix := indent + bullet
-		cont := indent + strings.Repeat(" ", len([]rune(bullet)))
-		innerW := maxW - len([]rune(prefix))
+		bulletW := len([]rune(bullet))
+		innerW := maxW - bulletW
 		if innerW < 10 {
 			innerW = 10
 		}
+		cont := strings.Repeat(" ", bulletW)
 
 		var itemLines []string
-		renderBlocks(item, source, innerW, &itemLines)
+		for _, block := range item.blocks {
+			itemLines = append(itemLines, block.renderLines(innerW)...)
+		}
 		for i, l := range itemLines {
 			if i == 0 {
-				*out = append(*out, prefix+l)
+				out = append(out, bullet+l)
 			} else {
-				*out = append(*out, cont+l)
+				out = append(out, cont+l)
 			}
 		}
 	}
+	return out
+}
+
+func (b *tableBlock) renderLines(maxW int) []string {
+	var out []string
+	renderTableBlock(b, maxW, &out)
+	return out
+}
+
+func (b *groupBlock) renderLines(maxW int) []string {
+	var out []string
+	for _, item := range b.items {
+		out = append(out, item.renderLines(maxW)...)
+	}
+	return out
+}
+
+// ─── parsing (goldmark AST → []mdBlock) ──────────────────────────────────────
+
+// parseMarkdown parses src into a width-independent block list.
+func parseMarkdown(src string) []mdBlock {
+	source := []byte(src)
+	reader := goldtext.NewReader(source)
+	doc := mdGold.Parser().Parse(reader)
+	return parseBlockChildren(doc, source)
+}
+
+func parseBlockChildren(node ast.Node, source []byte) []mdBlock {
+	var blocks []mdBlock
+	for n := node.FirstChild(); n != nil; n = n.NextSibling() {
+		if b := parseOneBlock(n, source); b != nil {
+			blocks = append(blocks, b)
+		}
+	}
+	return blocks
+}
+
+func parseOneBlock(n ast.Node, source []byte) mdBlock {
+	switch n.Kind() {
+	case ast.KindParagraph, ast.KindTextBlock:
+		return &paragraphBlock{spans: collectSpans(n, source, mdStyle{})}
+
+	case ast.KindHeading:
+		h := n.(*ast.Heading)
+		return &headingBlock{level: h.Level, spans: collectSpans(n, source, mdStyle{})}
+
+	case ast.KindFencedCodeBlock:
+		return parseCodeLines(n.(*ast.FencedCodeBlock).Lines(), source)
+
+	case ast.KindCodeBlock:
+		return parseCodeLines(n.(*ast.CodeBlock).Lines(), source)
+
+	case ast.KindList:
+		return parseList(n.(*ast.List), source)
+
+	case ast.KindBlockquote:
+		return &blockquoteBlock{items: parseBlockChildren(n, source)}
+
+	case ast.KindThematicBreak:
+		return &thematicBreakBlock{}
+
+	case extast.KindTable:
+		return parseTable(n.(*extast.Table), source)
+
+	default:
+		children := parseBlockChildren(n, source)
+		if len(children) == 0 {
+			return nil
+		}
+		return &groupBlock{items: children}
+	}
+}
+
+func parseCodeLines(segs *goldtext.Segments, source []byte) *codeBlock {
+	lines := make([]string, segs.Len())
+	for i := 0; i < segs.Len(); i++ {
+		seg := segs.At(i)
+		lines[i] = strings.TrimRight(string(seg.Value(source)), "\n")
+	}
+	return &codeBlock{lines: lines}
+}
+
+func parseList(list *ast.List, source []byte) *listBlock {
+	b := &listBlock{ordered: list.IsOrdered(), start: list.Start}
+	for item := list.FirstChild(); item != nil; item = item.NextSibling() {
+		var itemBlocks []mdBlock
+		for c := item.FirstChild(); c != nil; c = c.NextSibling() {
+			if b := parseOneBlock(c, source); b != nil {
+				itemBlocks = append(itemBlocks, b)
+			}
+		}
+		b.items = append(b.items, listItemBlock{blocks: itemBlocks})
+	}
+	return b
+}
+
+func parseTable(tbl *extast.Table, source []byte) *tableBlock {
+	b := &tableBlock{alignments: tbl.Alignments}
+	for row := tbl.FirstChild(); row != nil; row = row.NextSibling() {
+		var cells [][]mdSpan
+		for c := row.FirstChild(); c != nil; c = c.NextSibling() {
+			cells = append(cells, collectSpans(c, source, mdStyle{}))
+		}
+		switch row.Kind() {
+		case extast.KindTableHeader:
+			b.header = cells
+		case extast.KindTableRow:
+			b.rows = append(b.rows, cells)
+		}
+	}
+	return b
+}
+
+// ─── table rendering ──────────────────────────────────────────────────────────
+
+func renderTableBlock(tbl *tableBlock, maxW int, out *[]string) {
+	numCols := len(tbl.alignments)
+	if numCols == 0 {
+		numCols = len(tbl.header)
+	}
+	if numCols == 0 {
+		return
+	}
+
+	// Phase 1: compute natural column widths and per-column minimum widths.
+	// minColW[i] = longest single word in column i — word wrapping never needs
+	// to hard-break within a word as long as colW[i] >= minColW[i].
+	colW := make([]int, numCols)
+	minColW := make([]int, numCols)
+
+	measureCol := func(i int, spans []mdSpan) {
+		if i >= numCols {
+			return
+		}
+		plain := spansPlain(spans)
+		tagged := spansToTagged(spans)
+		if w := tview.TaggedStringWidth(tagged); w > colW[i] {
+			colW[i] = w
+		}
+		for _, word := range strings.Fields(plain) {
+			if w := tview.TaggedStringWidth(word); w > minColW[i] {
+				minColW[i] = w
+			}
+		}
+		if minColW[i] == 0 {
+			minColW[i] = 1
+		}
+	}
+
+	for i, spans := range tbl.header {
+		measureCol(i, spans)
+	}
+	for _, row := range tbl.rows {
+		for i, spans := range row {
+			measureCol(i, spans)
+		}
+	}
+
+	// Phase 2: scale columns if table exceeds maxW.
+	// Total width = 2 + 3*numCols + sum(colW).
+	if maxW > 0 {
+		sumColW := 0
+		for _, w := range colW {
+			sumColW += w
+		}
+		if 2+3*numCols+sumColW > maxW {
+			available := maxW - 2 - 3*numCols
+			if available < numCols {
+				available = numCols
+			}
+			totalMinW := 0
+			for _, w := range minColW {
+				totalMinW += w
+			}
+			if available >= totalMinW {
+				// Distribute space: each column gets at least minColW, then
+				// remaining space is split proportionally by natural excess.
+				extra := available - totalMinW
+				sumExcess := 0
+				for i := range colW {
+					sumExcess += colW[i] - minColW[i]
+				}
+				for i := range colW {
+					bonus := 0
+					if sumExcess > 0 {
+						bonus = (colW[i] - minColW[i]) * extra / sumExcess
+					}
+					colW[i] = minColW[i] + bonus
+				}
+			} else {
+				// Even minimum word widths don't fit — proportional scaling,
+				// hard breaks are unavoidable.
+				for i := range colW {
+					colW[i] = max(1, colW[i]*available/sumColW)
+				}
+			}
+		}
+	}
+
+	ac := tviewColor(Theme.Accent)
+	bc := tviewColor(Theme.Border)
+
+	alignOf := func(i int) extast.Alignment {
+		if i < len(tbl.alignments) {
+			return tbl.alignments[i]
+		}
+		return extast.AlignNone
+	}
+
+	// padCell fills one cell line to exactly cw visible columns.
+	padCell := func(content string, w, cw int, align extast.Alignment) string {
+		extra := cw - w
+		if extra < 0 {
+			extra = 0
+		}
+		spaces := strings.Repeat(" ", extra)
+		switch align {
+		case extast.AlignRight:
+			return spaces + content + "[-:-:-]"
+		case extast.AlignCenter:
+			l := extra / 2
+			r := extra - l
+			return strings.Repeat(" ", l) + content + "[-:-:-]" + strings.Repeat(" ", r)
+		default:
+			return content + "[-:-:-]" + spaces
+		}
+	}
+
+	// emitRow transposes per-cell line-slices into display rows.
+	// When cells have different line counts the shorter ones are padded with
+	// blank lines so all columns stay aligned.
+	emitRow := func(cellLines [][]string) []string {
+		maxL := 0
+		for _, lines := range cellLines {
+			if len(lines) > maxL {
+				maxL = len(lines)
+			}
+		}
+		out := make([]string, maxL)
+		for li := 0; li < maxL; li++ {
+			parts := make([]string, numCols)
+			for i := 0; i < numCols; i++ {
+				var content string
+				var w int
+				if i < len(cellLines) && li < len(cellLines[i]) {
+					content = cellLines[i][li]
+					w = tview.TaggedStringWidth(content)
+				}
+				parts[i] = " " + padCell(content, w, colW[i], alignOf(i)) + " "
+			}
+			inner := strings.Join(parts, fmt.Sprintf("[%s]│[-:-:-]", bc))
+			out[li] = fmt.Sprintf("[%s]│[-:-:-]%s[%s]│[-:-:-]", bc, inner, bc)
+		}
+		return out
+	}
+
+	hRule := func(left, mid, right string) string {
+		var sb strings.Builder
+		fmt.Fprintf(&sb, "[%s]%s", bc, left)
+		for i, w := range colW {
+			if i > 0 {
+				sb.WriteString(mid)
+			}
+			sb.WriteString(strings.Repeat("─", w+2))
+		}
+		sb.WriteString(right + "[-:-:-]")
+		return sb.String()
+	}
+
+	// Phase 3: wrap each cell to its column width, emit multi-line rows.
+	*out = append(*out, hRule("┌", "┬", "┐"))
+
+	if len(tbl.header) > 0 {
+		cellLines := make([][]string, numCols)
+		for i := 0; i < numCols; i++ {
+			var spans []mdSpan
+			if i < len(tbl.header) {
+				spans = tbl.header[i]
+			}
+			plain := spansPlain(spans)
+			raw := tview.WordWrap(tview.Escape(plain), colW[i])
+			styled := make([]string, len(raw))
+			for j, l := range raw {
+				styled[j] = fmt.Sprintf("[%s][::b]%s[-:-:-]", ac, l)
+			}
+			if len(styled) == 0 {
+				styled = []string{""}
+			}
+			cellLines[i] = styled
+		}
+		*out = append(*out, emitRow(cellLines)...)
+		*out = append(*out, hRule("├", "┼", "┤"))
+	}
+
+	for _, row := range tbl.rows {
+		cellLines := make([][]string, numCols)
+		for i := 0; i < numCols; i++ {
+			var spans []mdSpan
+			if i < len(row) {
+				spans = row[i]
+			}
+			lines := wrapSpans(spans, colW[i])
+			if len(lines) == 0 {
+				lines = []string{""}
+			}
+			cellLines[i] = lines
+		}
+		*out = append(*out, emitRow(cellLines)...)
+	}
+
+	*out = append(*out, hRule("└", "┴", "┘"))
+}
+
+// ─── public render entry point ────────────────────────────────────────────────
+
+// renderMarkdown parses and immediately renders src to tview-tagged lines.
+// Callers that need resize-efficient rendering should use the cached path via
+// ChatView.renderMarkdownCached instead.
+func renderMarkdown(src string, maxW int) []string {
+	return renderBlocks(parseMarkdown(src), maxW)
+}
+
+// renderBlocks renders a pre-parsed block list to lines at the given width.
+func renderBlocks(blocks []mdBlock, maxW int) []string {
+	var out []string
+	for _, b := range blocks {
+		out = append(out, b.renderLines(maxW)...)
+	}
+	if len(out) == 0 {
+		out = []string{""}
+	}
+	return out
 }
 
 // ─── inline span collection ───────────────────────────────────────────────────
 
-// mdStyle carries the active inline formatting down the inline AST.
 type mdStyle struct {
-	bold   bool
-	italic bool
-	code   bool
+	bold          bool
+	italic        bool
+	code          bool
+	strikethrough bool
 }
 
-// openTag returns the tview style tag to emit before text in this style.
-// Always begins with [-:-:-] to prevent style bleeding from previous segments.
 func (s mdStyle) openTag() string {
 	if s.code {
 		return fmt.Sprintf("[-:-:-][%s]", tviewColor(Theme.ShellColor))
@@ -143,6 +480,9 @@ func (s mdStyle) openTag() string {
 	}
 	if s.italic {
 		attrs += "i"
+	}
+	if s.strikethrough {
+		attrs += "s"
 	}
 	if attrs == "" {
 		return "[-:-:-]"
@@ -194,6 +534,11 @@ func nodeSpans(node ast.Node, source []byte, style mdStyle) []mdSpan {
 		}
 		return collectSpans(node, source, s2)
 
+	case extast.KindStrikethrough:
+		s2 := style
+		s2.strikethrough = true
+		return collectSpans(node, source, s2)
+
 	case ast.KindLink, ast.KindImage:
 		return collectSpans(node, source, style)
 
@@ -217,6 +562,30 @@ func spansPlain(spans []mdSpan) string {
 	return sb.String()
 }
 
+// spansToTagged renders spans to a single tview-tagged line without wrapping.
+func spansToTagged(spans []mdSpan) string {
+	sentinel := mdStyle{code: true, bold: true, italic: true, strikethrough: true}
+	var sb strings.Builder
+	cur := sentinel
+	for _, sp := range spans {
+		for _, r := range []rune(sp.text) {
+			if r == '\n' {
+				r = ' '
+			}
+			if sp.style != cur {
+				sb.WriteString(sp.style.openTag())
+				cur = sp.style
+			}
+			if r == '[' {
+				sb.WriteString("[[]")
+			} else {
+				sb.WriteRune(r)
+			}
+		}
+	}
+	return sb.String()
+}
+
 // ─── span-aware word wrap ─────────────────────────────────────────────────────
 
 type styledRune struct {
@@ -224,9 +593,6 @@ type styledRune struct {
 	style mdStyle
 }
 
-// wrapSpans wraps the given spans into lines of at most maxW visible columns,
-// breaking on spaces and CJK character boundaries, hard-breaking overlong
-// tokens. Each returned line is a tview-tagged string.
 func wrapSpans(spans []mdSpan, maxW int) []string {
 	if maxW <= 0 {
 		maxW = 40
@@ -243,9 +609,7 @@ func wrapSpans(spans []mdSpan, maxW int) []string {
 		return []string{""}
 	}
 
-	// sentinel: differs from every valid mdStyle so the first rune always
-	// emits a style tag, preventing bleed from the previous rendered line.
-	sentinel := mdStyle{code: true, bold: true, italic: true}
+	sentinel := mdStyle{code: true, bold: true, italic: true, strikethrough: true}
 
 	emitLine := func(from, to int) string {
 		if to <= from {
@@ -283,7 +647,6 @@ func wrapSpans(spans []mdSpan, maxW int) []string {
 
 		rW := tview.TaggedStringWidth(string(ch.r))
 
-		// CJK: break before this rune if adding it would overflow.
 		if isCJKRune(ch.r) && lineW > 0 && lineW+rW > maxW {
 			lines = append(lines, emitLine(start, i))
 			start = i
@@ -300,7 +663,7 @@ func wrapSpans(spans []mdSpan, maxW int) []string {
 		if lineW > maxW {
 			if lastSpace > start {
 				lines = append(lines, emitLine(start, lastSpace))
-				start = lastSpace + 1 // skip the space
+				start = lastSpace + 1
 				lineW = 0
 				for j := start; j <= i; j++ {
 					lineW += tview.TaggedStringWidth(string(chars[j].r))

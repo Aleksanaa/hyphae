@@ -50,6 +50,10 @@ type ChatView struct {
 	// boxLeft[i] = leftPad, boxRight[i] = leftPad+boxW
 	boxLeft  []int
 	boxRight []int
+
+	// mdCache stores parsed markdown blocks keyed by content string so that
+	// resize only re-wraps without re-running goldmark.
+	mdCache map[string][]mdBlock
 }
 
 // NewChatView creates the scrollable message display.
@@ -60,7 +64,13 @@ func NewChatView() *ChatView {
 	tv.SetWordWrap(false) // we manage layout manually
 	tv.SetBorder(false)   // no outer frame; messages have their own boxes
 	tv.SetBackgroundColor(Theme.Background)
-	return &ChatView{TextView: tv, hoverIdx: -1, anchorBox: -1, selCursorBox: -1}
+	return &ChatView{
+		TextView:     tv,
+		hoverIdx:     -1,
+		anchorBox:    -1,
+		selCursorBox: -1,
+		mdCache:      make(map[string][]mdBlock),
+	}
 }
 
 // SetFocused is called by focus/blur hooks; no visible border to update.
@@ -489,10 +499,9 @@ func (cv *ChatView) buildText(width int) {
 
 		msgStartLine = append(msgStartLine, strings.Count(b.String(), "\n"))
 		renderedMsgs = append(renderedMsgs, msg)
-		lp, bw := computeBoxGeom(msg, width, maxW)
+		lp, bw := cv.renderMessageBox(&b, msg, width, maxW)
 		boxLeft = append(boxLeft, lp)
 		boxRight = append(boxRight, lp+bw)
-		renderMessageBox(&b, msg, width, maxW)
 	}
 
 	cv.renderedMsgs = renderedMsgs
@@ -514,7 +523,10 @@ func (cv *ChatView) buildText(width int) {
 //   ┌─ label ──────────┐
 //   │ content line     │
 //   └──────────────────┘
-func renderMessageBox(b *strings.Builder, msg session.Message, width, maxW int) {
+// renderMessageBox writes a bordered message box into b and returns the box's
+// leftPad and boxW so the caller can record geometry without a separate pass.
+// It uses cv.mdCache so that resize re-wraps without re-parsing markdown.
+func (cv *ChatView) renderMessageBox(b *strings.Builder, msg session.Message, width, maxW int) (leftPad, boxW int) {
 	bc := tviewColor(Theme.Border)
 
 	dash := func(n int) string {
@@ -548,9 +560,9 @@ func renderMessageBox(b *strings.Builder, msg session.Message, width, maxW int) 
 				actualW = n
 			}
 		}
-		boxW := max(8, actualW+4)
+		boxW = max(8, actualW+4)
 		contentW := boxW - 4
-		leftPad := width - boxW
+		leftPad = width - boxW
 		if leftPad < 0 {
 			leftPad = 0
 		}
@@ -580,7 +592,7 @@ func renderMessageBox(b *strings.Builder, msg session.Message, width, maxW int) 
 				}
 			}
 			// ┌─ error ┐ = 10 visible cols minimum
-			boxW := max(10, actualW+4)
+			boxW = max(10, actualW+4)
 			contentW := boxW - 4
 			boxLine := mkBoxLine(contentW)
 
@@ -594,7 +606,12 @@ func renderMessageBox(b *strings.Builder, msg session.Message, width, maxW int) 
 		}
 
 		maxContentW := maxW - 4
-		lines := renderMarkdown(msg.Content, maxContentW)
+		blocks, ok := cv.mdCache[msg.Content]
+		if !ok {
+			blocks = parseMarkdown(msg.Content)
+			cv.mdCache[msg.Content] = blocks
+		}
+		lines := renderBlocks(blocks, maxContentW)
 		actualW := 0
 		for _, l := range lines {
 			if n := tview.TaggedStringWidth(l); n > actualW {
@@ -611,7 +628,7 @@ func renderMessageBox(b *strings.Builder, msg session.Message, width, maxW int) 
 		if msg.Partial {
 			minBoxW = 16
 		}
-		boxW := max(minBoxW, actualW+4)
+		boxW = max(minBoxW, actualW+4)
 		contentW := boxW - 4
 		boxLine := mkBoxLine(contentW)
 
@@ -633,6 +650,7 @@ func renderMessageBox(b *strings.Builder, msg session.Message, width, maxW int) 
 		}
 		b.WriteString(fmt.Sprintf("[%s]└%s┘[-]", bc, dash(boxW-2)) + "\n")
 	}
+	return
 }
 
 // fmtToolUse returns the colored inline string and its visible terminal column width.
@@ -834,56 +852,6 @@ func computeMsgContent(msg session.Message, width, maxW int) (allLines []string,
 	return nil, 0
 }
 
-// computeBoxGeom returns the leftPad and boxW for a message box.
-// These match the values renderMessageBox uses, so the bounds are exact.
-func computeBoxGeom(msg session.Message, width, maxW int) (leftPad, boxW int) {
-	maxContentW := maxW - 4
-	switch msg.Role {
-	case session.RoleUser:
-		lines := wordWrap(msg.Content, maxContentW)
-		actualW := 0
-		for _, l := range lines {
-			if n := tview.TaggedStringWidth(l); n > actualW {
-				actualW = n
-			}
-		}
-		bw := max(8, actualW+4)
-		lp := width - bw
-		if lp < 0 {
-			lp = 0
-		}
-		return lp, bw
-	case session.RoleAssistant:
-		if msg.Error != nil {
-			lines := wordWrap(msg.Error.Error(), maxContentW)
-			actualW := 0
-			for _, l := range lines {
-				if n := tview.TaggedStringWidth(l); n > actualW {
-					actualW = n
-				}
-			}
-			return 0, max(10, actualW+4)
-		}
-		lines := renderMarkdown(msg.Content, maxContentW)
-		actualW := 0
-		for _, l := range lines {
-			if n := tview.TaggedStringWidth(l); n > actualW {
-				actualW = n
-			}
-		}
-		for _, tu := range msg.ToolUses {
-			if _, vlen := fmtToolUse(tu); vlen > actualW {
-				actualW = vlen
-			}
-		}
-		minBW := 14
-		if msg.Partial {
-			minBW = 16
-		}
-		return 0, max(minBW, actualW+4)
-	}
-	return 0, 20
-}
 
 // ─── text helpers ─────────────────────────────────────────────────────────────
 
