@@ -61,6 +61,7 @@ func New(cfg *config.Config) *App {
 		if my < iy || my >= iy+ih {
 			chat.ClearHover()
 		}
+		layout.Status.SetSelActive(chat.HasSelection())
 		return event, action
 	})
 	a.tapp.SetInputCapture(a.handleGlobalKey)

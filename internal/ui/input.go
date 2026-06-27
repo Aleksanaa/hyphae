@@ -32,21 +32,9 @@ func NewInputView(onSend func(string)) *InputView {
 	iv := &InputView{TextArea: ta, onSend: onSend}
 
 	ta.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-		switch event.Key() {
-		case tcell.KeyCtrlS:
-			// Primary send key — reliable across all terminals.
+		if event.Key() == tcell.KeyCtrlS {
 			iv.send()
 			return nil
-		case tcell.KeyLF:
-			// Ctrl+J (LF) — sent by some terminals for Ctrl+Enter.
-			iv.send()
-			return nil
-		case tcell.KeyEnter:
-			// Alt+Enter if the terminal forwards the modifier.
-			if event.Modifiers()&tcell.ModAlt != 0 {
-				iv.send()
-				return nil
-			}
 		}
 		return event
 	})
