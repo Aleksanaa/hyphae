@@ -245,7 +245,7 @@ func (cv *ChatView) HoveredContent() string {
 func (cv *ChatView) MouseHandler() func(tview.MouseAction, *tcell.EventMouse, func(tview.Primitive)) (bool, tview.Primitive) {
 	orig := cv.TextView.MouseHandler()
 	return func(action tview.MouseAction, event *tcell.EventMouse, setFocus func(tview.Primitive)) (bool, tview.Primitive) {
-		_, iy, _, ih := cv.GetInnerRect()
+		ix, iy, iw, ih := cv.GetInnerRect()
 		scrollY, _ := cv.GetScrollOffset()
 		mx, my := event.Position()
 		docLine := (my - iy) + scrollY
@@ -257,11 +257,11 @@ func (cv *ChatView) MouseHandler() func(tview.MouseAction, *tcell.EventMouse, fu
 			consumed, capture = orig(action, event, setFocus)
 		}
 
-		// When the event's y is outside our rect, clear stale hover and bail.
-		// The Flex layout calls every child's handler until consumed; without
-		// this clear, a hover set while in the chat persists through redraws
-		// triggered by input-box clicks.
-		if my < iy || my >= iy+ih {
+		// When the event is outside our rect, clear stale hover and bail.
+		// Check both axes: Flex calls all children in order, so without the
+		// x-check the chat handler would consume scrollbar-column clicks
+		// (findMsgAt uses y only, so it matches messages regardless of x).
+		if mx < ix || mx >= ix+iw || my < iy || my >= iy+ih {
 			cv.hoverIdx = -1
 			return consumed, capture
 		}

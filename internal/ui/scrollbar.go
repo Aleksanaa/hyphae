@@ -8,8 +8,9 @@ import (
 // Scrollbar is a 1-column primitive that reflects and controls a ChatView's scroll position.
 type Scrollbar struct {
 	*tview.Box
-	chat     *ChatView
-	dragging bool
+	chat        *ChatView
+	dragging    bool
+	lastScrollY int
 }
 
 // NewScrollbar creates a scrollbar linked to chat.
@@ -29,9 +30,12 @@ func (sb *Scrollbar) Draw(screen tcell.Screen) {
 	scrollY, _ := sb.chat.GetScrollOffset()
 	_, _, _, pageH := sb.chat.GetInnerRect()
 
+	scrolled := scrollY != sb.lastScrollY
+	sb.lastScrollY = scrollY
+
 	trackSt := tcell.StyleDefault.Background(Theme.Surface).Foreground(Theme.Muted)
 	thumbColor := Theme.Border
-	if sb.dragging {
+	if sb.dragging || scrolled {
 		thumbColor = Theme.Accent
 	}
 	thumbSt := tcell.StyleDefault.Background(thumbColor)
