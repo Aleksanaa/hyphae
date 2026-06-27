@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/aleksana/hypane/internal/llm"
-	"github.com/aleksana/hypane/internal/session"
+	"github.com/aleksana/hyphae/internal/llm"
+	"github.com/aleksana/hyphae/internal/session"
 )
 
 const systemPrompt = `You are a skilled coding assistant. You help the user read, write, and reason about code.

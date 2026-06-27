@@ -7,10 +7,10 @@ import (
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 
-	"github.com/aleksana/hypane/internal/agent"
-	"github.com/aleksana/hypane/internal/config"
-	"github.com/aleksana/hypane/internal/llm"
-	"github.com/aleksana/hypane/internal/session"
+	"github.com/aleksana/hyphae/internal/agent"
+	"github.com/aleksana/hyphae/internal/config"
+	"github.com/aleksana/hyphae/internal/llm"
+	"github.com/aleksana/hyphae/internal/session"
 )
 
 // App is the root application coordinator.

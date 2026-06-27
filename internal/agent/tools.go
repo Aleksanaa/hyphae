@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/aleksana/hypane/internal/llm"
+	"github.com/aleksana/hyphae/internal/llm"
 )
 
 // toolDef pairs a schema (sent to the LLM) with an executor (run locally).

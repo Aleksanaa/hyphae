@@ -51,5 +51,5 @@ func configPath() string {
 		return v
 	}
 	dir, _ := os.UserConfigDir()
-	return filepath.Join(dir, "hypane", "config.toml")
+	return filepath.Join(dir, "hyphae", "config.toml")
 }

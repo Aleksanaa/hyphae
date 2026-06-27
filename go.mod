@@ -1,4 +1,4 @@
-module github.com/aleksana/hypane
+module github.com/aleksana/hyphae
 
 go 1.22
 

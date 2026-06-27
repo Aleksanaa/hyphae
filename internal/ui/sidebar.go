@@ -5,7 +5,7 @@ import (
 
 	"github.com/rivo/tview"
 
-	"github.com/aleksana/hypane/internal/session"
+	"github.com/aleksana/hyphae/internal/session"
 )
 
 // SidebarView shows the list of sessions and a "New" action.

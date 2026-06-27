@@ -7,9 +7,9 @@ import (
 	"os"
 	"sort"
 
-	"github.com/aleksana/hypane/internal/config"
-	"github.com/aleksana/hypane/internal/llm"
-	"github.com/aleksana/hypane/internal/ui"
+	"github.com/aleksana/hyphae/internal/config"
+	"github.com/aleksana/hyphae/internal/llm"
+	"github.com/aleksana/hyphae/internal/ui"
 )
 
 func main() {
@@ -21,10 +21,10 @@ func main() {
 		listModels = flag.Bool("list-models", false, "list available models and exit")
 	)
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "hypane — interactive coding agent\n\n")
-		fmt.Fprintf(os.Stderr, "Usage: hypane [flags]\n\n")
+		fmt.Fprintf(os.Stderr, "hyphae — interactive coding agent\n\n")
+		fmt.Fprintf(os.Stderr, "Usage: hyphae [flags]\n\n")
 		flag.PrintDefaults()
-		fmt.Fprintf(os.Stderr, "\nConfig file: $XDG_CONFIG_HOME/hypane/config.toml\n")
+		fmt.Fprintf(os.Stderr, "\nConfig file: $XDG_CONFIG_HOME/hyphae/config.toml\n")
 		fmt.Fprintf(os.Stderr, "Env vars:    OPENCODE_API_KEY, HYPANE_MODEL, HYPANE_BASE_URL\n")
 	}
 	flag.Parse()
