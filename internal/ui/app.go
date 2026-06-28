@@ -47,7 +47,8 @@ func New(cfg *config.Config) *App {
 	status := NewStatusBar()
 	input := NewInputView(a.sendMessage)
 	approval := NewApprovalView()
-	layout := NewLayout(chat, scrollbar, input, status, approval)
+	diffView := NewDiffView()
+	layout := NewLayout(chat, scrollbar, input, status, approval, diffView)
 	a.layout = layout
 	status.SetDefault(cfg.Model, session.StatusIdle)
 
@@ -108,6 +109,22 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 		}
 	}
 
+	// When the diff view is active, Tab cycles Allow/Deny and Esc denies.
+	if a.layout.DiffView.IsVisible() {
+		switch event.Key() {
+		case tcell.KeyTab, tcell.KeyBacktab:
+			if a.layout.DiffView.GetSelected() == "allow" {
+				a.layout.DiffView.SetSelected("deny")
+			} else {
+				a.layout.DiffView.SetSelected("allow")
+			}
+			return nil
+		case tcell.KeyEscape:
+			a.layout.DiffView.Deny("")
+			return nil
+		}
+	}
+
 	switch {
 	case event.Key() == tcell.KeyCtrlD:
 		a.Stop()
@@ -128,6 +145,9 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 			a.sendCancel = nil
 			if a.layout.Approval.IsVisible() {
 				a.layout.HideApproval()
+			}
+			if a.layout.DiffView.IsVisible() {
+				a.layout.HideDiffView()
 			}
 			a.tapp.SetFocus(a.layout.Input.TextArea)
 			if sess, ok := a.manager.Active(); ok {
@@ -207,21 +227,45 @@ func (a *App) handleAgentEvents(sessionID string, ch <-chan agent.Event) {
 				msgs, status := sess.Snapshot()
 				a.layout.Chat.Render(msgs)
 				a.layout.Status.SetDefault(a.cfg.Model, status)
-				a.layout.Approval.Show(tool.Name, tool.Input, tool.Reasoning)
-				a.layout.ShowApproval()
-				a.tapp.SetFocus(a.layout.Approval)
-				a.layout.Approval.SetCallbacks(
-					func() { // Allow
-						a.layout.HideApproval()
-						a.tapp.SetFocus(a.layout.Input.TextArea)
-						respCh <- agent.ApprovalResult{Allowed: true}
-					},
-					func(reason string) { // Deny
-						a.layout.HideApproval()
-						a.tapp.SetFocus(a.layout.Input.TextArea)
-						respCh <- agent.ApprovalResult{Allowed: false, DenyReason: reason}
-					},
-				)
+
+				if tool.DiffPatch != "" {
+					// Show the diff approval view for write_file / edit_file.
+					files := []DiffFileChange{{
+						Path:  tool.FilePath,
+						Lines: ParseUnifiedDiff(tool.DiffPatch),
+					}}
+					a.layout.DiffView.Show(tool.Name, tool.Reasoning, files)
+					a.layout.ShowDiffView()
+					a.tapp.SetFocus(a.layout.DiffView)
+					a.layout.DiffView.SetCallbacks(
+						func() {
+							a.layout.HideDiffView()
+							a.tapp.SetFocus(a.layout.Input.TextArea)
+							respCh <- agent.ApprovalResult{Allowed: true}
+						},
+						func(reason string) {
+							a.layout.HideDiffView()
+							a.tapp.SetFocus(a.layout.Input.TextArea)
+							respCh <- agent.ApprovalResult{Allowed: false, DenyReason: reason}
+						},
+					)
+				} else {
+					a.layout.Approval.Show(tool.Name, tool.Input, tool.Reasoning)
+					a.layout.ShowApproval()
+					a.tapp.SetFocus(a.layout.Approval)
+					a.layout.Approval.SetCallbacks(
+						func() {
+							a.layout.HideApproval()
+							a.tapp.SetFocus(a.layout.Input.TextArea)
+							respCh <- agent.ApprovalResult{Allowed: true}
+						},
+						func(reason string) {
+							a.layout.HideApproval()
+							a.tapp.SetFocus(a.layout.Input.TextArea)
+							respCh <- agent.ApprovalResult{Allowed: false, DenyReason: reason}
+						},
+					)
+				}
 			})
 
 		case agent.EventTextDelta, agent.EventToolStart, agent.EventToolDone:

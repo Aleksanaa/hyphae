@@ -11,11 +11,11 @@ import (
 
 const systemPrompt = `You are a skilled coding assistant. You help the user read, write, and reason about code.
 
-You have tools to read and write files, list directories, run shell commands, fetch web pages, and search for text. Use them methodically: understand the task, explore when needed, make targeted changes, and verify your work.
+You have tools to read files, edit files (targeted replacements), write files, list directories, run shell commands, fetch web pages, and search for text. Use them methodically: understand the task, explore when needed, make targeted changes, and verify your work.
 
-Be concise in explanations. Show code changes directly. When running commands, prefer short, focused ones.
+For file edits, prefer edit_file over write_file — it takes an edits array of {old_string, new_string} pairs and applies them in order. Each old_string must appear exactly once in the file; include enough surrounding context to make it unique. Use write_file only to create new files.
 
-run_shell and web_fetch require user approval before executing. Always fill in the "reasoning" field with one short sentence explaining why — it is shown to the user in the approval prompt.`
+run_shell, web_fetch, write_file, and edit_file require user approval before executing. Always fill in the "reasoning" field with one short sentence explaining why — it is shown to the user in the approval prompt.`
 
 // EventType classifies an agent event sent to the UI.
 type EventType string
@@ -40,9 +40,12 @@ type ToolEvent struct {
 	CallID    string
 	Name      string
 	Input     string // raw JSON args (reasoning stripped for display)
-	Reasoning string // only set for run_shell
+	Reasoning string
 	Output    string // filled in on EventToolDone
 	IsError   bool
+	// Set for write_file and edit_file before approval.
+	FilePath  string // relative path of file being changed
+	DiffPatch string // unified diff of the pending change
 }
 
 // Event is one item from the agent event stream.
@@ -127,6 +130,7 @@ func (a *Agent) loop(ctx context.Context, sess *session.Session, ch chan<- Event
 			// Some tools require user approval before running.
 			if requiresApproval(tc.Function.Name) {
 				te.Reasoning, te.Input = extractReasoning(tc.Function.Arguments)
+				te.FilePath, te.DiffPatch = computeDiffForApproval(tc.Function.Name, tc.Function.Arguments, sess.WorkDir)
 				sess.SetToolState(msgIdx, tc.ID, "pending")
 				respCh := make(chan ApprovalResult, 1)
 				select {
@@ -244,7 +248,7 @@ func buildMessages(sess *session.Session) []llm.ChatMessage {
 // requiresApproval returns true for tools that need user confirmation before running.
 func requiresApproval(name string) bool {
 	switch name {
-	case "run_shell", "web_fetch":
+	case "run_shell", "web_fetch", "write_file", "edit_file":
 		return true
 	}
 	return false

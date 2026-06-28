@@ -12,18 +12,20 @@ type Layout struct {
 	Input     *InputView
 	Status    *StatusBar
 	Approval  *ApprovalView
+	DiffView  *DiffView
 	body      *tview.Flex // retained for ResizeItem calls
 }
 
 // NewLayout builds and returns the assembled layout.
-func NewLayout(chat *ChatView, scrollbar *Scrollbar, input *InputView, status *StatusBar, approval *ApprovalView) *Layout {
+func NewLayout(chat *ChatView, scrollbar *Scrollbar, input *InputView, status *StatusBar, approval *ApprovalView, diffView *DiffView) *Layout {
 	chatRow := tview.NewFlex().SetDirection(tview.FlexColumn).
 		AddItem(chat, 0, 1, false).
 		AddItem(scrollbar, 1, 0, false)
 
 	body := tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(chatRow, 0, 1, false).
-		AddItem(approval, 0, 0, false). // hidden initially
+		AddItem(approval, 0, 0, false).  // hidden initially
+		AddItem(diffView, 0, 0, false).  // hidden initially
 		AddItem(input, 6, 0, true)
 
 	root := tview.NewFlex().SetDirection(tview.FlexRow).
@@ -37,6 +39,7 @@ func NewLayout(chat *ChatView, scrollbar *Scrollbar, input *InputView, status *S
 		Input:     input,
 		Status:    status,
 		Approval:  approval,
+		DiffView:  diffView,
 		body:      body,
 	}
 }
@@ -50,4 +53,15 @@ func (l *Layout) ShowApproval() {
 func (l *Layout) HideApproval() {
 	l.Approval.visible = false
 	l.body.ResizeItem(l.Approval, 0, 0)
+}
+
+// ShowDiffView makes the diff approval view visible.
+func (l *Layout) ShowDiffView() {
+	l.body.ResizeItem(l.DiffView, DiffViewHeight, 0)
+}
+
+// HideDiffView collapses the diff approval view.
+func (l *Layout) HideDiffView() {
+	l.DiffView.visible = false
+	l.body.ResizeItem(l.DiffView, 0, 0)
 }
