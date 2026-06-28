@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/gdamore/tcell/v2"
@@ -11,8 +12,20 @@ import (
 // DiffViewHeight is the fixed row count of the diff approval view when visible.
 const DiffViewHeight = 18
 
-// contentH is the number of diff lines visible at once.
+// contentH is the number of diff rows visible at once.
 const contentH = DiffViewHeight - 7
+
+// diffNumPrefixW is the column width of the line-number + indicator prefix.
+// Format: "OOOO NNNN I " = 4+1+4+1+1+1 = 12 columns.
+const diffNumPrefixW = 12
+
+// screenLine is one displayed row in the diff area. A logical DiffLine may
+// expand into multiple screenLines when it is wider than the available width.
+type screenLine struct {
+	dl             *DiffLine // logical diff line this belongs to
+	content        string    // tab-expanded content chunk for this screen row
+	isContinuation bool      // true → blank line numbers (wrapped continuation)
+}
 
 // Diff background / foreground palette — kept local to avoid polluting Theme.
 var (
@@ -47,6 +60,9 @@ type DiffView struct {
 	lastClickTime time.Time
 	onAllow       func()
 	onDeny        func(string)
+	// Wrapped screen-line cache, rebuilt when content width changes.
+	cachedLines []screenLine
+	cacheW      int
 }
 
 func NewDiffView() *DiffView {
@@ -59,16 +75,18 @@ func (dv *DiffView) SetSelected(s string) { dv.btnSelected = s }
 
 // Show populates the view and makes it visible.
 func (dv *DiffView) Show(toolName, reasoning string, files []DiffFileChange) {
-	dv.toolName    = toolName
-	dv.reasoning   = reasoning
-	dv.files       = files
-	dv.activeFile  = 0
-	dv.scrollTop   = 0
-	dv.visible     = true
-	dv.btnSelected = "allow"
-	dv.denyText    = ""
-	dv.denyCursor  = 0
+	dv.toolName      = toolName
+	dv.reasoning     = reasoning
+	dv.files         = files
+	dv.activeFile    = 0
+	dv.scrollTop     = 0
+	dv.visible       = true
+	dv.btnSelected   = "allow"
+	dv.denyText      = ""
+	dv.denyCursor    = 0
 	dv.lastClickSide = ""
+	dv.cacheW        = 0 // invalidate screen-line cache
+	dv.cachedLines   = nil
 }
 
 func (dv *DiffView) SetCallbacks(onAllow func(), onDeny func(string)) {
@@ -111,8 +129,7 @@ func (dv *DiffView) currentFilename() string {
 }
 
 func (dv *DiffView) clampScroll() {
-	lines := dv.currentLines()
-	maxTop := len(lines) - contentH
+	maxTop := len(dv.cachedLines) - contentH
 	if maxTop < 0 {
 		maxTop = 0
 	}
@@ -121,6 +138,34 @@ func (dv *DiffView) clampScroll() {
 	} else if dv.scrollTop > maxTop {
 		dv.scrollTop = maxTop
 	}
+}
+
+// buildScreenLines expands logical DiffLines into wrapped screen rows using the
+// same word-wrap logic as chat messages (wrapParagraph).
+// contentW is the column width of the diff content area (excluding scrollbar).
+func (dv *DiffView) buildScreenLines(contentW int) []screenLine {
+	codeW := contentW - diffNumPrefixW
+	if codeW < 4 {
+		codeW = 4
+	}
+	diffLines := dv.currentLines()
+	var result []screenLine
+	for i := range diffLines {
+		dl := &diffLines[i]
+		if dl.Type == DiffHunkHeader {
+			result = append(result, screenLine{dl: dl, content: dl.Content})
+			continue
+		}
+		content := strings.ReplaceAll(dl.Content, "\t", "    ")
+		for j, chunk := range wrapParagraph(content, codeW) {
+			result = append(result, screenLine{
+				dl:             dl,
+				content:        chunk,
+				isContinuation: j > 0,
+			})
+		}
+	}
+	return result
 }
 
 // ── Draw ─────────────────────────────────────────────────────────────────────
@@ -214,19 +259,23 @@ func (dv *DiffView) Draw(screen tcell.Screen) {
 
 	// ── rows 3..3+contentH-1: diff content ───────────────────────────────
 	// Content occupies cols x+1..x+w-3; scrollbar at x+w-2.
-	contentX  := x + 1
-	contentW  := w - 3
+	contentX   := x + 1
+	contentW   := w - 3
 	scrollbarX := x + w - 2
 
-	lines := dv.currentLines()
+	// Rebuild wrapped screen-line cache when width changes.
+	if contentW != dv.cacheW {
+		dv.cachedLines = dv.buildScreenLines(contentW)
+		dv.cacheW = contentW
+	}
 	dv.clampScroll()
 	filename := dv.currentFilename()
 
 	for row := 0; row < contentH; row++ {
 		rowY    := y + 3 + row
 		lineIdx := dv.scrollTop + row
-		if lineIdx < len(lines) {
-			dv.drawDiffLine(screen, lines[lineIdx], rowY, contentX, contentW, filename)
+		if lineIdx < len(dv.cachedLines) {
+			dv.drawScreenLine(screen, &dv.cachedLines[lineIdx], rowY, contentX, contentW, filename)
 		} else {
 			for col := contentX; col < contentX+contentW; col++ {
 				screen.SetContent(col, rowY, ' ', nil, bgSt)
@@ -234,7 +283,7 @@ func (dv *DiffView) Draw(screen tcell.Screen) {
 		}
 	}
 
-	dv.drawScrollbar(screen, scrollbarX, y+3, contentH, len(lines), dv.scrollTop)
+	dv.drawScrollbar(screen, scrollbarX, y+3, contentH, len(dv.cachedLines), dv.scrollTop)
 
 	// ── separator before footer ───────────────────────────────────────────
 	sepY := y + 3 + contentH
@@ -277,7 +326,8 @@ func (dv *DiffView) Draw(screen tcell.Screen) {
 	}
 }
 
-func (dv *DiffView) drawDiffLine(screen tcell.Screen, dl DiffLine, rowY, x, w int, filename string) {
+func (dv *DiffView) drawScreenLine(screen tcell.Screen, sl *screenLine, rowY, x, w int, filename string) {
+	dl := sl.dl
 	var bg, numFg, indFg tcell.Color
 	var indicator rune
 
@@ -312,56 +362,74 @@ func (dv *DiffView) drawDiffLine(screen tcell.Screen, dl DiffLine, rowY, x, w in
 	if dl.Type == DiffHunkHeader {
 		hunkSt := tcell.StyleDefault.Foreground(diffHunkFg).Background(diffHunkBg)
 		col := x
-		for _, r := range []rune("    ···  " + dl.Content) {
-			if col >= x+w {
+		for _, r := range []rune("    ···  " + sl.content) {
+			cw := tview.TaggedStringWidth(string(r))
+			if cw == 0 {
+				cw = 1
+			}
+			if col+cw > x+w {
 				break
 			}
 			screen.SetContent(col, rowY, r, nil, hunkSt)
-			col++
+			col += cw
 		}
 		return
 	}
 
 	numSt := tcell.StyleDefault.Foreground(numFg).Background(bg)
 	col := x
-	for _, r := range []rune(fmtDiffNum(dl.OldNum)) {
-		if col >= x+w {
-			break
+
+	if sl.isContinuation {
+		// Blank prefix — same width as line-number area, bg-colored.
+		for i := 0; i < diffNumPrefixW && col < x+w; i++ {
+			screen.SetContent(col, rowY, ' ', nil, bgSt)
+			col++
 		}
-		screen.SetContent(col, rowY, r, nil, numSt)
-		col++
-	}
-	if col < x+w {
-		screen.SetContent(col, rowY, ' ', nil, bgSt)
-		col++
-	}
-	for _, r := range []rune(fmtDiffNum(dl.NewNum)) {
-		if col >= x+w {
-			break
+	} else {
+		for _, r := range []rune(fmtDiffNum(dl.OldNum)) {
+			if col >= x+w {
+				break
+			}
+			screen.SetContent(col, rowY, r, nil, numSt)
+			col++
 		}
-		screen.SetContent(col, rowY, r, nil, numSt)
-		col++
+		if col < x+w {
+			screen.SetContent(col, rowY, ' ', nil, bgSt)
+			col++
+		}
+		for _, r := range []rune(fmtDiffNum(dl.NewNum)) {
+			if col >= x+w {
+				break
+			}
+			screen.SetContent(col, rowY, r, nil, numSt)
+			col++
+		}
+		if col < x+w {
+			screen.SetContent(col, rowY, ' ', nil, bgSt)
+			col++
+		}
+		indSt := tcell.StyleDefault.Foreground(indFg).Background(bg)
+		if col < x+w {
+			screen.SetContent(col, rowY, indicator, nil, indSt)
+			col++
+		}
+		if col < x+w {
+			screen.SetContent(col, rowY, ' ', nil, bgSt)
+			col++
+		}
 	}
-	if col < x+w {
-		screen.SetContent(col, rowY, ' ', nil, bgSt)
-		col++
-	}
-	indSt := tcell.StyleDefault.Foreground(indFg).Background(bg)
-	if col < x+w {
-		screen.SetContent(col, rowY, indicator, nil, indSt)
-		col++
-	}
-	if col < x+w {
-		screen.SetContent(col, rowY, ' ', nil, bgSt)
-		col++
-	}
-	// Syntax-highlighted code content
-	for _, t := range tokenizeForTcell(dl.Content, filename, bg) {
-		if col >= x+w {
+
+	// Content is already tab-expanded and width-chunked by buildScreenLines.
+	for _, t := range tokenizeForTcell(sl.content, filename, bg) {
+		cw := tview.TaggedStringWidth(string(t.R))
+		if cw == 0 {
+			cw = 1
+		}
+		if col+cw > x+w {
 			break
 		}
 		screen.SetContent(col, rowY, t.R, nil, t.Style)
-		col++
+		col += cw
 	}
 }
 

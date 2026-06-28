@@ -885,11 +885,21 @@ func isCJKRune(r rune) bool {
 }
 
 func wrapParagraph(para string, maxW int) []string {
-	if tview.TaggedStringWidth(para) <= maxW {
+	runes := []rune(para)
+	if len(runes) == 0 {
+		return []string{""}
+	}
+
+	// Measure width per-rune: TaggedStringWidth on a multi-char string miscounts
+	// content containing "[word]" patterns (Go types, generics) as zero-width tags.
+	totalW := 0
+	for _, r := range runes {
+		totalW += tview.TaggedStringWidth(string(r))
+	}
+	if totalW <= maxW {
 		return []string{para}
 	}
 
-	runes := []rune(para)
 	var out []string
 
 	lineStart := 0  // rune index where current line begins
@@ -923,8 +933,11 @@ func wrapParagraph(para string, maxW int) []string {
 			if lastSpace > lineStart {
 				// Break at the last space; skip the space itself.
 				flush(lastSpace, lastSpace+1)
-				// Recompute lineW for the chars after the space up to and including i.
-				lineW = tview.TaggedStringWidth(string(runes[lineStart : i+1]))
+				// Recompute lineW per-rune for chars after the break up to current.
+				lineW = 0
+				for _, r2 := range runes[lineStart : i+1] {
+					lineW += tview.TaggedStringWidth(string(r2))
+				}
 			} else {
 				// No break opportunity — hard-break before current rune.
 				flush(i, i)
