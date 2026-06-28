@@ -18,7 +18,6 @@ type Endpoint struct {
 type Config struct {
 	Endpoints []Endpoint `toml:"endpoint"`
 	Model     string     `toml:"model"`
-	WorkDir   string     `toml:"work_dir"`
 }
 
 // ActiveEndpoint returns the first configured endpoint, or a zero-value one if none.
@@ -38,10 +37,6 @@ func Load() (*Config, error) {
 		if _, err := toml.DecodeFile(path, cfg); err != nil {
 			return nil, err
 		}
-	}
-
-	if cfg.WorkDir == "" {
-		cfg.WorkDir, _ = os.Getwd()
 	}
 
 	return cfg, nil

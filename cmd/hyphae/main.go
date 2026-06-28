@@ -14,7 +14,6 @@ import (
 
 func main() {
 	var (
-		workDir    = flag.String("dir", "", "working directory (defaults to cwd)")
 		listModels = flag.Bool("list-models", false, "list available models and exit")
 	)
 	flag.Usage = func() {
@@ -29,10 +28,6 @@ func main() {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "config error: %v\n", err)
 		os.Exit(1)
-	}
-
-	if *workDir != "" {
-		cfg.WorkDir = *workDir
 	}
 
 	if *listModels {

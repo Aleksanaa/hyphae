@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"fmt"
+	"os"
 
 	"github.com/atotto/clipboard"
 	"github.com/gdamore/tcell/v2"
@@ -29,7 +30,8 @@ type App struct {
 func New(cfg *config.Config) *App {
 	ep := cfg.ActiveEndpoint()
 	ag := agent.New(ep.BaseURL, ep.APIKey, cfg.Model)
-	manager := session.NewManager(cfg.WorkDir)
+	workDir, _ := os.Getwd()
+	manager := session.NewManager(workDir)
 
 	ctx, cancel := context.WithCancel(context.Background())
 
