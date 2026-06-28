@@ -24,11 +24,13 @@ var builtinTools = []toolDef{
 			Type: "function",
 			Function: llm.ToolFunction{
 				Name:        "read_file",
-				Description: "Read the contents of a file.",
+				Description: "Read the contents of a file. Results are returned with line numbers (cat -n format). By default reads up to 2000 lines from the beginning. Use offset+limit to read a specific range within a large file.",
 				Parameters: map[string]any{
 					"type": "object",
 					"properties": map[string]any{
-						"path": map[string]any{"type": "string", "description": "File path (absolute or relative to working directory)"},
+						"path":   map[string]any{"type": "string", "description": "Absolute or relative file path"},
+						"offset": map[string]any{"type": "number", "description": "Line number to start reading from (1 = first line). Only provide when the file is too large to read at once."},
+						"limit":  map[string]any{"type": "number", "description": "Maximum number of lines to read. Defaults to 2000."},
 					},
 					"required": []string{"path"},
 				},
@@ -40,7 +42,40 @@ var builtinTools = []toolDef{
 			if err != nil {
 				return "", err
 			}
-			return string(b), nil
+
+			lines := strings.Split(string(b), "\n")
+			if len(lines) > 0 && lines[len(lines)-1] == "" {
+				lines = lines[:len(lines)-1]
+			}
+			total := len(lines)
+
+			offset := 1
+			if o, ok := args["offset"].(float64); ok && o >= 1 {
+				offset = int(o)
+			}
+			limit := 2000
+			if l, ok := args["limit"].(float64); ok && l > 0 {
+				limit = int(l)
+			}
+
+			idx := offset - 1
+			if idx >= total {
+				return fmt.Sprintf("(past end of file — file has %d lines)", total), nil
+			}
+			end := idx + limit
+			if end > total {
+				end = total
+			}
+
+			var sb strings.Builder
+			width := len(fmt.Sprintf("%d", total))
+			for i, line := range lines[idx:end] {
+				fmt.Fprintf(&sb, "%*d\t%s\n", width, idx+i+1, line)
+			}
+			if end < total {
+				fmt.Fprintf(&sb, "\n(%d more lines — use offset=%d to continue)", total-end, end+1)
+			}
+			return sb.String(), nil
 		},
 	},
 	{
@@ -48,12 +83,12 @@ var builtinTools = []toolDef{
 			Type: "function",
 			Function: llm.ToolFunction{
 				Name:        "write_file",
-				Description: "Write content to a file, creating it or overwriting it.",
+				Description: "Write content to a file, creating it or overwriting it entirely. Prefer edit_file for modifying existing files.",
 				Parameters: map[string]any{
 					"type": "object",
 					"properties": map[string]any{
-						"path":    map[string]any{"type": "string", "description": "File path"},
-						"content": map[string]any{"type": "string", "description": "Content to write"},
+						"path":    map[string]any{"type": "string", "description": "Absolute or relative file path"},
+						"content": map[string]any{"type": "string", "description": "Full content to write"},
 					},
 					"required": []string{"path", "content"},
 				},
@@ -64,10 +99,71 @@ var builtinTools = []toolDef{
 			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 				return "", err
 			}
-			if err := os.WriteFile(path, []byte(str(args, "content")), 0o644); err != nil {
+			content := str(args, "content")
+			if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 				return "", err
 			}
-			return fmt.Sprintf("wrote %d bytes to %s", len(str(args, "content")), path), nil
+			return fmt.Sprintf("wrote %d bytes to %s", len(content), path), nil
+		},
+	},
+	{
+		schema: llm.Tool{
+			Type: "function",
+			Function: llm.ToolFunction{
+				Name:        "edit_file",
+				Description: "Apply one or more exact-string replacements to a file. Each old_string must appear exactly once — include enough surrounding context to make it unique. Edits are applied in order. Use write_file to create new files.",
+				Parameters: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"path": map[string]any{"type": "string", "description": "Absolute or relative file path"},
+						"edits": map[string]any{
+							"type":        "array",
+							"description": "List of replacements to apply in order.",
+							"items": map[string]any{
+								"type": "object",
+								"properties": map[string]any{
+									"old_string": map[string]any{"type": "string", "description": "Exact string to find. Must be unique within the file."},
+									"new_string": map[string]any{"type": "string", "description": "String to replace it with."},
+								},
+								"required": []string{"old_string", "new_string"},
+							},
+						},
+					},
+					"required": []string{"path", "edits"},
+				},
+			},
+		},
+		execute: func(_ context.Context, args map[string]any, workDir string) (string, error) {
+			path := resolvePath(str(args, "path"), workDir)
+			b, err := os.ReadFile(path)
+			if err != nil {
+				return "", err
+			}
+			edits, _ := args["edits"].([]any)
+			if len(edits) == 0 {
+				return "", fmt.Errorf("edits must be a non-empty array")
+			}
+			content := string(b)
+			for i, e := range edits {
+				em, ok := e.(map[string]any)
+				if !ok {
+					return "", fmt.Errorf("edit %d: invalid format", i)
+				}
+				oldStr := str(em, "old_string")
+				newStr := str(em, "new_string")
+				count := strings.Count(content, oldStr)
+				if count == 0 {
+					return "", fmt.Errorf("edit %d: old_string not found", i)
+				}
+				if count > 1 {
+					return "", fmt.Errorf("edit %d: old_string appears %d times — add more context to make it unique", i, count)
+				}
+				content = strings.Replace(content, oldStr, newStr, 1)
+			}
+			if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+				return "", err
+			}
+			return fmt.Sprintf("edited %s (%d replacements)", path, len(edits)), nil
 		},
 	},
 	{
