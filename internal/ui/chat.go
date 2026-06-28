@@ -27,18 +27,17 @@ func stripTags(s string) string {
 	return strings.ReplaceAll(s, "[[]", "[")
 }
 
-
 // ChatView displays the conversation as individually bordered message boxes.
 type ChatView struct {
 	*tview.TextView
-	messages     []session.Message
-	lastWidth    int
-	TotalLines   int // read by Scrollbar
+	messages        []session.Message
+	lastWidth       int
+	TotalLines      int // read by Scrollbar
 	hoverIdx        int // index into renderedMsgs; -1 = none
 	selectedIdx     int // box highlighted by last click; -1 = none
 	lastSelectedIdx int // selectedIdx at last buildText call; -2 = never built
-	renderedMsgs []session.Message
-	msgStartLine []int // document line where each renderedMsg's top border starts
+	renderedMsgs    []session.Message
+	msgStartLine    []int // document line where each renderedMsg's top border starts
 
 	// drag-to-select state
 	selAnchor    selPoint
@@ -145,7 +144,7 @@ func (cv *ChatView) drawPartialSel(screen tcell.Screen) {
 
 	lp := cv.boxLeft[cv.anchorBox]
 	bw := cv.boxRight[cv.anchorBox] - lp
-	contentLeft := ix + lp + 2   // past left │ and its inner space
+	contentLeft := ix + lp + 2       // past left │ and its inner space
 	contentRight := ix + lp + bw - 2 // before inner space and right │
 
 	boxStart, boxEndExcl := cv.boxDocRange(cv.anchorBox)
@@ -219,7 +218,6 @@ func (cv *ChatView) drawWholeSel(screen tcell.Screen) {
 		}
 	}
 }
-
 
 // Render stores the message list and rebuilds the display text.
 func (cv *ChatView) Render(messages []session.Message) {
@@ -491,9 +489,11 @@ func (cv *ChatView) buildText(width int) {
 // User boxes are flush to the right edge; assistant boxes are flush to the left.
 //
 // Box anatomy:
-//   ┌─ label ──────────┐
-//   │ content line     │
-//   └──────────────────┘
+//
+//	┌─ label ──────────┐
+//	│ content line     │
+//	└──────────────────┘
+//
 // renderMessageBox writes a bordered message box into b and returns the box's
 // leftPad and boxW so the caller can record geometry without a separate pass.
 // It uses cv.mdCache so that resize re-wraps without re-parsing markdown.
@@ -849,7 +849,6 @@ func computeMsgContent(msg session.Message, width, maxW int) (allLines []string,
 	return nil, 0
 }
 
-
 // ─── text helpers ─────────────────────────────────────────────────────────────
 
 // wordWrap splits text into lines of at most maxW columns.
@@ -951,7 +950,6 @@ func wrapParagraph(para string, maxW int) []string {
 	}
 	return out
 }
-
 
 func formatInput(input string) string {
 	if input == "" || input == "{}" {

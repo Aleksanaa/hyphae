@@ -9,33 +9,29 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/aleksana/hyphae/internal/llm"
+	openai "github.com/openai/openai-go/v3"
 )
 
-// toolDef pairs a schema (sent to the LLM) with an executor (run locally).
 type toolDef struct {
-	schema  llm.Tool
+	schema  openai.ChatCompletionToolUnionParam
 	execute func(ctx context.Context, args map[string]any, workDir string) (string, error)
 }
 
 var builtinTools = []toolDef{
 	{
-		schema: llm.Tool{
-			Type: "function",
-			Function: llm.ToolFunction{
-				Name:        "read_file",
-				Description: "Read the contents of a file. Results are returned with line numbers (cat -n format). By default reads up to 2000 lines from the beginning. Use offset+limit to read a specific range within a large file.",
-				Parameters: map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"path":   map[string]any{"type": "string", "description": "Absolute or relative file path"},
-						"offset": map[string]any{"type": "number", "description": "Line number to start reading from (1 = first line). Only provide when the file is too large to read at once."},
-						"limit":  map[string]any{"type": "number", "description": "Maximum number of lines to read. Defaults to 2000."},
-					},
-					"required": []string{"path"},
+		schema: openai.ChatCompletionFunctionTool(openai.FunctionDefinitionParam{
+			Name:        "read_file",
+			Description: openai.String("Read the contents of a file. Results are returned with line numbers (cat -n format). By default reads up to 2000 lines from the beginning. Use offset+limit to read a specific range within a large file."),
+			Parameters: openai.FunctionParameters{
+				"type": "object",
+				"properties": map[string]any{
+					"path":   map[string]any{"type": "string", "description": "Absolute or relative file path"},
+					"offset": map[string]any{"type": "number", "description": "Line number to start reading from (1 = first line). Only provide when the file is too large to read at once."},
+					"limit":  map[string]any{"type": "number", "description": "Maximum number of lines to read. Defaults to 2000."},
 				},
+				"required": []string{"path"},
 			},
-		},
+		}),
 		execute: func(_ context.Context, args map[string]any, workDir string) (string, error) {
 			path := resolvePath(str(args, "path"), workDir)
 			b, err := os.ReadFile(path)
@@ -79,22 +75,19 @@ var builtinTools = []toolDef{
 		},
 	},
 	{
-		schema: llm.Tool{
-			Type: "function",
-			Function: llm.ToolFunction{
-				Name:        "write_file",
-				Description: "Write content to a file, creating it or overwriting it entirely. Prefer edit_file for modifying existing files.",
-				Parameters: map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"path":      map[string]any{"type": "string", "description": "Absolute or relative file path"},
-						"content":   map[string]any{"type": "string", "description": "Full content to write"},
-						"reasoning": map[string]any{"type": "string", "description": "One short sentence explaining why this file is being written"},
-					},
-					"required": []string{"path", "content", "reasoning"},
+		schema: openai.ChatCompletionFunctionTool(openai.FunctionDefinitionParam{
+			Name:        "write_file",
+			Description: openai.String("Write content to a file, creating it or overwriting it entirely. Prefer edit_file for modifying existing files."),
+			Parameters: openai.FunctionParameters{
+				"type": "object",
+				"properties": map[string]any{
+					"path":      map[string]any{"type": "string", "description": "Absolute or relative file path"},
+					"content":   map[string]any{"type": "string", "description": "Full content to write"},
+					"reasoning": map[string]any{"type": "string", "description": "One short sentence explaining why this file is being written"},
 				},
+				"required": []string{"path", "content", "reasoning"},
 			},
-		},
+		}),
 		execute: func(_ context.Context, args map[string]any, workDir string) (string, error) {
 			path := resolvePath(str(args, "path"), workDir)
 			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -108,33 +101,30 @@ var builtinTools = []toolDef{
 		},
 	},
 	{
-		schema: llm.Tool{
-			Type: "function",
-			Function: llm.ToolFunction{
-				Name:        "edit_file",
-				Description: "Apply one or more exact-string replacements to a file. Each old_string must appear exactly once — include enough surrounding context to make it unique. Edits are applied in order. Use write_file to create new files.",
-				Parameters: map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"path": map[string]any{"type": "string", "description": "Absolute or relative file path"},
-						"edits": map[string]any{
-							"type":        "array",
-							"description": "List of replacements to apply in order.",
-							"items": map[string]any{
-								"type": "object",
-								"properties": map[string]any{
-									"old_string": map[string]any{"type": "string", "description": "Exact string to find. Must be unique within the file."},
-									"new_string": map[string]any{"type": "string", "description": "String to replace it with."},
-								},
-								"required": []string{"old_string", "new_string"},
+		schema: openai.ChatCompletionFunctionTool(openai.FunctionDefinitionParam{
+			Name:        "edit_file",
+			Description: openai.String("Apply one or more exact-string replacements to a file. Each old_string must appear exactly once — include enough surrounding context to make it unique. Edits are applied in order. Use write_file to create new files."),
+			Parameters: openai.FunctionParameters{
+				"type": "object",
+				"properties": map[string]any{
+					"path": map[string]any{"type": "string", "description": "Absolute or relative file path"},
+					"edits": map[string]any{
+						"type":        "array",
+						"description": "List of replacements to apply in order.",
+						"items": map[string]any{
+							"type": "object",
+							"properties": map[string]any{
+								"old_string": map[string]any{"type": "string", "description": "Exact string to find. Must be unique within the file."},
+								"new_string": map[string]any{"type": "string", "description": "String to replace it with."},
 							},
+							"required": []string{"old_string", "new_string"},
 						},
-						"reasoning": map[string]any{"type": "string", "description": "One short sentence explaining why this file is being edited"},
 					},
-					"required": []string{"path", "edits", "reasoning"},
+					"reasoning": map[string]any{"type": "string", "description": "One short sentence explaining why this file is being edited"},
 				},
+				"required": []string{"path", "edits", "reasoning"},
 			},
-		},
+		}),
 		execute: func(_ context.Context, args map[string]any, workDir string) (string, error) {
 			path := resolvePath(str(args, "path"), workDir)
 			b, err := os.ReadFile(path)
@@ -169,20 +159,17 @@ var builtinTools = []toolDef{
 		},
 	},
 	{
-		schema: llm.Tool{
-			Type: "function",
-			Function: llm.ToolFunction{
-				Name:        "list_directory",
-				Description: "List the contents of a directory.",
-				Parameters: map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"path": map[string]any{"type": "string", "description": "Directory path (defaults to working directory)"},
-					},
-					"required": []string{},
+		schema: openai.ChatCompletionFunctionTool(openai.FunctionDefinitionParam{
+			Name:        "list_directory",
+			Description: openai.String("List the contents of a directory."),
+			Parameters: openai.FunctionParameters{
+				"type": "object",
+				"properties": map[string]any{
+					"path": map[string]any{"type": "string", "description": "Directory path (defaults to working directory)"},
 				},
+				"required": []string{},
 			},
-		},
+		}),
 		execute: func(_ context.Context, args map[string]any, workDir string) (string, error) {
 			p := str(args, "path")
 			if p == "" {
@@ -211,50 +198,43 @@ var builtinTools = []toolDef{
 		},
 	},
 	{
-		schema: llm.Tool{
-			Type: "function",
-			Function: llm.ToolFunction{
-				Name:        "run_shell",
-				Description: "Execute a shell command and return its output. Runs in the working directory.",
-				Parameters: map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"command":   map[string]any{"type": "string", "description": "Shell command to run"},
-						"reasoning": map[string]any{"type": "string", "description": "One short sentence explaining why this command is being run"},
-					},
-					"required": []string{"command", "reasoning"},
+		schema: openai.ChatCompletionFunctionTool(openai.FunctionDefinitionParam{
+			Name:        "run_shell",
+			Description: openai.String("Execute a shell command and return its output. Runs in the working directory."),
+			Parameters: openai.FunctionParameters{
+				"type": "object",
+				"properties": map[string]any{
+					"command":   map[string]any{"type": "string", "description": "Shell command to run"},
+					"reasoning": map[string]any{"type": "string", "description": "One short sentence explaining why this command is being run"},
 				},
+				"required": []string{"command", "reasoning"},
 			},
-		},
+		}),
 		execute: func(ctx context.Context, args map[string]any, workDir string) (string, error) {
 			cmd := exec.CommandContext(ctx, "sh", "-c", str(args, "command"))
 			cmd.Dir = workDir
 			out, err := cmd.CombinedOutput()
 			if err != nil {
-				// Return output + error (non-zero exit is useful info, not a failure)
 				return string(out) + "\n[exit error: " + err.Error() + "]", nil
 			}
 			return string(out), nil
 		},
 	},
 	{
-		schema: llm.Tool{
-			Type: "function",
-			Function: llm.ToolFunction{
-				Name:        "web_fetch",
-				Description: "Fetch content from an HTTP or HTTPS URL and return it as text, markdown, or HTML. Markdown is the default. Use a more targeted tool when one is available.",
-				Parameters: map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"url":       map[string]any{"type": "string", "description": "The HTTP or HTTPS URL to fetch content from"},
-						"format":    map[string]any{"type": "string", "enum": []string{"text", "markdown", "html"}, "description": "Output format. Defaults to markdown."},
-						"timeout":   map[string]any{"type": "number", "description": "Optional timeout in seconds (max 120). Defaults to 30."},
-						"reasoning": map[string]any{"type": "string", "description": "One short sentence explaining why this URL is being fetched"},
-					},
-					"required": []string{"url", "reasoning"},
+		schema: openai.ChatCompletionFunctionTool(openai.FunctionDefinitionParam{
+			Name:        "web_fetch",
+			Description: openai.String("Fetch content from an HTTP or HTTPS URL and return it as text, markdown, or HTML. Markdown is the default. Use a more targeted tool when one is available."),
+			Parameters: openai.FunctionParameters{
+				"type": "object",
+				"properties": map[string]any{
+					"url":       map[string]any{"type": "string", "description": "The HTTP or HTTPS URL to fetch content from"},
+					"format":    map[string]any{"type": "string", "enum": []string{"text", "markdown", "html"}, "description": "Output format. Defaults to markdown."},
+					"timeout":   map[string]any{"type": "number", "description": "Optional timeout in seconds (max 120). Defaults to 30."},
+					"reasoning": map[string]any{"type": "string", "description": "One short sentence explaining why this URL is being fetched"},
 				},
+				"required": []string{"url", "reasoning"},
 			},
-		},
+		}),
 		execute: func(ctx context.Context, args map[string]any, workDir string) (string, error) {
 			rawURL := str(args, "url")
 			format := str(args, "format")
@@ -272,21 +252,18 @@ var builtinTools = []toolDef{
 		},
 	},
 	{
-		schema: llm.Tool{
-			Type: "function",
-			Function: llm.ToolFunction{
-				Name:        "search_files",
-				Description: "Search for a text pattern across files. Returns matching lines with file names.",
-				Parameters: map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"pattern": map[string]any{"type": "string", "description": "Text or regex pattern to search for"},
-						"path":    map[string]any{"type": "string", "description": "Directory or file to search (defaults to working directory)"},
-					},
-					"required": []string{"pattern"},
+		schema: openai.ChatCompletionFunctionTool(openai.FunctionDefinitionParam{
+			Name:        "search_files",
+			Description: openai.String("Search for a text pattern across files. Returns matching lines with file names."),
+			Parameters: openai.FunctionParameters{
+				"type": "object",
+				"properties": map[string]any{
+					"pattern": map[string]any{"type": "string", "description": "Text or regex pattern to search for"},
+					"path":    map[string]any{"type": "string", "description": "Directory or file to search (defaults to working directory)"},
 				},
+				"required": []string{"pattern"},
 			},
-		},
+		}),
 		execute: func(ctx context.Context, args map[string]any, workDir string) (string, error) {
 			p := str(args, "path")
 			if p == "" {
@@ -305,23 +282,22 @@ var builtinTools = []toolDef{
 	},
 }
 
-// schemas returns the Tool schemas for the LLM request.
-func schemas() []llm.Tool {
-	out := make([]llm.Tool, len(builtinTools))
+func schemas() []openai.ChatCompletionToolUnionParam {
+	out := make([]openai.ChatCompletionToolUnionParam, len(builtinTools))
 	for i, t := range builtinTools {
 		out[i] = t.schema
 	}
 	return out
 }
 
-// executeTool runs the named tool and returns its output.
 func executeTool(ctx context.Context, name, argsJSON, workDir string) (string, bool) {
 	var args map[string]any
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
 		return fmt.Sprintf("invalid arguments: %v", err), true
 	}
 	for _, t := range builtinTools {
-		if t.schema.Function.Name == name {
+		fn := t.schema.GetFunction()
+		if fn != nil && fn.Name == name {
 			out, err := t.execute(ctx, args, workDir)
 			if err != nil {
 				return err.Error(), true

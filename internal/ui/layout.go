@@ -24,8 +24,8 @@ func NewLayout(chat *ChatView, scrollbar *Scrollbar, input *InputView, status *S
 
 	body := tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(chatRow, 0, 1, false).
-		AddItem(approval, 0, 0, false).  // hidden initially
-		AddItem(diffView, 0, 0, false).  // hidden initially
+		AddItem(approval, 0, 0, false). // hidden initially
+		AddItem(diffView, 0, 0, false). // hidden initially
 		AddItem(input, 6, 0, true)
 
 	root := tview.NewFlex().SetDirection(tview.FlexRow).

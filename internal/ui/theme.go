@@ -12,28 +12,28 @@ var Theme = struct {
 	Surface    tcell.Color
 
 	// Text
-	Text    tcell.Color
-	Muted   tcell.Color
-	Accent  tcell.Color
+	Text   tcell.Color
+	Muted  tcell.Color
+	Accent tcell.Color
 
 	// Message roles
-	UserColor      tcell.Color
-	ApexColor      tcell.Color
-	ToolColor      tcell.Color
-	ShellColor     tcell.Color
-	SystemColor    tcell.Color
-	ErrorColor     tcell.Color
-	SuccessColor   tcell.Color
+	UserColor    tcell.Color
+	ApexColor    tcell.Color
+	ToolColor    tcell.Color
+	ShellColor   tcell.Color
+	SystemColor  tcell.Color
+	ErrorColor   tcell.Color
+	SuccessColor tcell.Color
 
 	// Code — default color for inline code spans and unlanguaged code blocks
 	// (text hue shifted slightly blue; syntax-highlighted blocks override per-token)
 	CodeColor tcell.Color
 
 	// Borders & chrome
-	Border        tcell.Color
-	BorderFocus   tcell.Color
-	Header        tcell.Color
-	PendingColor  tcell.Color // amber — awaiting approval
+	Border       tcell.Color
+	BorderFocus  tcell.Color
+	Header       tcell.Color
+	PendingColor tcell.Color // amber — awaiting approval
 
 	// Status bar
 	StatusBg   tcell.Color
@@ -42,18 +42,18 @@ var Theme = struct {
 	Background: tcell.NewRGBColor(16, 16, 24),
 	Surface:    tcell.NewRGBColor(24, 24, 36),
 
-	Text:    tcell.NewRGBColor(220, 220, 230),
-	Muted:   tcell.NewRGBColor(120, 120, 140),
-	Accent:  tcell.NewRGBColor(130, 170, 255),
+	Text:   tcell.NewRGBColor(220, 220, 230),
+	Muted:  tcell.NewRGBColor(120, 120, 140),
+	Accent: tcell.NewRGBColor(130, 170, 255),
 
-	UserColor:      tcell.NewRGBColor(100, 200, 255),
-	ApexColor:      tcell.NewRGBColor(180, 140, 220),
-	ToolColor:      tcell.NewRGBColor(130, 200, 130),
-	ShellColor:     tcell.NewRGBColor(200, 160, 100),
-	CodeColor:      tcell.NewRGBColor(185, 200, 240),
-	SystemColor:    tcell.NewRGBColor(160, 140, 200),
-	ErrorColor:     tcell.NewRGBColor(220, 80, 80),
-	SuccessColor:   tcell.NewRGBColor(80, 200, 120),
+	UserColor:    tcell.NewRGBColor(100, 200, 255),
+	ApexColor:    tcell.NewRGBColor(180, 140, 220),
+	ToolColor:    tcell.NewRGBColor(130, 200, 130),
+	ShellColor:   tcell.NewRGBColor(200, 160, 100),
+	CodeColor:    tcell.NewRGBColor(185, 200, 240),
+	SystemColor:  tcell.NewRGBColor(160, 140, 200),
+	ErrorColor:   tcell.NewRGBColor(220, 80, 80),
+	SuccessColor: tcell.NewRGBColor(80, 200, 120),
 
 	Border:       tcell.NewRGBColor(50, 55, 75),
 	BorderFocus:  tcell.NewRGBColor(100, 120, 200),

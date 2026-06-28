@@ -100,4 +100,3 @@ func (sv *SidebarView) rebuild() {
 		},
 	)
 }
-

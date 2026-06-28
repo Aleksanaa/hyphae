@@ -10,7 +10,6 @@ import (
 
 	"github.com/aleksana/hyphae/internal/agent"
 	"github.com/aleksana/hyphae/internal/config"
-	"github.com/aleksana/hyphae/internal/llm"
 	"github.com/aleksana/hyphae/internal/session"
 )
 
@@ -28,8 +27,7 @@ type App struct {
 
 // New wires up and returns a ready-to-run App.
 func New(cfg *config.Config) *App {
-	client := llm.New(cfg.BaseURL, cfg.APIKey, cfg.Model)
-	ag := agent.New(client)
+	ag := agent.New(cfg.BaseURL, cfg.APIKey, cfg.Model)
 	manager := session.NewManager(cfg.WorkDir)
 
 	ctx, cancel := context.WithCancel(context.Background())

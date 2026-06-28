@@ -15,12 +15,12 @@ const ApprovalHeight = 5
 // It sits between the chat and input in the layout. When hidden its height is 0.
 type ApprovalView struct {
 	*tview.Box
-	toolName  string
-	argLabel  string
-	argValue  string
-	reasoning string
-	selected  string // "allow" | "deny"
-	denyText  string
+	toolName   string
+	argLabel   string
+	argValue   string
+	reasoning  string
+	selected   string // "allow" | "deny"
+	denyText   string
 	denyCursor int // rune index into denyText
 
 	lastClickSide string
@@ -41,8 +41,8 @@ func NewApprovalView() *ApprovalView {
 
 // ── public API ───────────────────────────────────────────────────────────────
 
-func (av *ApprovalView) IsVisible() bool   { return av.visible }
-func (av *ApprovalView) GetSelected() string { return av.selected }
+func (av *ApprovalView) IsVisible() bool      { return av.visible }
+func (av *ApprovalView) GetSelected() string  { return av.selected }
 func (av *ApprovalView) SetSelected(s string) { av.selected = s }
 
 func (av *ApprovalView) Show(toolName, argsJSON, reasoning string) {
@@ -156,8 +156,8 @@ func (av *ApprovalView) Draw(screen tcell.Screen) {
 		screen.SetContent(x+w-1, y+row, '│', nil, borderSt)
 	}
 
-	inner := x + 2             // content starts after "│ "
-	innerW := w - 4            // width between "│ " and " │"
+	inner := x + 2  // content starts after "│ "
+	innerW := w - 4 // width between "│ " and " │"
 
 	// ── row 1: <label> ❯ <value> ──────────────────────────────────────────
 	prefix := []rune(av.argLabel + " ❯ ")

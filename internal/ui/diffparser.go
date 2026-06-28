@@ -12,7 +12,7 @@ import (
 type DiffLineType int
 
 const (
-	DiffContext    DiffLineType = iota
+	DiffContext DiffLineType = iota
 	DiffAdded
 	DiffRemoved
 	DiffHunkHeader

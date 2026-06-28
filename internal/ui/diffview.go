@@ -75,23 +75,23 @@ func (dv *DiffView) SetSelected(s string) { dv.btnSelected = s }
 
 // Show populates the view and makes it visible.
 func (dv *DiffView) Show(toolName, reasoning string, files []DiffFileChange) {
-	dv.toolName      = toolName
-	dv.reasoning     = reasoning
-	dv.files         = files
-	dv.activeFile    = 0
-	dv.scrollTop     = 0
-	dv.visible       = true
-	dv.btnSelected   = "allow"
-	dv.denyText      = ""
-	dv.denyCursor    = 0
+	dv.toolName = toolName
+	dv.reasoning = reasoning
+	dv.files = files
+	dv.activeFile = 0
+	dv.scrollTop = 0
+	dv.visible = true
+	dv.btnSelected = "allow"
+	dv.denyText = ""
+	dv.denyCursor = 0
 	dv.lastClickSide = ""
-	dv.cacheW        = 0 // invalidate screen-line cache
-	dv.cachedLines   = nil
+	dv.cacheW = 0 // invalidate screen-line cache
+	dv.cachedLines = nil
 }
 
 func (dv *DiffView) SetCallbacks(onAllow func(), onDeny func(string)) {
 	dv.onAllow = onAllow
-	dv.onDeny  = onDeny
+	dv.onDeny = onDeny
 }
 
 func (dv *DiffView) Allow() {
@@ -181,11 +181,11 @@ func (dv *DiffView) Draw(screen tcell.Screen) {
 	}
 	h := DiffViewHeight
 
-	pending  := Theme.PendingColor
+	pending := Theme.PendingColor
 	borderSt := tcell.StyleDefault.Foreground(pending)
-	bgSt     := tcell.StyleDefault.Background(Theme.Surface)
-	mutedSt  := tcell.StyleDefault.Foreground(Theme.Muted).Background(Theme.Surface)
-	textSt   := tcell.StyleDefault.Foreground(Theme.Text).Background(Theme.Surface)
+	bgSt := tcell.StyleDefault.Background(Theme.Surface)
+	mutedSt := tcell.StyleDefault.Foreground(Theme.Muted).Background(Theme.Surface)
+	textSt := tcell.StyleDefault.Foreground(Theme.Text).Background(Theme.Surface)
 
 	// Fill all rows with Surface background.
 	for row := 0; row < h; row++ {
@@ -219,7 +219,7 @@ func (dv *DiffView) Draw(screen tcell.Screen) {
 		screen.SetContent(x+w-1, y+row, '│', nil, borderSt)
 	}
 
-	inner  := x + 2
+	inner := x + 2
 	innerW := w - 4
 
 	// ── row 1: file tabs ──────────────────────────────────────────────────
@@ -259,8 +259,8 @@ func (dv *DiffView) Draw(screen tcell.Screen) {
 
 	// ── rows 3..3+contentH-1: diff content ───────────────────────────────
 	// Content occupies cols x+1..x+w-3; scrollbar at x+w-2.
-	contentX   := x + 1
-	contentW   := w - 3
+	contentX := x + 1
+	contentW := w - 3
 	scrollbarX := x + w - 2
 
 	// Rebuild wrapped screen-line cache when width changes.
@@ -272,7 +272,7 @@ func (dv *DiffView) Draw(screen tcell.Screen) {
 	filename := dv.currentFilename()
 
 	for row := 0; row < contentH; row++ {
-		rowY    := y + 3 + row
+		rowY := y + 3 + row
 		lineIdx := dv.scrollTop + row
 		if lineIdx < len(dv.cachedLines) {
 			dv.drawScreenLine(screen, &dv.cachedLines[lineIdx], rowY, contentX, contentW, filename)
@@ -333,24 +333,24 @@ func (dv *DiffView) drawScreenLine(screen tcell.Screen, sl *screenLine, rowY, x,
 
 	switch dl.Type {
 	case DiffAdded:
-		bg        = diffAddedBg
-		numFg     = diffAddedFg
-		indFg     = Theme.SuccessColor
+		bg = diffAddedBg
+		numFg = diffAddedFg
+		indFg = Theme.SuccessColor
 		indicator = '+'
 	case DiffRemoved:
-		bg        = diffRemovedBg
-		numFg     = diffRemovedFg
-		indFg     = Theme.ErrorColor
+		bg = diffRemovedBg
+		numFg = diffRemovedFg
+		indFg = Theme.ErrorColor
 		indicator = '-'
 	case DiffHunkHeader:
-		bg        = diffHunkBg
-		numFg     = diffHunkFg
-		indFg     = diffHunkFg
+		bg = diffHunkBg
+		numFg = diffHunkFg
+		indFg = diffHunkFg
 		indicator = ' '
 	default:
-		bg        = Theme.Surface
-		numFg     = Theme.Muted
-		indFg     = Theme.Muted
+		bg = Theme.Surface
+		numFg = Theme.Muted
+		indFg = Theme.Muted
 		indicator = ' '
 	}
 
@@ -457,10 +457,10 @@ func (dv *DiffView) drawScrollbar(screen tcell.Screen, x, y, h, total, scrollTop
 }
 
 func (dv *DiffView) drawButtons(screen tcell.Screen, y, inner, innerW int) {
-	white     := tcell.NewRGBColor(240, 240, 240)
+	white := tcell.NewRGBColor(240, 240, 240)
 	darkGreen := tcell.NewRGBColor(30, 90, 50)
-	darkRed   := tcell.NewRGBColor(100, 35, 35)
-	bgSt      := tcell.StyleDefault.Background(Theme.Surface)
+	darkRed := tcell.NewRGBColor(100, 35, 35)
+	bgSt := tcell.StyleDefault.Background(Theme.Surface)
 
 	allowLabel := []rune("[ Allow ]")
 	allowSt := tcell.StyleDefault.Foreground(Theme.SuccessColor).Background(Theme.Surface)
@@ -476,19 +476,19 @@ func (dv *DiffView) drawButtons(screen tcell.Screen, y, inner, innerW int) {
 
 	col = inner + len(allowLabel) + 3
 	denyEnd := inner + innerW
-	denyW   := denyEnd - col
+	denyW := denyEnd - col
 	if denyW < 10 {
 		return
 	}
 
 	denyBracketSt := tcell.StyleDefault.Foreground(Theme.ErrorColor).Background(Theme.Surface)
-	denyTextSt    := tcell.StyleDefault.Foreground(Theme.Text).Background(Theme.Surface)
-	denyCursorSt  := tcell.StyleDefault.Background(Theme.Text).Foreground(Theme.Surface)
+	denyTextSt := tcell.StyleDefault.Foreground(Theme.Text).Background(Theme.Surface)
+	denyCursorSt := tcell.StyleDefault.Background(Theme.Text).Foreground(Theme.Surface)
 	placeholderSt := tcell.StyleDefault.Foreground(Theme.Muted).Background(Theme.Surface)
 	if dv.btnSelected == "deny" {
 		denyBracketSt = tcell.StyleDefault.Background(darkRed).Foreground(white)
-		denyTextSt    = tcell.StyleDefault.Background(darkRed).Foreground(white)
-		denyCursorSt  = tcell.StyleDefault.Background(white).Foreground(darkRed)
+		denyTextSt = tcell.StyleDefault.Background(darkRed).Foreground(white)
+		denyCursorSt = tcell.StyleDefault.Background(white).Foreground(darkRed)
 		placeholderSt = tcell.StyleDefault.Background(darkRed).Foreground(Theme.Muted)
 	}
 
@@ -503,7 +503,7 @@ func (dv *DiffView) drawButtons(screen tcell.Screen, y, inner, innerW int) {
 		col++
 	}
 
-	textRunes  := []rune(dv.denyText)
+	textRunes := []rune(dv.denyText)
 	placeholder := []rune("type reason here (optional)...")
 	isEmpty := len(textRunes) == 0
 	viewStart := 0
@@ -612,7 +612,7 @@ func (dv *DiffView) MouseHandler() func(tview.MouseAction, *tcell.EventMouse, fu
 
 		// Scroll within content area
 		contentStartY := y + 3
-		contentEndY   := y + 3 + contentH - 1
+		contentEndY := y + 3 + contentH - 1
 		if my >= contentStartY && my <= contentEndY {
 			switch action {
 			case tview.MouseScrollUp:
@@ -631,7 +631,7 @@ func (dv *DiffView) MouseHandler() func(tview.MouseAction, *tcell.EventMouse, fu
 		if my != btnY {
 			return false, nil
 		}
-		inner    := x + 2
+		inner := x + 2
 		allowEnd := inner + 9
 		denyStart := inner + 12
 

@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/aleksana/hyphae/internal/llm"
+	openai "github.com/openai/openai-go/v3"
+	"github.com/openai/openai-go/v3/option"
+
 	"github.com/aleksana/hyphae/internal/session"
 )
 
@@ -21,11 +23,11 @@ run_shell, web_fetch, write_file, and edit_file require user approval before exe
 type EventType string
 
 const (
-	EventTextDelta   EventType = "text_delta"   // partial assistant text
-	EventToolStart   EventType = "tool_start"   // tool call beginning
-	EventToolDone    EventType = "tool_done"    // tool call finished
-	EventDone        EventType = "done"         // turn complete
-	EventError       EventType = "error"        // unrecoverable error
+	EventTextDelta    EventType = "text_delta"    // partial assistant text
+	EventToolStart    EventType = "tool_start"    // tool call beginning
+	EventToolDone     EventType = "tool_done"     // tool call finished
+	EventDone         EventType = "done"          // turn complete
+	EventError        EventType = "error"         // unrecoverable error
 	EventToolApproval EventType = "tool_approval" // waiting for user approval
 )
 
@@ -51,20 +53,38 @@ type ToolEvent struct {
 // Event is one item from the agent event stream.
 type Event struct {
 	Type   EventType
-	Text   string     // EventTextDelta
+	Text   string // EventTextDelta
 	Tool   *ToolEvent
-	Err    error      // EventError
+	Err    error               // EventError
 	RespCh chan ApprovalResult // EventToolApproval only; send exactly once
 }
 
 // Agent orchestrates the LLM ↔ tool loop.
 type Agent struct {
-	client *llm.Client
+	client openai.Client
+	model  string
 }
 
-// New creates an Agent using the provided LLM client.
-func New(client *llm.Client) *Agent {
-	return &Agent{client: client}
+// New creates an Agent using the provided OpenAI client and model name.
+func New(baseURL, apiKey, model string) *Agent {
+	client := openai.NewClient(
+		option.WithBaseURL(baseURL),
+		option.WithAPIKey(apiKey),
+	)
+	return &Agent{client: client, model: model}
+}
+
+// ListModels returns the model IDs available at the configured base URL.
+func (a *Agent) ListModels(ctx context.Context) ([]string, error) {
+	page, err := a.client.Models.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, len(page.Data))
+	for i, m := range page.Data {
+		ids[i] = m.ID
+	}
+	return ids, nil
 }
 
 // Send starts the agent loop from the current session state.
@@ -87,21 +107,33 @@ func (a *Agent) loop(ctx context.Context, sess *session.Session, ch chan<- Event
 			return
 		}
 
-		// Build the LLM request from current history
 		msgs := buildMessages(sess)
 
-		// Start streaming assistant response
 		assistantMsg := session.Message{Role: session.RoleAssistant, Partial: true}
 		msgIdx := sess.AddMessage(assistantMsg)
 
-		resp, err := a.client.Complete(ctx, msgs, tools, func(delta string) {
-			sess.AppendTextDelta(msgIdx, delta)
-			select {
-			case ch <- Event{Type: EventTextDelta, Text: delta}:
-			case <-ctx.Done():
-			}
+		stream := a.client.Chat.Completions.NewStreaming(ctx, openai.ChatCompletionNewParams{
+			Model:    a.model,
+			Messages: msgs,
+			Tools:    tools,
 		})
-		if err != nil {
+
+		acc := openai.ChatCompletionAccumulator{}
+		for stream.Next() {
+			chunk := stream.Current()
+			acc.AddChunk(chunk)
+			if len(chunk.Choices) > 0 {
+				delta := chunk.Choices[0].Delta.Content
+				if delta != "" {
+					sess.AppendTextDelta(msgIdx, delta)
+					select {
+					case ch <- Event{Type: EventTextDelta, Text: delta}:
+					case <-ctx.Done():
+					}
+				}
+			}
+		}
+		if err := stream.Err(); err != nil {
 			sess.SetMessageError(msgIdx, err)
 			select {
 			case ch <- Event{Type: EventError, Err: err}:
@@ -110,24 +142,27 @@ func (a *Agent) loop(ctx context.Context, sess *session.Session, ch chan<- Event
 			return
 		}
 
-		// Finalize assistant message
-		sess.FinalizeMessage(msgIdx, resp.Content, toSessionToolUses(resp.ToolCalls))
+		var toolCalls []openai.ChatCompletionMessageToolCallUnion
+		content := ""
+		if len(acc.Choices) > 0 {
+			content = acc.Choices[0].Message.Content
+			toolCalls = acc.Choices[0].Message.ToolCalls
+		}
 
-		if len(resp.ToolCalls) == 0 {
-			// No tools — turn is complete
+		sess.FinalizeMessage(msgIdx, content, toSessionToolUses(toolCalls))
+
+		if len(toolCalls) == 0 {
 			ch <- Event{Type: EventDone}
 			return
 		}
 
-		// Execute tools
-		for _, tc := range resp.ToolCalls {
+		for _, tc := range toolCalls {
 			if ctx.Err() != nil {
 				return
 			}
 
 			te := &ToolEvent{CallID: tc.ID, Name: tc.Function.Name, Input: tc.Function.Arguments}
 
-			// Some tools require user approval before running.
 			if requiresApproval(tc.Function.Name) {
 				te.Reasoning, te.Input = extractReasoning(tc.Function.Arguments)
 				te.FilePath, te.DiffPatch = computeDiffForApproval(tc.Function.Name, tc.Function.Arguments, sess.WorkDir)
@@ -150,7 +185,7 @@ func (a *Agent) loop(ctx context.Context, sess *session.Session, ch chan<- Event
 						denied += " Reason: " + approval.DenyReason
 					}
 					sess.AddMessage(session.Message{
-						Role: session.RoleTool,
+						Role:       session.RoleTool,
 						ToolResult: &session.ToolResult{ID: tc.ID, Content: denied, IsError: true},
 					})
 					sess.SetToolResult(msgIdx, tc.ID, denied, true)
@@ -178,7 +213,6 @@ func (a *Agent) loop(ctx context.Context, sess *session.Session, ch chan<- Event
 			te.Output = output
 			te.IsError = isErr
 
-			// Record result in session
 			sess.AddMessage(session.Message{
 				Role: session.RoleTool,
 				ToolResult: &session.ToolResult{
@@ -187,7 +221,6 @@ func (a *Agent) loop(ctx context.Context, sess *session.Session, ch chan<- Event
 					IsError: isErr,
 				},
 			})
-			// Update the tool use status in the assistant message
 			sess.SetToolResult(msgIdx, tc.ID, output, isErr)
 
 			select {
@@ -196,37 +229,38 @@ func (a *Agent) loop(ctx context.Context, sess *session.Session, ch chan<- Event
 				return
 			}
 		}
-
-		// Loop back to call LLM again with tool results
 	}
 }
 
-// buildMessages converts the session history to LLM chat messages.
-func buildMessages(sess *session.Session) []llm.ChatMessage {
-	msgs := []llm.ChatMessage{{Role: "system", Content: systemPrompt}}
+func buildMessages(sess *session.Session) []openai.ChatCompletionMessageParamUnion {
+	msgs := []openai.ChatCompletionMessageParamUnion{openai.SystemMessage(systemPrompt)}
 
 	history, _ := sess.Snapshot()
 	for _, m := range history {
 		if m.Partial {
-			continue // skip incomplete messages
+			continue
 		}
 		switch m.Role {
 		case session.RoleUser:
-			msgs = append(msgs, llm.ChatMessage{Role: "user", Content: m.Content})
+			msgs = append(msgs, openai.UserMessage(m.Content))
 
 		case session.RoleAssistant:
-			msg := llm.ChatMessage{Role: "assistant", Content: m.Content}
+			var p openai.ChatCompletionAssistantMessageParam
+			if m.Content != "" {
+				p.Content.OfString = openai.String(m.Content)
+			}
 			for _, tu := range m.ToolUses {
-				msg.ToolCalls = append(msg.ToolCalls, llm.ToolCall{
-					ID:   tu.ID,
-					Type: "function",
-					Function: llm.ToolCallFunc{
-						Name:      tu.Name,
-						Arguments: tu.Input,
+				p.ToolCalls = append(p.ToolCalls, openai.ChatCompletionMessageToolCallUnionParam{
+					OfFunction: &openai.ChatCompletionMessageFunctionToolCallParam{
+						ID: tu.ID,
+						Function: openai.ChatCompletionMessageFunctionToolCallFunctionParam{
+							Name:      tu.Name,
+							Arguments: tu.Input,
+						},
 					},
 				})
 			}
-			msgs = append(msgs, msg)
+			msgs = append(msgs, openai.ChatCompletionMessageParamUnion{OfAssistant: &p})
 
 		case session.RoleTool:
 			if m.ToolResult != nil {
@@ -234,18 +268,13 @@ func buildMessages(sess *session.Session) []llm.ChatMessage {
 				if m.ToolResult.IsError {
 					content = fmt.Sprintf("[error] %s", content)
 				}
-				msgs = append(msgs, llm.ChatMessage{
-					Role:       "tool",
-					Content:    content,
-					ToolCallID: m.ToolResult.ID,
-				})
+				msgs = append(msgs, openai.ToolMessage(content, m.ToolResult.ID))
 			}
 		}
 	}
 	return msgs
 }
 
-// requiresApproval returns true for tools that need user confirmation before running.
 func requiresApproval(name string) bool {
 	switch name {
 	case "run_shell", "web_fetch", "write_file", "edit_file":
@@ -254,9 +283,6 @@ func requiresApproval(name string) bool {
 	return false
 }
 
-// extractReasoning pulls the "reasoning" field out of run_shell args JSON.
-// Returns (reasoning, originalJSON). The original JSON is kept intact so
-// executeTool can still parse the "command" field normally.
 func extractReasoning(argsJSON string) (reasoning, input string) {
 	var args map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
@@ -268,7 +294,7 @@ func extractReasoning(argsJSON string) (reasoning, input string) {
 	return reasoning, argsJSON
 }
 
-func toSessionToolUses(tcs []llm.ToolCall) []session.ToolUse {
+func toSessionToolUses(tcs []openai.ChatCompletionMessageToolCallUnion) []session.ToolUse {
 	out := make([]session.ToolUse, len(tcs))
 	for i, tc := range tcs {
 		out[i] = session.ToolUse{ID: tc.ID, Name: tc.Function.Name, Input: tc.Function.Arguments}

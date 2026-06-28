@@ -7,8 +7,8 @@ import (
 	"os"
 	"sort"
 
+	"github.com/aleksana/hyphae/internal/agent"
 	"github.com/aleksana/hyphae/internal/config"
-	"github.com/aleksana/hyphae/internal/llm"
 	"github.com/aleksana/hyphae/internal/ui"
 )
 
@@ -53,8 +53,8 @@ func main() {
 			fmt.Fprintln(os.Stderr, "OPENCODE_API_KEY is not set")
 			os.Exit(1)
 		}
-		client := llm.New(cfg.BaseURL, cfg.APIKey, "")
-		models, err := client.ListModels(context.Background())
+		ag := agent.New(cfg.BaseURL, cfg.APIKey, "")
+		models, err := ag.ListModels(context.Background())
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			os.Exit(1)
