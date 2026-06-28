@@ -18,10 +18,10 @@
         { config, pkgs, ... }:
         {
           packages = rec {
-            peak =
+            hyphae =
               with pkgs;
               buildGoModule {
-                name = "peak";
+                name = "hyphae";
 
                 src = lib.cleanSource ./.;
 
@@ -34,11 +34,11 @@
                   "-w"
                 ];
               };
-            default = peak;
+            default = hyphae;
           };
 
           overlayAttrs = {
-            inherit (config.packages) peak;
+            inherit (config.packages) hyphae;
           };
 
           devShells.default = pkgs.mkShellNoCC {
