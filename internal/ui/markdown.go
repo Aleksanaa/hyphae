@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/ast"
@@ -32,7 +33,10 @@ type headingBlock struct {
 	level int
 	spans []mdSpan
 }
-type codeBlock struct{ lines []string }
+type codeBlock struct {
+	lines []string
+	lang  string
+}
 type thematicBreakBlock struct{}
 type blockquoteBlock struct{ items []mdBlock }
 type listBlock struct {
@@ -67,14 +71,51 @@ func (b *headingBlock) renderLines(maxW int) []string {
 }
 
 func (b *codeBlock) renderLines(maxW int) []string {
-	cc := tviewColor(Theme.ShellColor)
+	bc := tviewColor(Theme.Border)
+	mc := tviewColor(Theme.Muted)
+	innerW := max(1, maxW-4) // │·content·│ → 2 borders + 2 spaces
+
+	// top border: ┌──── lang ─┐  (label on right, like chat name but mirrored)
+	topBorder := func() string {
+		lang := strings.TrimSpace(b.lang)
+		// " lang ─┐" visible width
+		labelW := len([]rune(lang)) + 4
+		fill := maxW - 1 - labelW
+		if lang == "" || fill < 1 {
+			return fmt.Sprintf("[%s]┌%s┐[-:-:-]", bc, strings.Repeat("─", maxW-2))
+		}
+		return fmt.Sprintf("[%s]┌%s [%s]%s [%s]─┐[-:-:-]",
+			bc, strings.Repeat("─", fill), mc, lang, bc)
+	}
+	botBorder := fmt.Sprintf("[%s]└%s┘[-:-:-]", bc, strings.Repeat("─", maxW-2))
+
+	var inner []string
+	if b.lang != "" {
+		inner = b.renderHighlighted(innerW)
+	} else {
+		inner = b.renderPlain(innerW)
+	}
+
+	out := make([]string, 0, len(inner)+2)
+	out = append(out, topBorder())
+	for _, line := range inner {
+		visW := tview.TaggedStringWidth(line)
+		pad := strings.Repeat(" ", max(0, innerW-visW))
+		out = append(out, fmt.Sprintf("[%s]│[-:-:-] %s%s [%s]│[-:-:-]", bc, line, pad, bc))
+	}
+	out = append(out, botBorder)
+	return out
+}
+
+func (b *codeBlock) renderPlain(innerW int) []string {
+	cc := tviewColor(Theme.CodeColor)
 	var out []string
 	for _, line := range b.lines {
 		// Measure after escaping: raw code may contain "[word]" sequences that
 		// tview's tag parser treats as zero-width style tags, so
 		// TaggedStringWidth(line) would undercount and skip needed wrapping.
 		escaped := tview.Escape(line)
-		if maxW <= 0 || tview.TaggedStringWidth(escaped) <= maxW {
+		if innerW <= 0 || tview.TaggedStringWidth(escaped) <= innerW {
 			out = append(out, fmt.Sprintf("[%s]%s[-:-:-]", cc, escaped))
 			continue
 		}
@@ -84,7 +125,7 @@ func (b *codeBlock) renderLines(maxW int) []string {
 		start, lineW := 0, 0
 		for i, r := range runes {
 			rW := tview.TaggedStringWidth(string(r))
-			if lineW+rW > maxW {
+			if lineW+rW > innerW {
 				out = append(out, fmt.Sprintf("[%s]%s[-:-:-]", cc, tview.Escape(string(runes[start:i]))))
 				start, lineW = i, 0
 			}
@@ -97,6 +138,84 @@ func (b *codeBlock) renderLines(maxW int) []string {
 	if len(out) == 0 {
 		out = []string{""}
 	}
+	return out
+}
+
+// renderHighlighted uses chroma to produce per-token colored tview lines.
+func (b *codeBlock) renderHighlighted(maxW int) []string {
+	// tokenize the entire block at once so chroma tracks state across lines
+	// (e.g. multi-line strings, block comments)
+	content := strings.Join(b.lines, "\n")
+	tokens := tokenizeForMarkdown(content, b.lang)
+
+	// split at \n into per-logical-line token slices
+	var logicalLines [][]diffStyledRune
+	lineStart := 0
+	for i, sr := range tokens {
+		if sr.R == '\n' {
+			logicalLines = append(logicalLines, tokens[lineStart:i])
+			lineStart = i + 1
+		}
+	}
+	logicalLines = append(logicalLines, tokens[lineStart:])
+
+	var out []string
+	for _, lt := range logicalLines {
+		out = append(out, wrapStyledRunesToTagged(lt, maxW)...)
+	}
+	if len(out) == 0 {
+		out = []string{""}
+	}
+	return out
+}
+
+// styledRunesToTagged converts diffStyledRune slices to a tview-tagged string.
+func styledRunesToTagged(runes []diffStyledRune) string {
+	if len(runes) == 0 {
+		return ""
+	}
+	var sb strings.Builder
+	first := true
+	var cur tcell.Color
+	for _, sr := range runes {
+		fg, _, _ := sr.Style.Decompose()
+		if first || fg != cur {
+			r8, g8, b8 := fg.RGB()
+			fmt.Fprintf(&sb, "[%s]", colorHex(r8, g8, b8))
+			cur = fg
+			first = false
+		}
+		if sr.R == '[' {
+			sb.WriteString("[[]")
+		} else {
+			sb.WriteRune(sr.R)
+		}
+	}
+	sb.WriteString("[-:-:-]")
+	return sb.String()
+}
+
+// wrapStyledRunesToTagged hard-wraps a highlighted line at maxW, producing tview-tagged strings.
+func wrapStyledRunesToTagged(runes []diffStyledRune, maxW int) []string {
+	if len(runes) == 0 {
+		return []string{""}
+	}
+	if maxW <= 0 {
+		return []string{styledRunesToTagged(runes)}
+	}
+	var out []string
+	start := 0
+	lineW := 0
+	for i, sr := range runes {
+		rW := tview.TaggedStringWidth(string(sr.R))
+		if lineW+rW > maxW && lineW > 0 {
+			out = append(out, styledRunesToTagged(runes[start:i]))
+			start = i
+			lineW = 0
+		}
+		lineW += rW
+	}
+	out = append(out, styledRunesToTagged(runes[start:]))
 	return out
 }
 
@@ -199,10 +318,11 @@ func parseOneBlock(n ast.Node, source []byte) mdBlock {
 		return &headingBlock{level: h.Level, spans: collectSpans(n, source, mdStyle{})}
 
 	case ast.KindFencedCodeBlock:
-		return parseCodeLines(n.(*ast.FencedCodeBlock).Lines(), source)
+		fcb := n.(*ast.FencedCodeBlock)
+		return parseCodeLines(fcb.Lines(), source, string(fcb.Language(source)))
 
 	case ast.KindCodeBlock:
-		return parseCodeLines(n.(*ast.CodeBlock).Lines(), source)
+		return parseCodeLines(n.(*ast.CodeBlock).Lines(), source, "")
 
 	case ast.KindList:
 		return parseList(n.(*ast.List), source)
@@ -225,13 +345,13 @@ func parseOneBlock(n ast.Node, source []byte) mdBlock {
 	}
 }
 
-func parseCodeLines(segs *goldtext.Segments, source []byte) *codeBlock {
+func parseCodeLines(segs *goldtext.Segments, source []byte, lang string) *codeBlock {
 	lines := make([]string, segs.Len())
 	for i := 0; i < segs.Len(); i++ {
 		seg := segs.At(i)
 		lines[i] = strings.TrimRight(string(seg.Value(source)), "\n")
 	}
-	return &codeBlock{lines: lines}
+	return &codeBlock{lines: lines, lang: lang}
 }
 
 func parseList(list *ast.List, source []byte) *listBlock {
@@ -497,7 +617,7 @@ type mdStyle struct {
 
 func (s mdStyle) openTag() string {
 	if s.code {
-		return fmt.Sprintf("[-:-:-][%s]", tviewColor(Theme.ShellColor))
+		return fmt.Sprintf("[-:-:-][%s]", tviewColor(Theme.CodeColor))
 	}
 	attrs := ""
 	if s.bold {

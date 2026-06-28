@@ -25,6 +25,10 @@ var Theme = struct {
 	ErrorColor     tcell.Color
 	SuccessColor   tcell.Color
 
+	// Code — default color for inline code spans and unlanguaged code blocks
+	// (text hue shifted slightly blue; syntax-highlighted blocks override per-token)
+	CodeColor tcell.Color
+
 	// Borders & chrome
 	Border        tcell.Color
 	BorderFocus   tcell.Color
@@ -46,6 +50,7 @@ var Theme = struct {
 	ApexColor:      tcell.NewRGBColor(180, 140, 220),
 	ToolColor:      tcell.NewRGBColor(130, 200, 130),
 	ShellColor:     tcell.NewRGBColor(200, 160, 100),
+	CodeColor:      tcell.NewRGBColor(185, 200, 240),
 	SystemColor:    tcell.NewRGBColor(160, 140, 200),
 	ErrorColor:     tcell.NewRGBColor(220, 80, 80),
 	SuccessColor:   tcell.NewRGBColor(80, 200, 120),

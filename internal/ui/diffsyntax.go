@@ -44,6 +44,52 @@ func getDiffLexer(filename string) chroma.Lexer {
 	return l
 }
 
+func getMarkdownLexer(lang string) chroma.Lexer {
+	key := "lang:" + lang
+	if v, ok := diffLexerCache.Load(key); ok {
+		return v.(chroma.Lexer)
+	}
+	l := lexers.Get(lang)
+	if l == nil {
+		l = lexers.Fallback
+	}
+	l = chroma.Coalesce(l)
+	diffLexerCache.Store(key, l)
+	return l
+}
+
+// tokenizeForMarkdown returns (rune, style) pairs for content using chroma highlighting.
+// No background is set; tokens with no chroma color fall back to Theme.CodeColor.
+func tokenizeForMarkdown(content, lang string) []diffStyledRune {
+	initDiffHighlight()
+	plain := func() []diffStyledRune {
+		rs := []rune(content)
+		out := make([]diffStyledRune, len(rs))
+		for i, r := range rs {
+			out[i] = diffStyledRune{R: r, Style: tcell.StyleDefault}
+		}
+		return out
+	}
+	if diffChromaStyle == nil || content == "" || lang == "" {
+		return plain()
+	}
+	l := getMarkdownLexer(lang)
+	iter, err := l.Tokenise(nil, content)
+	if err != nil {
+		return plain()
+	}
+	var out []diffStyledRune
+	for _, tok := range iter.Tokens() {
+		entry := diffChromaStyle.Get(tok.Type)
+		fg := chromaToTcell(entry, Theme.CodeColor)
+		st := tcell.StyleDefault.Foreground(fg)
+		for _, r := range []rune(tok.Value) {
+			out = append(out, diffStyledRune{R: r, Style: st})
+		}
+	}
+	return out
+}
+
 // diffStyledRune is a rune paired with a tcell style.
 type diffStyledRune struct {
 	R     rune
