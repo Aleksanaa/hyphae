@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/atotto/clipboard"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 
@@ -135,7 +136,7 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 			// Active drag selection — copy it.
 			text := a.layout.Chat.SelectedText()
 			if text != "" {
-				if err := writeClipboard(text); err != nil {
+				if err := clipboard.WriteAll(text); err != nil {
 					a.layout.Status.SetError(err.Error())
 				}
 			}
@@ -158,7 +159,7 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 			// Agent is idle, no selection — copy hovered message.
 			text := a.layout.Chat.HoveredContent()
 			if text != "" {
-				if err := writeClipboard(text); err != nil {
+				if err := clipboard.WriteAll(text); err != nil {
 					a.layout.Status.SetError(err.Error())
 				}
 			}
