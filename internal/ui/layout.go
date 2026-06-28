@@ -6,18 +6,19 @@ import (
 
 // Layout assembles the top-level flex container.
 type Layout struct {
-	Root      *tview.Flex
+	Root      *tview.Pages
 	Chat      *ChatView
 	Scrollbar *Scrollbar
 	Input     *InputView
 	Status    *StatusBar
 	Approval  *ApprovalView
 	DiffView  *DiffView
+	Palette   *CommandPalette
 	body      *tview.Flex // retained for ResizeItem calls
 }
 
 // NewLayout builds and returns the assembled layout.
-func NewLayout(chat *ChatView, scrollbar *Scrollbar, input *InputView, status *StatusBar, approval *ApprovalView, diffView *DiffView) *Layout {
+func NewLayout(chat *ChatView, scrollbar *Scrollbar, input *InputView, status *StatusBar, approval *ApprovalView, diffView *DiffView, palette *CommandPalette) *Layout {
 	chatRow := tview.NewFlex().SetDirection(tview.FlexColumn).
 		AddItem(chat, 0, 1, false).
 		AddItem(scrollbar, 1, 0, false)
@@ -28,18 +29,23 @@ func NewLayout(chat *ChatView, scrollbar *Scrollbar, input *InputView, status *S
 		AddItem(diffView, 0, 0, false). // hidden initially
 		AddItem(input, 6, 0, true)
 
-	root := tview.NewFlex().SetDirection(tview.FlexRow).
+	mainFlex := tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(body, 0, 1, true).
 		AddItem(status, 1, 0, false)
 
+	pages := tview.NewPages()
+	pages.AddPage("main", mainFlex, true, true)
+	pages.AddPage("palette", palette, true, false) // overlay, hidden initially
+
 	return &Layout{
-		Root:      root,
+		Root:      pages,
 		Chat:      chat,
 		Scrollbar: scrollbar,
 		Input:     input,
 		Status:    status,
 		Approval:  approval,
 		DiffView:  diffView,
+		Palette:   palette,
 		body:      body,
 	}
 }
@@ -64,4 +70,14 @@ func (l *Layout) ShowDiffView() {
 func (l *Layout) HideDiffView() {
 	l.DiffView.visible = false
 	l.body.ResizeItem(l.DiffView, 0, 0)
+}
+
+// ShowPalette makes the palette page visible.
+func (l *Layout) ShowPalette() {
+	l.Root.ShowPage("palette")
+}
+
+// HidePalette hides the palette page.
+func (l *Layout) HidePalette() {
+	l.Root.HidePage("palette")
 }

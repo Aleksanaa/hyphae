@@ -67,8 +67,8 @@ func (sb *StatusBar) render() {
 
 	ac := tviewColor(Theme.Accent)
 	hints := fmt.Sprintf(
-		"[%s]Ctrl+S[-]:send  [%s]Ctrl+C[-]:%s  [%s]Tab[-]:focus  [%s]Ctrl+D[-]:quit",
-		ac, ac, ctrlC, ac, ac,
+		"[%s]Ctrl+S[-]:send  [%s]Ctrl+C[-]:%s  [%s]Ctrl+P[-]:palette  [%s]Tab[-]:focus  [%s]Ctrl+D[-]:quit",
+		ac, ac, ctrlC, ac, ac, ac,
 	)
 
 	sb.SetText(fmt.Sprintf(" %s[%s]%s[-]  %s",

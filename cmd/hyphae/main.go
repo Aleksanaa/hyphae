@@ -14,9 +14,6 @@ import (
 
 func main() {
 	var (
-		apiKey     = flag.String("key", "", "opencode API key (overrides OPENCODE_API_KEY)")
-		baseURL    = flag.String("url", "", "API base URL (overrides config)")
-		model      = flag.String("model", "", "model name (overrides config)")
 		workDir    = flag.String("dir", "", "working directory (defaults to cwd)")
 		listModels = flag.Bool("list-models", false, "list available models and exit")
 	)
@@ -25,7 +22,6 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Usage: hyphae [flags]\n\n")
 		flag.PrintDefaults()
 		fmt.Fprintf(os.Stderr, "\nConfig file: $XDG_CONFIG_HOME/hyphae/config.toml\n")
-		fmt.Fprintf(os.Stderr, "Env vars:    OPENCODE_API_KEY, HYPANE_MODEL, HYPANE_BASE_URL\n")
 	}
 	flag.Parse()
 
@@ -35,25 +31,17 @@ func main() {
 		os.Exit(1)
 	}
 
-	if *apiKey != "" {
-		cfg.APIKey = *apiKey
-	}
-	if *baseURL != "" {
-		cfg.BaseURL = *baseURL
-	}
-	if *model != "" {
-		cfg.Model = *model
-	}
 	if *workDir != "" {
 		cfg.WorkDir = *workDir
 	}
 
 	if *listModels {
-		if cfg.APIKey == "" {
-			fmt.Fprintln(os.Stderr, "OPENCODE_API_KEY is not set")
+		ep := cfg.ActiveEndpoint()
+		if ep.APIKey == "" {
+			fmt.Fprintln(os.Stderr, "no endpoint configured — add one via Ctrl+P in the app")
 			os.Exit(1)
 		}
-		ag := agent.New(cfg.BaseURL, cfg.APIKey, "")
+		ag := agent.New(ep.BaseURL, ep.APIKey, "")
 		models, err := ag.ListModels(context.Background())
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)

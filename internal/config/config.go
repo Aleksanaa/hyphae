@@ -7,19 +7,31 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
-// Config holds all runtime settings.
-type Config struct {
+// Endpoint is a named API endpoint with its own key.
+type Endpoint struct {
+	Name    string `toml:"name"`
 	BaseURL string `toml:"base_url"`
 	APIKey  string `toml:"api_key"`
-	Model   string `toml:"model"`
-	WorkDir string `toml:"work_dir"`
 }
 
-// Load reads config from file then applies environment overrides.
-func Load() (*Config, error) {
-	cfg := &Config{
-		BaseURL: "https://opencode.ai/zen/go/v1",
+// Config holds all runtime settings.
+type Config struct {
+	Endpoints []Endpoint `toml:"endpoint"`
+	Model     string     `toml:"model"`
+	WorkDir   string     `toml:"work_dir"`
+}
+
+// ActiveEndpoint returns the first configured endpoint, or a zero-value one if none.
+func (c *Config) ActiveEndpoint() Endpoint {
+	if len(c.Endpoints) > 0 {
+		return c.Endpoints[0]
 	}
+	return Endpoint{}
+}
+
+// Load reads config from file.
+func Load() (*Config, error) {
+	cfg := &Config{}
 
 	path := configPath()
 	if _, err := os.Stat(path); err == nil {
@@ -28,17 +40,6 @@ func Load() (*Config, error) {
 		}
 	}
 
-	if v := os.Getenv("OPENCODE_API_KEY"); v != "" {
-		cfg.APIKey = v
-	}
-	if v := os.Getenv("HYPANE_BASE_URL"); v != "" {
-		cfg.BaseURL = v
-	}
-	if v := os.Getenv("HYPANE_MODEL"); v != "" {
-		cfg.Model = v
-	}
-
-	// Default working directory to cwd
 	if cfg.WorkDir == "" {
 		cfg.WorkDir, _ = os.Getwd()
 	}
@@ -46,10 +47,21 @@ func Load() (*Config, error) {
 	return cfg, nil
 }
 
-func configPath() string {
-	if v := os.Getenv("HYPANE_CONFIG"); v != "" {
-		return v
+// Save writes the current config back to the config file.
+func (c *Config) Save() error {
+	path := configPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
 	}
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	return toml.NewEncoder(f).Encode(c)
+}
+
+func configPath() string {
 	dir, _ := os.UserConfigDir()
 	return filepath.Join(dir, "hyphae", "config.toml")
 }

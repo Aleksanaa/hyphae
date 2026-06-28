@@ -27,7 +27,8 @@ type App struct {
 
 // New wires up and returns a ready-to-run App.
 func New(cfg *config.Config) *App {
-	ag := agent.New(cfg.BaseURL, cfg.APIKey, cfg.Model)
+	ep := cfg.ActiveEndpoint()
+	ag := agent.New(ep.BaseURL, ep.APIKey, cfg.Model)
 	manager := session.NewManager(cfg.WorkDir)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -47,9 +48,12 @@ func New(cfg *config.Config) *App {
 	input := NewInputView(a.sendMessage)
 	approval := NewApprovalView()
 	diffView := NewDiffView()
-	layout := NewLayout(chat, scrollbar, input, status, approval, diffView)
+	palette := NewCommandPalette()
+	layout := NewLayout(chat, scrollbar, input, status, approval, diffView, palette)
 	a.layout = layout
 	status.SetDefault(cfg.Model, session.StatusIdle)
+
+	a.setupPalette()
 
 	chat.TextView.SetFocusFunc(func() { chat.SetFocused(true) })
 	chat.TextView.SetBlurFunc(func() { chat.SetFocused(false) })
@@ -74,10 +78,10 @@ func New(cfg *config.Config) *App {
 
 // Run starts the event loop.
 func (a *App) Run() error {
-	if a.cfg.APIKey == "" {
-		a.layout.Status.SetError("OPENCODE_API_KEY is not set — add it to config or environment")
+	if len(a.cfg.Endpoints) == 0 {
+		a.layout.Status.SetError("no endpoint configured — press Ctrl+P to add one")
 	} else if a.cfg.Model == "" {
-		a.layout.Status.SetError("no model configured — set HYPANE_MODEL or model in config.toml")
+		a.layout.Status.SetError("no model selected — press Ctrl+P to select one")
 	}
 
 	defer a.appCancel()
@@ -124,7 +128,21 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 		}
 	}
 
+	// When palette is open, let tview route keys to the focused palette;
+	// only intercept Ctrl+P to toggle it closed.
+	if a.layout.Palette.IsVisible() {
+		if event.Key() == tcell.KeyCtrlP {
+			a.layout.Palette.Close()
+			return nil
+		}
+		return event
+	}
+
 	switch {
+	case event.Key() == tcell.KeyCtrlP:
+		a.openPalette()
+		return nil
+
 	case event.Key() == tcell.KeyCtrlD:
 		a.Stop()
 		return nil
@@ -301,6 +319,97 @@ func (a *App) handleAgentEvents(sessionID string, ch <-chan agent.Event) {
 			}
 		}
 	}
+}
+
+// setupPalette wires palette callbacks.
+func (a *App) setupPalette() {
+	p := a.layout.Palette
+	p.SetCallbacks(
+		// onClose
+		func() {
+			a.layout.HidePalette()
+			a.tapp.SetFocus(a.layout.Input.TextArea)
+		},
+		// onAddEndpoint
+		func(name, baseURL, apiKey string) {
+			a.cfg.Endpoints = append(a.cfg.Endpoints, config.Endpoint{
+				Name:    name,
+				BaseURL: baseURL,
+				APIKey:  apiKey,
+			})
+			if err := a.cfg.Save(); err != nil {
+				a.layout.Status.SetError("save failed: " + err.Error())
+			} else {
+				a.layout.Status.SetMessage(fmt.Sprintf("endpoint %q added", name))
+			}
+		},
+		// onDelEndpoint
+		func(name string) {
+			eps := a.cfg.Endpoints
+			for i, ep := range eps {
+				if ep.Name == name {
+					a.cfg.Endpoints = append(eps[:i], eps[i+1:]...)
+					break
+				}
+			}
+			if err := a.cfg.Save(); err != nil {
+				a.layout.Status.SetError("save failed: " + err.Error())
+			} else {
+				a.layout.Status.SetMessage(fmt.Sprintf("endpoint %q removed", name))
+			}
+		},
+		// onSelectModel
+		func(model string) {
+			a.cfg.Model = model
+			ep := a.cfg.ActiveEndpoint()
+			a.ag = agent.New(ep.BaseURL, ep.APIKey, model)
+			if err := a.cfg.Save(); err != nil {
+				a.layout.Status.SetError("save failed: " + err.Error())
+			}
+			a.layout.Status.SetDefault(model, session.StatusIdle)
+		},
+		// getEndpoints
+		func() []paletteEndpointInfo {
+			eps := a.cfg.Endpoints
+			out := make([]paletteEndpointInfo, len(eps))
+			for i, ep := range eps {
+				out[i] = paletteEndpointInfo{Name: ep.Name, BaseURL: ep.BaseURL}
+			}
+			return out
+		},
+	)
+
+}
+
+func (a *App) openPalette() {
+	p := a.layout.Palette
+	// Wire actions onto menuItems, then Open() picks them up via cp.items = cp.menuItems.
+	p.menuItems = topLevelItems()
+	p.menuItems[0].Action = func() { p.switchMode(paletteModeAddEndpoint) }
+	p.menuItems[1].Action = func() { p.switchMode(paletteModeDelEndpoint) }
+	p.menuItems[2].Action = func() {
+		p.switchMode(paletteModeSelectModel)
+		go func() {
+			ep := a.cfg.ActiveEndpoint()
+			ag := agent.New(ep.BaseURL, ep.APIKey, "")
+			models, _ := ag.ListModels(a.appCtx)
+			var items []PaletteItem
+			if len(models) == 0 {
+				items = []PaletteItem{{Label: "no models found"}}
+			} else {
+				items = make([]PaletteItem, len(models))
+				for i, m := range models {
+					items[i] = PaletteItem{Label: m, Value: m}
+				}
+			}
+			a.tapp.QueueUpdateDraw(func() {
+				a.layout.Palette.SetModelItems(items)
+			})
+		}()
+	}
+	p.Open() // sets visible=true, cp.items=cp.menuItems, refilters
+	a.layout.ShowPalette()
+	a.tapp.SetFocus(p)
 }
 
 // redrawActive refreshes the chat and status for the current session.
