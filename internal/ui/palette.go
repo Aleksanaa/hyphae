@@ -309,7 +309,6 @@ func (cp *CommandPalette) drawForm(screen tcell.Screen, x, y, w, h int, bg tcell
 
 func (cp *CommandPalette) drawItems(screen tcell.Screen, x, y, w, h int, bgSt, selSt, selAccSt, mutedSt, textSt, accentSt tcell.Style) {
 	inner := x + 2
-	innerW := w - 4
 
 	// Scroll so sel is visible.
 	offset := 0
@@ -339,26 +338,24 @@ func (cp *CommandPalette) drawItems(screen tcell.Screen, x, y, w, h int, bgSt, s
 		_ = accentSt
 		_ = selAccSt
 
+		// Draw label left-aligned.
 		col := inner
 		label := []rune(item.Label)
-		for i, r := range label {
-			if col >= x+w-1 {
+		for _, r := range label {
+			if col >= x+w-2 {
 				break
 			}
-			_ = i
 			screen.SetContent(col, rowY, r, nil, lineSt)
 			col++
 		}
+		// Draw Sub right-aligned if there is room (leave 1 gap between label and sub).
 		if item.Sub != "" {
-			subRunes := []rune("  " + item.Sub)
-			remaining := innerW - len(label)
-			for _, r := range subRunes {
-				if col >= x+w-1 || remaining <= 0 {
-					break
+			subRunes := []rune(item.Sub)
+			subStart := x + w - 2 - len(subRunes)
+			if subStart > inner+len(label)+1 {
+				for i, r := range subRunes {
+					screen.SetContent(subStart+i, rowY, r, nil, subSt)
 				}
-				screen.SetContent(col, rowY, r, nil, subSt)
-				col++
-				remaining--
 			}
 		}
 	}

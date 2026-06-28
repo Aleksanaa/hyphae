@@ -16,12 +16,20 @@ type Endpoint struct {
 
 // Config holds all runtime settings.
 type Config struct {
-	Endpoints []Endpoint `toml:"endpoint"`
-	Model     string     `toml:"model"`
+	Endpoints          []Endpoint `toml:"endpoint"`
+	ActiveEndpointName string     `toml:"active_endpoint"`
+	Model              string     `toml:"model"`
 }
 
-// ActiveEndpoint returns the first configured endpoint, or a zero-value one if none.
+// ActiveEndpoint returns the endpoint matching ActiveEndpointName, falling back to the first.
 func (c *Config) ActiveEndpoint() Endpoint {
+	if c.ActiveEndpointName != "" {
+		for _, ep := range c.Endpoints {
+			if ep.Name == c.ActiveEndpointName {
+				return ep
+			}
+		}
+	}
 	if len(c.Endpoints) > 0 {
 		return c.Endpoints[0]
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/atotto/clipboard"
 	"github.com/gdamore/tcell/v2"
@@ -360,10 +361,18 @@ func (a *App) setupPalette() {
 				a.layout.Status.SetMessage(fmt.Sprintf("endpoint %q removed", name))
 			}
 		},
-		// onSelectModel
-		func(model string) {
+		// onSelectModel — value is "endpointName\x00modelName"
+		func(val string) {
+			epName, model, _ := strings.Cut(val, "\x00")
+			a.cfg.ActiveEndpointName = epName
 			a.cfg.Model = model
-			ep := a.cfg.ActiveEndpoint()
+			var ep config.Endpoint
+			for _, e := range a.cfg.Endpoints {
+				if e.Name == epName {
+					ep = e
+					break
+				}
+			}
 			a.ag = agent.New(ep.BaseURL, ep.APIKey, model)
 			if err := a.cfg.Save(); err != nil {
 				a.layout.Status.SetError("save failed: " + err.Error())
@@ -392,17 +401,20 @@ func (a *App) openPalette() {
 	p.menuItems[2].Action = func() {
 		p.switchMode(paletteModeSelectModel)
 		go func() {
-			ep := a.cfg.ActiveEndpoint()
-			ag := agent.New(ep.BaseURL, ep.APIKey, "")
-			models, _ := ag.ListModels(a.appCtx)
 			var items []PaletteItem
-			if len(models) == 0 {
-				items = []PaletteItem{{Label: "no models found"}}
-			} else {
-				items = make([]PaletteItem, len(models))
-				for i, m := range models {
-					items[i] = PaletteItem{Label: m, Value: m}
+			for _, ep := range a.cfg.Endpoints {
+				ag := agent.New(ep.BaseURL, ep.APIKey, "")
+				models, _ := ag.ListModels(a.appCtx)
+				for _, m := range models {
+					items = append(items, PaletteItem{
+						Label: m,
+						Sub:   ep.Name,
+						Value: ep.Name + "\x00" + m,
+					})
 				}
+			}
+			if len(items) == 0 {
+				items = []PaletteItem{{Label: "no models found"}}
 			}
 			a.tapp.QueueUpdateDraw(func() {
 				a.layout.Palette.SetModelItems(items)
