@@ -237,7 +237,7 @@ func buildMessages(sess *session.Session) []openai.ChatCompletionMessageParamUni
 
 	history, _ := sess.Snapshot()
 	for _, m := range history {
-		if m.Partial {
+		if m.Partial || m.Error != nil {
 			continue
 		}
 		switch m.Role {
