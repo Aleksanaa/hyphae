@@ -99,7 +99,8 @@ func (a *App) Stop() {
 
 // handleGlobalKey intercepts application-level shortcuts.
 func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
-	// When the approval bar is active, Tab cycles Allow/Deny and Esc denies.
+	// When the approval bar is active, Tab/Left/Right cycle Allow/Deny and Esc denies.
+	// SetFocus re-triggers Focus() delegation so denyField gets real focus when deny is active.
 	if a.layout.Approval.IsVisible() {
 		switch event.Key() {
 		case tcell.KeyTab, tcell.KeyBacktab:
@@ -108,6 +109,7 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 			} else {
 				a.layout.Approval.SetSelected("allow")
 			}
+			a.tapp.SetFocus(a.layout.Approval)
 			return nil
 		case tcell.KeyEscape:
 			a.layout.Approval.Deny("")
@@ -115,7 +117,7 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 		}
 	}
 
-	// When the diff view is active, Tab cycles Allow/Deny and Esc denies.
+	// When the diff view is active, Tab/Left/Right cycle Allow/Deny and Esc denies.
 	if a.layout.DiffView.IsVisible() {
 		switch event.Key() {
 		case tcell.KeyTab, tcell.KeyBacktab:
@@ -124,6 +126,7 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 			} else {
 				a.layout.DiffView.SetSelected("allow")
 			}
+			a.tapp.SetFocus(a.layout.DiffView)
 			return nil
 		case tcell.KeyEscape:
 			a.layout.DiffView.Deny("")
@@ -131,12 +134,53 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 		}
 	}
 
-	// When palette is open, let tview route keys to the focused palette;
-	// only intercept Ctrl+P to toggle it closed.
+	// When palette is open, intercept navigation keys; text input falls through
+	// to the focused InputField (queryField or active form field).
 	if a.layout.Palette.IsVisible() {
-		if event.Key() == tcell.KeyCtrlP {
-			a.layout.Palette.Close()
+		p := a.layout.Palette
+		switch event.Key() {
+		case tcell.KeyCtrlP, tcell.KeyEscape:
+			if p.GetMode() != paletteModeMenu {
+				p.SwitchMode(paletteModeMenu)
+				a.tapp.SetFocus(p)
+			} else {
+				p.Close()
+			}
 			return nil
+		case tcell.KeyEnter:
+			p.Confirm()
+			if p.IsVisible() {
+				a.tapp.SetFocus(p)
+			}
+			return nil
+		case tcell.KeyUp:
+			if p.GetMode() == paletteModeAddEndpoint {
+				p.PrevFormField()
+				a.tapp.SetFocus(p)
+			} else {
+				p.NavigateUp()
+			}
+			return nil
+		case tcell.KeyDown:
+			if p.GetMode() == paletteModeAddEndpoint {
+				p.NextFormField()
+				a.tapp.SetFocus(p)
+			} else {
+				p.NavigateDown()
+			}
+			return nil
+		case tcell.KeyTab:
+			if p.GetMode() == paletteModeAddEndpoint {
+				p.NextFormField()
+				a.tapp.SetFocus(p)
+				return nil
+			}
+		case tcell.KeyBacktab:
+			if p.GetMode() == paletteModeAddEndpoint {
+				p.PrevFormField()
+				a.tapp.SetFocus(p)
+				return nil
+			}
 		}
 		return event
 	}

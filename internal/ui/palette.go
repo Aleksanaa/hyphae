@@ -19,38 +19,10 @@ const (
 
 // PaletteItem is one selectable row in the palette list.
 type PaletteItem struct {
-	Label    string
-	Sub      string // dim secondary text
-	Value    string // opaque payload
-	Action   func() // called on Enter (optional override)
-}
-
-// CommandPalette is a VS-Code-style Ctrl+P overlay drawn as a centered box.
-type CommandPalette struct {
-	*tview.Box
-	visible bool
-	mode    paletteMode
-
-	// shared
-	query     []rune
-	cursor    int // rune index in query
-	menuItems []PaletteItem // top-level items with actions, set by caller
-	items     []PaletteItem
-	filtered  []int // indices into items
-	sel       int   // index into filtered
-
-	// add-endpoint form
-	formField int // 0=name 1=baseURL 2=apiKey
-	formName  string
-	formURL   string
-	formKey   string
-
-	// callbacks set by App
-	onClose       func()
-	onAddEndpoint func(name, baseURL, apiKey string)
-	onDelEndpoint func(name string)
-	onSelectModel func(model string)
-	getEndpoints  func() []paletteEndpointInfo
+	Label  string
+	Sub    string // dim secondary text shown right-aligned
+	Value  string // opaque payload passed to callbacks
+	Action func() // called on Enter in menu mode
 }
 
 type paletteEndpointInfo struct {
@@ -58,22 +30,92 @@ type paletteEndpointInfo struct {
 	BaseURL string
 }
 
+// CommandPalette is a VS-Code-style Ctrl+P overlay drawn as a centered box.
+// Text input is handled by embedded tview.InputField instances so that cursor
+// rendering, CJK input, and wide-char layout are all native to tview.
+type CommandPalette struct {
+	*tview.Box
+	visible bool
+	mode    paletteMode
+
+	// tview-native input: query bar and three add-endpoint form fields.
+	queryField *tview.InputField
+	nameField  *tview.InputField
+	urlField   *tview.InputField
+	keyField   *tview.InputField
+	activeForm int // 0=name 1=url 2=key
+
+	// item list state
+	menuItems []PaletteItem
+	items     []PaletteItem
+	filtered  []int
+	sel       int
+
+	// callbacks wired by App
+	onClose       func()
+	onAddEndpoint func(name, baseURL, apiKey string)
+	onDelEndpoint func(name string)
+	onSelectModel func(model string)
+	getEndpoints  func() []paletteEndpointInfo
+}
+
 func NewCommandPalette() *CommandPalette {
 	cp := &CommandPalette{Box: tview.NewBox()}
+
+	mkField := func(label string) *tview.InputField {
+		f := tview.NewInputField()
+		f.SetLabel(label)
+		f.SetLabelStyle(tcell.StyleDefault.Foreground(Theme.Muted).Background(Theme.Surface))
+		f.SetFieldTextColor(Theme.Text)
+		f.SetFieldBackgroundColor(Theme.Surface)
+		f.SetBackgroundColor(Theme.Surface)
+		return f
+	}
+
+	cp.queryField = mkField("> ")
+	cp.queryField.SetChangedFunc(func(_ string) { cp.refilter() })
+
+	cp.nameField = mkField("name     ❯ ")
+	cp.urlField = mkField("base url ❯ ")
+	cp.keyField = mkField("api key  ❯ ")
+
 	return cp
+}
+
+// ── Focus delegation ─────────────────────────────────────────────────────────
+
+// Focus sets hasFocus on the palette itself (so Pages routes events here via
+// InputHandler) and additionally sets hasFocus on the active sub-field (so its
+// TextArea shows the cursor).  We call sub-field.Focus with a no-op delegate to
+// avoid a recursive app.SetFocus that would blur the palette again.
+func (cp *CommandPalette) Focus(delegate func(p tview.Primitive)) {
+	cp.Box.Focus(delegate) // sets cp.Box.hasFocus = true
+	// Clear stale cursor from all sub-fields then light up the active one.
+	noop := func(tview.Primitive) {}
+	cp.queryField.Blur()
+	cp.nameField.Blur()
+	cp.urlField.Blur()
+	cp.keyField.Blur()
+	if cp.mode == paletteModeAddEndpoint {
+		cp.activeFormField().Focus(noop)
+	} else {
+		cp.queryField.Focus(noop)
+	}
 }
 
 // ── public API ────────────────────────────────────────────────────────────────
 
-func (cp *CommandPalette) IsVisible() bool { return cp.visible }
+func (cp *CommandPalette) IsVisible() bool      { return cp.visible }
+func (cp *CommandPalette) GetMode() paletteMode { return cp.mode }
+func (cp *CommandPalette) QueryField() *tview.InputField { return cp.queryField }
+func (cp *CommandPalette) ActiveFormField() *tview.InputField { return cp.activeFormField() }
 
 func (cp *CommandPalette) Open() {
 	cp.visible = true
 	cp.mode = paletteModeMenu
-	cp.query = cp.query[:0]
-	cp.cursor = 0
-	cp.sel = 0
 	cp.items = cp.menuItems
+	cp.sel = 0
+	cp.queryField.SetText("")
 	cp.refilter()
 }
 
@@ -83,6 +125,10 @@ func (cp *CommandPalette) Close() {
 		cp.onClose()
 	}
 }
+
+// SwitchMode is the public entry point; called from app.go closures and
+// handleGlobalKey.
+func (cp *CommandPalette) SwitchMode(m paletteMode) { cp.switchMode(m) }
 
 func (cp *CommandPalette) SetCallbacks(
 	onClose func(),
@@ -98,9 +144,61 @@ func (cp *CommandPalette) SetCallbacks(
 	cp.getEndpoints = getEndpoints
 }
 
+func (cp *CommandPalette) NavigateUp() {
+	if cp.sel > 0 {
+		cp.sel--
+	}
+}
+
+func (cp *CommandPalette) NavigateDown() {
+	if cp.sel < len(cp.filtered)-1 {
+		cp.sel++
+	}
+}
+
+func (cp *CommandPalette) NextFormField() {
+	if cp.activeForm < 2 {
+		cp.activeForm++
+	}
+}
+
+func (cp *CommandPalette) PrevFormField() {
+	if cp.activeForm > 0 {
+		cp.activeForm--
+	}
+}
+
+// Confirm executes the action for the current mode (called from handleGlobalKey).
+func (cp *CommandPalette) Confirm() { cp.confirm() }
+
+// InputHandler routes keyboard events to the active sub-field.
+// Navigation keys (Enter/Esc/Up/Down/Tab) are consumed by handleGlobalKey
+// before this is reached, so everything arriving here is text input.
+func (cp *CommandPalette) InputHandler() func(*tcell.EventKey, func(tview.Primitive)) {
+	return cp.WrapInputHandler(func(event *tcell.EventKey, setFocus func(tview.Primitive)) {
+		if !cp.visible {
+			return
+		}
+		var field *tview.InputField
+		if cp.mode == paletteModeAddEndpoint {
+			field = cp.activeFormField()
+		} else {
+			field = cp.queryField
+		}
+		if h := field.InputHandler(); h != nil {
+			h(event, setFocus)
+		}
+	})
+}
+
+// SetModelItems replaces the item list in select-model mode (called after async fetch).
+func (cp *CommandPalette) SetModelItems(items []PaletteItem) {
+	cp.items = items
+	cp.refilter()
+}
+
 // ── drawing ───────────────────────────────────────────────────────────────────
 
-// paletteW/H are the palette dimensions (capped to screen).
 const (
 	paletteW    = 64
 	paletteMinH = 10
@@ -118,14 +216,13 @@ func (cp *CommandPalette) Draw(screen tcell.Screen) {
 		w = sw - 4
 	}
 
-	// Compute height: title+border(1) + query row(1) + divider(1) + items + bottom border(1)
 	visItems := len(cp.filtered)
 	if cp.mode == paletteModeAddEndpoint {
-		visItems = 0 // form takes the item area
+		visItems = 0
 	}
 	h := 4 + visItems
 	if cp.mode == paletteModeAddEndpoint {
-		h = 4 + 3 // 3 form fields
+		h = 4 + 3
 	}
 	if h < paletteMinH {
 		h = paletteMinH
@@ -138,71 +235,94 @@ func (cp *CommandPalette) Draw(screen tcell.Screen) {
 	}
 
 	x := (sw - w) / 2
-	y := (sh - h) / 4 // slightly above center
+	y := (sh - h) / 4
 
 	bc := Theme.BorderFocus
-	mc := Theme.Muted
 	ac := Theme.Accent
-	tc := Theme.Text
 	bg := Theme.Surface
 
 	borderSt := tcell.StyleDefault.Foreground(bc).Background(bg)
-	mutedSt := tcell.StyleDefault.Foreground(mc).Background(bg)
-	textSt := tcell.StyleDefault.Foreground(tc).Background(bg)
-	accentSt := tcell.StyleDefault.Foreground(ac).Background(bg)
 	bgSt := tcell.StyleDefault.Background(bg)
-	selSt := tcell.StyleDefault.Background(tcell.NewRGBColor(40, 44, 70)).Foreground(tc)
-	selAccSt := tcell.StyleDefault.Background(tcell.NewRGBColor(40, 44, 70)).Foreground(ac)
+	mutedSt := tcell.StyleDefault.Foreground(Theme.Muted).Background(bg)
+	textSt := tcell.StyleDefault.Foreground(Theme.Text).Background(bg)
+	selSt := tcell.StyleDefault.Background(tcell.NewRGBColor(40, 44, 70)).Foreground(Theme.Text)
+	selMutedSt := tcell.StyleDefault.Background(tcell.NewRGBColor(40, 44, 70)).Foreground(Theme.Muted)
 
-	// Fill background.
-	for row := 0; row < h; row++ {
-		for col := 0; col < w; col++ {
-			screen.SetContent(x+col, y+row, ' ', nil, bgSt)
+	// Fill background (palette rect only).
+	// Before filling, check whether a wide (CJK) char straddles the left edge:
+	// its left half is at x-1 (outside palette) and right half at x (inside).
+	// tcell's draw loop returns width=2 for that cell and advances past x even
+	// when x is dirty, so our space at x would be skipped. Fix: write a space
+	// at x-1 using the cell's own style — this converts it to width=1 so the
+	// loop advances one column at a time, letting x be drawn normally.
+	// The right edge needs no fix: tview redraws all primitives each cycle,
+	// so the chat's Put for any wide char at x+w-1 already marks x+w dirty.
+	for row := range h {
+		if x > 0 {
+			if _, _, st, cw := screen.GetContent(x-1, y+row); cw == 2 {
+				screen.SetContent(x-1, y+row, ' ', nil, st)
+			}
+		}
+		for col := x; col < x+w; col++ {
+			screen.SetContent(col, y+row, ' ', nil, bgSt)
 		}
 	}
 
-	// Top border with title.
+	// Top border: ┌──── title ────┐
+	// Title is right-aligned so dashes fill left.
 	title := cp.modeTitle()
-	labelW := len([]rune(title)) + 2 // " title "
+	titleW := tview.TaggedStringWidth(tview.Escape(title))
+	labelW := titleW + 2 // " title "
 	fill := w - 2 - labelW
 	if fill < 0 {
 		fill = 0
 	}
 	screen.SetContent(x, y, '┌', nil, borderSt)
-	for i := 0; i < fill; i++ {
+	for i := range fill {
 		screen.SetContent(x+1+i, y, '─', nil, borderSt)
 	}
 	screen.SetContent(x+1+fill, y, ' ', nil, borderSt)
-	for i, r := range []rune(title) {
-		screen.SetContent(x+2+fill+i, y, r, nil, accentSt)
+	titleSt := tcell.StyleDefault.Foreground(ac).Background(bg)
+	titleCol := x + 2 + fill
+	for _, r := range []rune(title) {
+		rw := tview.TaggedStringWidth(tview.Escape(string(r)))
+		if rw == 0 {
+			rw = 1
+		}
+		screen.SetContent(titleCol, y, r, nil, titleSt)
+		titleCol += rw
 	}
-	screen.SetContent(x+2+fill+len([]rune(title)), y, ' ', nil, borderSt)
+	screen.SetContent(titleCol, y, ' ', nil, borderSt)
 	screen.SetContent(x+w-1, y, '┐', nil, borderSt)
 
-	// Query / form row.
+	// Query row (y+1): sides + InputField or hint text.
 	screen.SetContent(x, y+1, '│', nil, borderSt)
 	screen.SetContent(x+w-1, y+1, '│', nil, borderSt)
 	if cp.mode == paletteModeAddEndpoint {
-		cp.drawFormRow(screen, x, y, w, bg, mutedSt, textSt)
+		drawText(screen, "fill in fields below, Enter to confirm", x+2, y+1, w-4, mutedSt)
 	} else {
-		cp.drawQueryRow(screen, x, y, w, mutedSt, textSt)
+		cp.queryField.SetBackgroundColor(bg)
+		cp.queryField.SetFieldBackgroundColor(bg)
+		cp.queryField.SetRect(x+1, y+1, w-2, 1)
+		cp.queryField.Draw(screen)
 	}
 
-	// Divider.
+	// Divider (y+2).
 	screen.SetContent(x, y+2, '├', nil, borderSt)
 	for col := 1; col < w-1; col++ {
 		screen.SetContent(x+col, y+2, '─', nil, borderSt)
 	}
 	screen.SetContent(x+w-1, y+2, '┤', nil, borderSt)
 
-	// Items area.
-	itemsH := h - 4 // rows between divider and bottom border
+	// Content area (y+3 .. y+h-2).
+	itemsH := h - 4
 	if cp.mode == paletteModeAddEndpoint {
-		cp.drawForm(screen, x, y+3, w, itemsH, bg, mutedSt, textSt, accentSt, borderSt)
+		cp.drawFormFields(screen, x, y+3, w, bg)
 	} else {
-		cp.drawItems(screen, x, y+3, w, itemsH, bgSt, selSt, selAccSt, mutedSt, textSt, accentSt)
+		cp.drawItems(screen, x, y+3, w, itemsH, selSt, selMutedSt, mutedSt, textSt)
 	}
-	// Side borders for item rows.
+
+	// Side borders for content rows.
 	for row := 3; row < h-1; row++ {
 		screen.SetContent(x, y+row, '│', nil, borderSt)
 		screen.SetContent(x+w-1, y+row, '│', nil, borderSt)
@@ -216,107 +336,35 @@ func (cp *CommandPalette) Draw(screen tcell.Screen) {
 	screen.SetContent(x+w-1, y+h-1, '┘', nil, borderSt)
 }
 
-func (cp *CommandPalette) drawQueryRow(screen tcell.Screen, x, y, w int, mutedSt, textSt tcell.Style) {
-	inner := x + 2
-	innerW := w - 4
-	prompt := []rune("> ")
-	col := inner
-	for _, r := range prompt {
-		screen.SetContent(col, y+1, r, nil, mutedSt)
-		col++
-	}
-	maxQ := innerW - len(prompt)
-	q := cp.query
-	viewStart := 0
-	if len(q) > 0 && cp.cursor >= maxQ {
-		viewStart = cp.cursor - maxQ + 1
-	}
-	cursorSt := tcell.StyleDefault.Background(Theme.Text).Foreground(Theme.Surface)
-	for i := 0; i < maxQ; i++ {
-		ri := viewStart + i
-		var r rune = ' '
-		st := textSt
-		if ri == cp.cursor {
-			st = cursorSt
-			if ri < len(q) {
-				r = q[ri]
-			}
-		} else if ri < len(q) {
-			r = q[ri]
+func (cp *CommandPalette) drawFormFields(screen tcell.Screen, x, y, w int, bg tcell.Color) {
+	formLabels := []string{"name     ❯ ", "base url ❯ ", "api key  ❯ "}
+	fields := []*tview.InputField{cp.nameField, cp.urlField, cp.keyField}
+	for i, field := range fields {
+		rowY := y + i
+		if i == cp.activeForm {
+			field.SetLabelColor(Theme.Accent)
+			field.SetBackgroundColor(bg)
+			field.SetFieldBackgroundColor(bg)
+			field.SetRect(x+2, rowY, w-4, 1)
+			field.Draw(screen)
+		} else {
+			labelSt := tcell.StyleDefault.Foreground(Theme.Muted).Background(bg)
+			col := x + 2
+			used := drawText(screen, formLabels[i], col, rowY, w-4, labelSt)
+			drawText(screen, field.GetText(), col+used, rowY, x+w-2-col-used, labelSt)
 		}
-		screen.SetContent(col, y+1, r, nil, st)
-		col++
 	}
 }
 
-func (cp *CommandPalette) drawFormRow(screen tcell.Screen, x, y, w int, bg tcell.Color, mutedSt, textSt tcell.Style) {
-	hint := "fill in fields below, Enter to confirm"
-	inner := x + 2
-	col := inner
-	for _, r := range []rune(hint) {
-		if col >= x+w-1 {
-			break
-		}
-		screen.SetContent(col, y+1, r, nil, mutedSt)
-		col++
-	}
-	_ = bg
-}
-
-func (cp *CommandPalette) drawForm(screen tcell.Screen, x, y, w, h int, bg tcell.Color, mutedSt, textSt, accentSt, borderSt tcell.Style) {
-	labels := []string{"name     ", "base url ", "api key  "}
-	values := []*string{&cp.formName, &cp.formURL, &cp.formKey}
-	inner := x + 2
-	innerW := w - 4
-	cursorSt := tcell.StyleDefault.Background(Theme.Text).Foreground(Theme.Surface)
-	activeSt := tcell.StyleDefault.Foreground(Theme.Accent).Background(bg)
-
-	for i, label := range labels {
-		if i >= h {
-			break
-		}
-		row := y + i
-		labelRunes := []rune(label + "❯ ")
-		col := inner
-		st := mutedSt
-		if i == cp.formField {
-			st = activeSt
-		}
-		for _, r := range labelRunes {
-			if col >= x+w-1 {
-				break
-			}
-			screen.SetContent(col, row, r, nil, st)
-			col++
-		}
-		maxV := innerW - len(labelRunes)
-		val := []rune(*values[i])
-		for j := 0; j < maxV; j++ {
-			var r rune = ' '
-			cellSt := textSt
-			if i == cp.formField && j == len(val) {
-				cellSt = cursorSt
-			} else if j < len(val) {
-				r = val[j]
-			}
-			screen.SetContent(col, row, r, nil, cellSt)
-			col++
-		}
-	}
-	_ = borderSt
-	_ = accentSt
-}
-
-func (cp *CommandPalette) drawItems(screen tcell.Screen, x, y, w, h int, bgSt, selSt, selAccSt, mutedSt, textSt, accentSt tcell.Style) {
+func (cp *CommandPalette) drawItems(screen tcell.Screen, x, y, w, h int, selSt, selMutedSt, mutedSt, textSt tcell.Style) {
 	inner := x + 2
 
-	// Scroll so sel is visible.
 	offset := 0
 	if cp.sel >= h {
 		offset = cp.sel - h + 1
 	}
 
-	for row := 0; row < h; row++ {
+	for row := range h {
 		fi := offset + row
 		rowY := y + row
 		if fi >= len(cp.filtered) {
@@ -329,128 +377,87 @@ func (cp *CommandPalette) drawItems(screen tcell.Screen, x, y, w, h int, bgSt, s
 		subSt := mutedSt
 		if isSel {
 			lineSt = selSt
-			subSt = selSt
-			// fill selection background across full width
+			subSt = selMutedSt
 			for col := 1; col < w-1; col++ {
 				screen.SetContent(x+col, rowY, ' ', nil, selSt)
 			}
 		}
-		_ = accentSt
-		_ = selAccSt
 
-		// Draw label left-aligned.
+		// Label left-aligned.
 		col := inner
-		label := []rune(item.Label)
-		for _, r := range label {
-			if col >= x+w-2 {
+		labelW := 0
+		for _, r := range []rune(item.Label) {
+			rw := tview.TaggedStringWidth(tview.Escape(string(r)))
+			if rw == 0 {
+				rw = 1
+			}
+			if col+rw > x+w-2 {
 				break
 			}
 			screen.SetContent(col, rowY, r, nil, lineSt)
-			col++
+			col += rw
+			labelW += rw
 		}
-		// Draw Sub right-aligned if there is room (leave 1 gap between label and sub).
+
+		// Sub right-aligned when there is room (at least 1-col gap after label).
 		if item.Sub != "" {
-			subRunes := []rune(item.Sub)
-			subStart := x + w - 2 - len(subRunes)
-			if subStart > inner+len(label)+1 {
-				for i, r := range subRunes {
-					screen.SetContent(subStart+i, rowY, r, nil, subSt)
+			subW := tview.TaggedStringWidth(tview.Escape(item.Sub))
+			subStart := x + w - 2 - subW
+			if subStart > inner+labelW+1 {
+				sc := subStart
+				for _, r := range []rune(item.Sub) {
+					rw := tview.TaggedStringWidth(tview.Escape(string(r)))
+					if rw == 0 {
+						rw = 1
+					}
+					screen.SetContent(sc, rowY, r, nil, subSt)
+					sc += rw
 				}
 			}
 		}
 	}
 }
 
-// ── input ─────────────────────────────────────────────────────────────────────
+// ── internal helpers ──────────────────────────────────────────────────────────
 
-func (cp *CommandPalette) InputHandler() func(*tcell.EventKey, func(tview.Primitive)) {
-	return cp.WrapInputHandler(func(event *tcell.EventKey, _ func(tview.Primitive)) {
-		if !cp.visible {
-			return
-		}
-		switch event.Key() {
-		case tcell.KeyEscape:
-			if cp.mode != paletteModeMenu {
-				cp.switchMode(paletteModeMenu)
-			} else {
-				cp.Close()
-			}
-
-		case tcell.KeyEnter:
-			cp.confirm()
-
-		case tcell.KeyUp:
-			if cp.mode != paletteModeAddEndpoint {
-				if cp.sel > 0 {
-					cp.sel--
-				}
-			} else {
-				if cp.formField > 0 {
-					cp.formField--
-				}
-			}
-
-		case tcell.KeyDown:
-			if cp.mode != paletteModeAddEndpoint {
-				if cp.sel < len(cp.filtered)-1 {
-					cp.sel++
-				}
-			} else {
-				if cp.formField < 2 {
-					cp.formField++
-				}
-			}
-
-		case tcell.KeyTab:
-			if cp.mode == paletteModeAddEndpoint {
-				cp.formField = (cp.formField + 1) % 3
-			}
-
-		case tcell.KeyBackspace, tcell.KeyBackspace2:
-			if cp.mode == paletteModeAddEndpoint {
-				cp.formBackspace()
-			} else if cp.cursor > 0 {
-				cp.query = append(cp.query[:cp.cursor-1], cp.query[cp.cursor:]...)
-				cp.cursor--
-				cp.refilter()
-			}
-
-		default:
-			if event.Rune() >= 32 {
-				if cp.mode == paletteModeAddEndpoint {
-					cp.formInsert(event.Rune())
-				} else {
-					cp.query = append(cp.query[:cp.cursor], append([]rune{event.Rune()}, cp.query[cp.cursor:]...)...)
-					cp.cursor++
-					cp.refilter()
-				}
-			}
-		}
-	})
-}
-
-func (cp *CommandPalette) formBackspace() {
-	ptr := cp.formActivePtr()
-	r := []rune(*ptr)
-	if len(r) > 0 {
-		*ptr = string(r[:len(r)-1])
-	}
-}
-
-func (cp *CommandPalette) formInsert(ch rune) {
-	ptr := cp.formActivePtr()
-	*ptr += string(ch)
-}
-
-func (cp *CommandPalette) formActivePtr() *string {
-	switch cp.formField {
+func (cp *CommandPalette) activeFormField() *tview.InputField {
+	switch cp.activeForm {
 	case 0:
-		return &cp.formName
+		return cp.nameField
 	case 1:
-		return &cp.formURL
+		return cp.urlField
 	default:
-		return &cp.formKey
+		return cp.keyField
 	}
+}
+
+func (cp *CommandPalette) switchMode(m paletteMode) {
+	cp.mode = m
+	cp.queryField.SetText("")
+	cp.sel = 0
+
+	switch m {
+	case paletteModeMenu:
+		cp.items = cp.menuItems
+
+	case paletteModeAddEndpoint:
+		cp.activeForm = 0
+		cp.nameField.SetText("")
+		cp.urlField.SetText("")
+		cp.keyField.SetText("")
+		cp.items = nil
+
+	case paletteModeDelEndpoint:
+		eps := cp.getEndpoints()
+		cp.items = make([]PaletteItem, len(eps))
+		for i, ep := range eps {
+			cp.items[i] = PaletteItem{Label: ep.Name, Sub: ep.BaseURL, Value: ep.Name}
+		}
+
+	case paletteModeSelectModel:
+		cp.items = []PaletteItem{{Label: "fetching models…"}}
+	}
+	cp.refilter()
 }
 
 func (cp *CommandPalette) confirm() {
@@ -465,9 +472,9 @@ func (cp *CommandPalette) confirm() {
 		}
 
 	case paletteModeAddEndpoint:
-		name := strings.TrimSpace(cp.formName)
-		baseURL := strings.TrimSpace(cp.formURL)
-		apiKey := strings.TrimSpace(cp.formKey)
+		name := strings.TrimSpace(cp.nameField.GetText())
+		baseURL := strings.TrimSpace(cp.urlField.GetText())
+		apiKey := strings.TrimSpace(cp.keyField.GetText())
 		if name == "" || baseURL == "" || apiKey == "" {
 			return
 		}
@@ -498,36 +505,17 @@ func (cp *CommandPalette) confirm() {
 	}
 }
 
-// ── mode switching ────────────────────────────────────────────────────────────
-
-func (cp *CommandPalette) switchMode(m paletteMode) {
-	cp.mode = m
-	cp.query = cp.query[:0]
-	cp.cursor = 0
-	cp.sel = 0
-
-	switch m {
-	case paletteModeMenu:
-		cp.items = cp.menuItems
-
-	case paletteModeAddEndpoint:
-		cp.formField = 0
-		cp.formName = ""
-		cp.formURL = ""
-		cp.formKey = ""
-		cp.items = nil
-
-	case paletteModeDelEndpoint:
-		eps := cp.getEndpoints()
-		cp.items = make([]PaletteItem, len(eps))
-		for i, ep := range eps {
-			cp.items[i] = PaletteItem{Label: ep.Name, Sub: ep.BaseURL, Value: ep.Name}
+func (cp *CommandPalette) refilter() {
+	q := strings.ToLower(cp.queryField.GetText())
+	cp.filtered = cp.filtered[:0]
+	for i, item := range cp.items {
+		if q == "" || strings.Contains(strings.ToLower(item.Label), q) || strings.Contains(strings.ToLower(item.Sub), q) {
+			cp.filtered = append(cp.filtered, i)
 		}
-
-	case paletteModeSelectModel:
-		cp.items = []PaletteItem{{Label: "fetching models…"}}
 	}
-	cp.refilter()
+	if cp.sel >= len(cp.filtered) {
+		cp.sel = max(0, len(cp.filtered)-1)
+	}
 }
 
 func topLevelItems() []PaletteItem {
@@ -550,23 +538,3 @@ func (cp *CommandPalette) modeTitle() string {
 		return "command palette"
 	}
 }
-
-func (cp *CommandPalette) refilter() {
-	q := strings.ToLower(string(cp.query))
-	cp.filtered = cp.filtered[:0]
-	for i, item := range cp.items {
-		if q == "" || strings.Contains(strings.ToLower(item.Label), q) || strings.Contains(strings.ToLower(item.Sub), q) {
-			cp.filtered = append(cp.filtered, i)
-		}
-	}
-	if cp.sel >= len(cp.filtered) {
-		cp.sel = max(0, len(cp.filtered)-1)
-	}
-}
-
-// SetModelItems replaces the item list in select-model mode (called after fetch).
-func (cp *CommandPalette) SetModelItems(items []PaletteItem) {
-	cp.items = items
-	cp.refilter()
-}
-

@@ -11,17 +11,24 @@ import (
 // ApprovalHeight is the fixed row count of the approval bar when visible.
 const ApprovalHeight = 5
 
-// ApprovalView is a fully custom-drawn confirmation bar for run_shell commands.
+var (
+	approvalDarkGreen = tcell.NewRGBColor(30, 90, 50)
+	approvalDarkRed   = tcell.NewRGBColor(100, 35, 35)
+	approvalWhite     = tcell.NewRGBColor(240, 240, 240)
+)
+
+// ApprovalView is a confirmation bar for tool calls that don't produce a diff.
 // It sits between the chat and input in the layout. When hidden its height is 0.
 type ApprovalView struct {
 	*tview.Box
-	toolName   string
-	argLabel   string
-	argValue   string
-	reasoning  string
-	selected   string // "allow" | "deny"
-	denyText   string
-	denyCursor int // rune index into denyText
+	toolName string
+	argLabel string
+	argValue string
+	reasoning string
+	selected  string // "allow" | "deny"
+
+	// deny text is managed by a native InputField (handles cursor, CJK, wide chars).
+	denyField *tview.InputField
 
 	lastClickSide string
 	lastClickTime time.Time
@@ -36,7 +43,34 @@ func NewApprovalView() *ApprovalView {
 		Box:      tview.NewBox(),
 		selected: "allow",
 	}
+
+	av.denyField = tview.NewInputField()
+	av.denyField.SetPlaceholder("type reason here (optional)...")
+	av.denyField.SetFieldTextColor(Theme.Text)
+	av.denyField.SetFieldBackgroundColor(Theme.Surface)
+	av.denyField.SetBackgroundColor(Theme.Surface)
+	av.denyField.SetDoneFunc(func(key tcell.Key) {
+		if key == tcell.KeyEnter {
+			av.confirm()
+		}
+	})
+
 	return av
+}
+
+// ── Focus delegation ─────────────────────────────────────────────────────────
+
+// Focus keeps hasFocus on the approval bar itself (so its InputHandler fires
+// for Left/Right/Enter) and separately sets hasFocus on denyField (for cursor)
+// when deny mode is active.
+func (av *ApprovalView) Focus(delegate func(p tview.Primitive)) {
+	av.Box.Focus(delegate) // sets av.Box.hasFocus = true
+	if av.selected == "deny" {
+		noop := func(tview.Primitive) {}
+		av.denyField.Focus(noop) // sets denyField.Box.hasFocus for cursor
+	} else {
+		av.denyField.Blur()
+	}
 }
 
 // ── public API ───────────────────────────────────────────────────────────────
@@ -74,8 +108,7 @@ func (av *ApprovalView) Show(toolName, argsJSON, reasoning string) {
 	}
 	av.reasoning = reasoning
 	av.selected = "allow"
-	av.denyText = ""
-	av.denyCursor = 0
+	av.denyField.SetText("")
 	av.lastClickSide = ""
 	av.visible = true
 }
@@ -101,7 +134,7 @@ func (av *ApprovalView) confirm() {
 	if av.selected == "allow" {
 		av.Allow()
 	} else {
-		av.Deny(av.denyText)
+		av.Deny(av.denyField.GetText())
 	}
 }
 
@@ -119,19 +152,20 @@ func (av *ApprovalView) Draw(screen tcell.Screen) {
 
 	pending := Theme.PendingColor
 	borderSt := tcell.StyleDefault.Foreground(pending)
-	bgSt := tcell.StyleDefault.Background(Theme.Surface)
-	mutedSt := tcell.StyleDefault.Foreground(Theme.Muted).Background(Theme.Surface)
-	textSt := tcell.StyleDefault.Foreground(Theme.Text).Background(Theme.Surface)
-	shellSt := tcell.StyleDefault.Foreground(Theme.ShellColor).Background(Theme.Surface)
+	bg := Theme.Surface
+	bgSt := tcell.StyleDefault.Background(bg)
+	mutedSt := tcell.StyleDefault.Foreground(Theme.Muted).Background(bg)
+	textSt := tcell.StyleDefault.Foreground(Theme.Text).Background(bg)
+	shellSt := tcell.StyleDefault.Foreground(Theme.ShellColor).Background(bg)
 
-	// Fill all 5 rows with Surface background.
-	for row := 0; row < ApprovalHeight; row++ {
-		for col := 0; col < w; col++ {
+	// Fill all rows.
+	for row := range ApprovalHeight {
+		for col := range w {
 			screen.SetContent(x+col, y+row, ' ', nil, bgSt)
 		}
 	}
 
-	// ── top border: ┌─ run_shell ──...──┐ ─────────────────────────────────
+	// ── top border: ┌─ tool_name ──...──┐ ─────────────────────────────────
 	screen.SetContent(x, y, '┌', nil, borderSt)
 	screen.SetContent(x+w-1, y, '┐', nil, borderSt)
 	col := x + 1
@@ -139,11 +173,8 @@ func (av *ApprovalView) Draw(screen tcell.Screen) {
 	col++
 	screen.SetContent(col, y, ' ', nil, borderSt)
 	col++
-	toolSt := tcell.StyleDefault.Foreground(Theme.PendingColor)
-	for _, r := range []rune(av.toolName) {
-		screen.SetContent(col, y, r, nil, toolSt)
-		col++
-	}
+	toolSt := tcell.StyleDefault.Foreground(Theme.PendingColor).Background(bg)
+	col += drawText(screen, av.toolName, col, y, x+w-1-col, toolSt)
 	screen.SetContent(col, y, ' ', nil, borderSt)
 	col++
 	for ; col < x+w-1; col++ {
@@ -156,140 +187,68 @@ func (av *ApprovalView) Draw(screen tcell.Screen) {
 		screen.SetContent(x+w-1, y+row, '│', nil, borderSt)
 	}
 
-	inner := x + 2  // content starts after "│ "
-	innerW := w - 4 // width between "│ " and " │"
+	inner := x + 2
+	innerW := w - 4
 
 	// ── row 1: <label> ❯ <value> ──────────────────────────────────────────
-	prefix := []rune(av.argLabel + " ❯ ")
 	col = inner
-	for _, r := range prefix {
-		if col >= x+w-1 {
-			break
-		}
-		screen.SetContent(col, y+1, r, nil, mutedSt)
-		col++
-	}
-	maxCmd := innerW - len(prefix)
-	for _, r := range []rune(truncateStr(av.argValue, maxCmd)) {
-		if col >= x+w-1 {
-			break
-		}
-		screen.SetContent(col, y+1, r, nil, shellSt)
-		col++
-	}
+	used := drawText(screen, av.argLabel+" ❯ ", col, y+1, innerW, mutedSt)
+	col += used
+	drawText(screen, truncateStr(av.argValue, innerW-used), col, y+1, innerW-used, shellSt)
 
 	// ── row 2: reason: <reasoning> ────────────────────────────────────────
 	if av.reasoning != "" {
-		reasonPrefix := []rune("reason: ")
 		col = inner
-		for _, r := range reasonPrefix {
-			if col >= x+w-1 {
-				break
-			}
-			screen.SetContent(col, y+2, r, nil, mutedSt)
-			col++
-		}
-		maxReason := innerW - len(reasonPrefix)
-		for _, r := range []rune(truncateStr(av.reasoning, maxReason)) {
-			if col >= x+w-1 {
-				break
-			}
-			screen.SetContent(col, y+2, r, nil, textSt)
-			col++
-		}
+		used = drawText(screen, "reason: ", col, y+2, innerW, mutedSt)
+		col += used
+		drawText(screen, truncateStr(av.reasoning, innerW-used), col, y+2, innerW-used, textSt)
 	}
 
-	// ── row 3: [ Allow ]   [ Deny: <text>_ ] ──────────────────────────────
-	allowLabel := []rune("[ Allow ]")
-	allowLen := len(allowLabel) // 9
-	white := tcell.NewRGBColor(240, 240, 240)
-	darkGreen := tcell.NewRGBColor(30, 90, 50)
-	darkRed := tcell.NewRGBColor(100, 35, 35)
-	allowSt := tcell.StyleDefault.Foreground(Theme.SuccessColor).Background(Theme.Surface)
+	// ── row 3: [ Allow ]   [ Deny: <denyField> ] ──────────────────────────
+	allowSt := tcell.StyleDefault.Foreground(Theme.SuccessColor).Background(bg)
 	if av.selected == "allow" {
-		allowSt = tcell.StyleDefault.Background(darkGreen).Foreground(white)
+		allowSt = tcell.StyleDefault.Background(approvalDarkGreen).Foreground(approvalWhite)
 	}
 	col = inner
-	for _, r := range allowLabel {
-		screen.SetContent(col, y+3, r, nil, allowSt)
-		col++
-	}
+	col += drawText(screen, "[ Allow ]", col, y+3, innerW, allowSt)
 
 	// gap
-	col = inner + allowLen + 3
+	col = inner + 9 + 3
 
-	// Deny area
-	denyEnd := x + w - 2 // exclusive (before right margin space)
+	denyEnd := x + w - 2
 	denyW := denyEnd - col
-	if denyW < 10 {
-		goto bottomBorder
-	}
-
-	{
-		denyBracketSt := tcell.StyleDefault.Foreground(Theme.ErrorColor).Background(Theme.Surface)
-		denyTextSt := tcell.StyleDefault.Foreground(Theme.Text).Background(Theme.Surface)
-		denyCursorSt := tcell.StyleDefault.Background(Theme.Text).Foreground(Theme.Surface)
-		placeholderSt := mutedSt
+	if denyW >= 10 {
+		denyBracketSt := tcell.StyleDefault.Foreground(Theme.ErrorColor).Background(bg)
 		if av.selected == "deny" {
-			denyBracketSt = tcell.StyleDefault.Background(darkRed).Foreground(white)
-			denyTextSt = tcell.StyleDefault.Background(darkRed).Foreground(white)
-			denyCursorSt = tcell.StyleDefault.Background(white).Foreground(darkRed)
-			placeholderSt = tcell.StyleDefault.Background(darkRed).Foreground(Theme.Muted)
+			denyBracketSt = tcell.StyleDefault.Background(approvalDarkRed).Foreground(approvalWhite)
 		}
 
-		denyPrefix := []rune("[ Deny: ")
-		denySuffix := []rune(" ]")
-		textAreaW := denyW - len(denyPrefix) - len(denySuffix)
-		if textAreaW < 0 {
-			textAreaW = 0
-		}
+		const denyPfx = "[ Deny: "
+		const denySfx = " ]"
+		col += drawText(screen, denyPfx, col, y+3, denyW, denyBracketSt)
 
-		for _, r := range denyPrefix {
-			screen.SetContent(col, y+3, r, nil, denyBracketSt)
-			col++
-		}
-
-		// Text area: show typed text, or greyed placeholder when empty.
-		textRunes := []rune(av.denyText)
-		placeholder := []rune("type reason here (optional)...")
-		isEmpty := len(textRunes) == 0
-		viewStart := 0
-		if textAreaW > 0 && av.denyCursor >= textAreaW {
-			viewStart = av.denyCursor - textAreaW + 1
-		}
-		for i := 0; i < textAreaW; i++ {
-			runeIdx := viewStart + i
-			var r rune = ' '
-			var st tcell.Style
-			if isEmpty {
-				if runeIdx < len(placeholder) {
-					r = placeholder[runeIdx]
-				}
-				st = placeholderSt
-				if av.selected == "deny" && runeIdx == av.denyCursor {
-					st = denyCursorSt
-				}
+		textAreaW := denyEnd - col - len([]rune(denySfx))
+		if textAreaW > 0 {
+			if av.selected == "deny" {
+				av.denyField.SetFieldBackgroundColor(approvalDarkRed)
+				av.denyField.SetFieldTextColor(approvalWhite)
+				av.denyField.SetPlaceholderStyle(
+					tcell.StyleDefault.Foreground(Theme.Muted).Background(approvalDarkRed))
 			} else {
-				if runeIdx < len(textRunes) {
-					r = textRunes[runeIdx]
-				}
-				st = denyTextSt
-				if av.selected == "deny" && runeIdx == av.denyCursor {
-					st = denyCursorSt
-				}
+				av.denyField.SetFieldBackgroundColor(bg)
+				av.denyField.SetFieldTextColor(Theme.Muted)
+				av.denyField.SetPlaceholderStyle(
+					tcell.StyleDefault.Foreground(Theme.Muted).Background(bg))
 			}
-			screen.SetContent(col, y+3, r, nil, st)
-			col++
+			av.denyField.SetBackgroundColor(bg)
+			av.denyField.SetRect(col, y+3, textAreaW, 1)
+			av.denyField.Draw(screen)
+			col += textAreaW
 		}
-
-		for _, r := range denySuffix {
-			screen.SetContent(col, y+3, r, nil, denyBracketSt)
-			col++
-		}
+		drawText(screen, denySfx, col, y+3, len([]rune(denySfx)), denyBracketSt)
 	}
 
-bottomBorder:
-	// ── bottom border: └──...──┘ ──────────────────────────────────────────
+	// ── bottom border ─────────────────────────────────────────────────────
 	screen.SetContent(x, y+4, '└', nil, borderSt)
 	screen.SetContent(x+w-1, y+4, '┘', nil, borderSt)
 	for col := x + 1; col < x+w-1; col++ {
@@ -300,39 +259,28 @@ bottomBorder:
 // ── InputHandler ─────────────────────────────────────────────────────────────
 
 func (av *ApprovalView) InputHandler() func(*tcell.EventKey, func(tview.Primitive)) {
-	return av.WrapInputHandler(func(event *tcell.EventKey, _ func(tview.Primitive)) {
+	return av.WrapInputHandler(func(event *tcell.EventKey, setFocus func(tview.Primitive)) {
 		if !av.visible {
 			return
 		}
 		switch event.Key() {
 		case tcell.KeyLeft:
 			av.selected = "allow"
+			av.denyField.Blur()
+			setFocus(av)
 		case tcell.KeyRight:
 			av.selected = "deny"
+			av.denyField.Focus(func(tview.Primitive) {})
+			setFocus(av)
 		case tcell.KeyEnter:
 			av.confirm()
-		case tcell.KeyBackspace, tcell.KeyBackspace2:
-			if av.selected == "deny" && av.denyCursor > 0 {
-				r := []rune(av.denyText)
-				av.denyText = string(append(r[:av.denyCursor-1], r[av.denyCursor:]...))
-				av.denyCursor--
-			}
-		case tcell.KeyDelete:
-			if av.selected == "deny" {
-				r := []rune(av.denyText)
-				if av.denyCursor < len(r) {
-					av.denyText = string(append(r[:av.denyCursor], r[av.denyCursor+1:]...))
-				}
-			}
 		default:
-			if av.selected == "deny" && event.Rune() >= 32 {
-				r := []rune(av.denyText)
-				n := make([]rune, len(r)+1)
-				copy(n, r[:av.denyCursor])
-				n[av.denyCursor] = event.Rune()
-				copy(n[av.denyCursor+1:], r[av.denyCursor:])
-				av.denyText = string(n)
-				av.denyCursor++
+			// Route all other input (runes, backspace, etc.) to denyField
+			// when deny mode is active.
+			if av.selected == "deny" {
+				if h := av.denyField.InputHandler(); h != nil {
+					h(event, setFocus)
+				}
 			}
 		}
 	})
@@ -348,13 +296,12 @@ func (av *ApprovalView) MouseHandler() func(tview.MouseAction, *tcell.EventMouse
 		mx, my := event.Position()
 		x, y, w, _ := av.GetRect()
 
-		// Only the action row (y+3) is interactive.
 		if my != y+3 {
 			return false, nil
 		}
 
 		inner := x + 2
-		allowEnd := inner + 9 // "[ Allow ]"
+		allowEnd := inner + 9
 		denyStart := inner + 9 + 3
 		denyEnd := x + w - 2
 
@@ -381,11 +328,28 @@ func (av *ApprovalView) MouseHandler() func(tview.MouseAction, *tcell.EventMouse
 				av.selected = side
 				av.lastClickSide = side
 				av.lastClickTime = now
+				setFocus(av)
 			}
 			return true, nil
 		}
 		return false, nil
 	})
+}
+
+func drawText(screen tcell.Screen, text string, col, row, maxCols int, st tcell.Style) int {
+	used := 0
+	for _, r := range []rune(text) {
+		rw := tview.TaggedStringWidth(tview.Escape(string(r)))
+		if rw == 0 {
+			rw = 1
+		}
+		if used+rw > maxCols {
+			break
+		}
+		screen.SetContent(col+used, row, r, nil, st)
+		used += rw
+	}
+	return used
 }
 
 func truncateStr(s string, n int) string {
