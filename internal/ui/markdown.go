@@ -22,10 +22,30 @@ var mdGold = goldmark.New(
 
 // ─── block IR (width-independent) ────────────────────────────────────────────
 
+// renderedLine pairs a tview-tagged display string with a per-visible-column
+// copyability mask. copyMask[col] == false means the character at that column
+// is a non-copyable format/border element. len(copyMask) equals the visible
+// width of text. A nil mask means every column is copyable.
+type renderedLine struct {
+	text     string
+	copyMask []bool
+}
+
+// allCopyMask returns a mask of length n with every position marked copyable.
+func allCopyMask(n int) []bool {
+	m := make([]bool, n)
+	for i := range m {
+		m[i] = true
+	}
+	return m
+}
+
 // mdBlock is a parsed, width-independent markdown block. renderLines re-wraps
 // it to the given visible column width — called on every resize, never re-parses.
+// Each renderedLine carries an explicit per-column copyability mask produced at
+// generation time; no post-hoc character detection is needed.
 type mdBlock interface {
-	renderLines(maxW int) []string
+	renderLines(maxW int) []renderedLine
 }
 
 type paragraphBlock struct{ spans []mdSpan }
@@ -54,23 +74,29 @@ type groupBlock struct{ items []mdBlock } // fallback for unknown block nodes
 
 // ─── renderLines implementations ─────────────────────────────────────────────
 
-func (b *paragraphBlock) renderLines(maxW int) []string {
-	return wrapSpans(b.spans, maxW)
-}
-
-func (b *headingBlock) renderLines(maxW int) []string {
-	prefix := strings.Repeat("#", b.level) + " "
-	plain := spansPlain(b.spans)
-	ac := tviewColor(Theme.Accent)
-	wrapped := tview.WordWrap(tview.Escape(prefix+plain), maxW)
-	out := make([]string, len(wrapped))
-	for i, l := range wrapped {
-		out[i] = fmt.Sprintf("[%s][::b]%s[-:-:-]", ac, l)
+func (b *paragraphBlock) renderLines(maxW int) []renderedLine {
+	lines := wrapSpans(b.spans, maxW)
+	out := make([]renderedLine, len(lines))
+	for i, l := range lines {
+		out[i] = renderedLine{text: l, copyMask: allCopyMask(tview.TaggedStringWidth(l))}
 	}
 	return out
 }
 
-func (b *codeBlock) renderLines(maxW int) []string {
+func (b *headingBlock) renderLines(maxW int) []renderedLine {
+	prefix := strings.Repeat("#", b.level) + " "
+	plain := spansPlain(b.spans)
+	ac := tviewColor(Theme.Accent)
+	wrapped := tview.WordWrap(tview.Escape(prefix+plain), maxW)
+	out := make([]renderedLine, len(wrapped))
+	for i, l := range wrapped {
+		text := fmt.Sprintf("[%s][::b]%s[-:-:-]", ac, l)
+		out[i] = renderedLine{text: text, copyMask: allCopyMask(tview.TaggedStringWidth(text))}
+	}
+	return out
+}
+
+func (b *codeBlock) renderLines(maxW int) []renderedLine {
 	bc := tviewColor(Theme.Border)
 	mc := tviewColor(Theme.Muted)
 	innerW := max(1, maxW-4) // │·content·│ → 2 borders + 2 spaces
@@ -96,14 +122,29 @@ func (b *codeBlock) renderLines(maxW int) []string {
 		inner = b.renderPlain(innerW)
 	}
 
-	out := make([]string, 0, len(inner)+2)
-	out = append(out, topBorder())
+	out := make([]renderedLine, 0, len(inner)+2)
+
+	// Top border: entirely non-copyable (mask is all-false = zero value).
+	top := topBorder()
+	out = append(out, renderedLine{text: top, copyMask: make([]bool, tview.TaggedStringWidth(top))})
+
 	for _, line := range inner {
 		visW := tview.TaggedStringWidth(line)
-		pad := strings.Repeat(" ", max(0, innerW-visW))
-		out = append(out, fmt.Sprintf("[%s]│[-:-:-] %s%s [%s]│[-:-:-]", bc, line, pad, bc))
+		pad := max(0, innerW-visW)
+		text := fmt.Sprintf("[%s]│[-:-:-] %s%s [%s]│[-:-:-]", bc, line, strings.Repeat(" ", pad), bc)
+		// Visible layout: │(1) space(1) content(visW) padding(pad) space(1) │(1)
+		// Only the content columns are copyable.
+		totalW := 2 + visW + pad + 2
+		mask := make([]bool, totalW)
+		for col := 2; col < 2+visW; col++ {
+			mask[col] = true
+		}
+		out = append(out, renderedLine{text: text, copyMask: mask})
 	}
-	out = append(out, botBorder)
+
+	// Bottom border: entirely non-copyable.
+	bot := botBorder
+	out = append(out, renderedLine{text: bot, copyMask: make([]bool, tview.TaggedStringWidth(bot))})
 	return out
 }
 
@@ -223,31 +264,37 @@ func wrapStyledRunesToTagged(runes []diffStyledRune, maxW int) []string {
 	return out
 }
 
-func (b *thematicBreakBlock) renderLines(maxW int) []string {
+func (b *thematicBreakBlock) renderLines(maxW int) []renderedLine {
 	mc := tviewColor(Theme.Muted)
-	return []string{fmt.Sprintf("[%s]%s[-:-:-]", mc, strings.Repeat("─", maxW))}
+	text := fmt.Sprintf("[%s]%s[-:-:-]", mc, strings.Repeat("─", maxW))
+	// Entirely non-copyable: mask is all-false.
+	return []renderedLine{{text: text, copyMask: make([]bool, maxW)}}
 }
 
-func (b *blockquoteBlock) renderLines(maxW int) []string {
+func (b *blockquoteBlock) renderLines(maxW int) []renderedLine {
 	mc := tviewColor(Theme.Muted)
 	innerW := maxW - 2
 	if innerW < 1 {
 		innerW = 1
 	}
-	var inner []string
+	var inner []renderedLine
 	for _, item := range b.items {
 		inner = append(inner, item.renderLines(innerW)...)
 	}
-	out := make([]string, len(inner))
-	for i, l := range inner {
-		out[i] = fmt.Sprintf("[%s]▎[-:-:-] %s", mc, l)
+	out := make([]renderedLine, len(inner))
+	for i, rl := range inner {
+		text := fmt.Sprintf("[%s]▎[-:-:-] %s", mc, rl.text)
+		// Prepend 2 non-copyable columns (▎ and space), then shift inner mask.
+		mask := make([]bool, 2+len(rl.copyMask))
+		copy(mask[2:], rl.copyMask)
+		out[i] = renderedLine{text: text, copyMask: mask}
 	}
 	return out
 }
 
-func (b *listBlock) renderLines(maxW int) []string {
+func (b *listBlock) renderLines(maxW int) []renderedLine {
 	num := b.start
-	var out []string
+	var out []renderedLine
 	for _, item := range b.items {
 		var bullet string
 		if b.ordered {
@@ -263,29 +310,38 @@ func (b *listBlock) renderLines(maxW int) []string {
 		}
 		cont := strings.Repeat(" ", bulletW)
 
-		var itemLines []string
+		var itemLines []renderedLine
 		for _, block := range item.blocks {
 			itemLines = append(itemLines, block.renderLines(innerW)...)
 		}
-		for i, l := range itemLines {
+		for i, rl := range itemLines {
+			var prefix string
 			if i == 0 {
-				out = append(out, bullet+l)
+				prefix = bullet
 			} else {
-				out = append(out, cont+l)
+				prefix = cont
 			}
+			text := prefix + rl.text
+			// Bullet/continuation columns are copyable; inner mask follows.
+			mask := make([]bool, bulletW+len(rl.copyMask))
+			for j := 0; j < bulletW; j++ {
+				mask[j] = true
+			}
+			copy(mask[bulletW:], rl.copyMask)
+			out = append(out, renderedLine{text: text, copyMask: mask})
 		}
 	}
 	return out
 }
 
-func (b *tableBlock) renderLines(maxW int) []string {
-	var out []string
+func (b *tableBlock) renderLines(maxW int) []renderedLine {
+	var out []renderedLine
 	renderTableBlock(b, maxW, &out)
 	return out
 }
 
-func (b *groupBlock) renderLines(maxW int) []string {
-	var out []string
+func (b *groupBlock) renderLines(maxW int) []renderedLine {
+	var out []renderedLine
 	for _, item := range b.items {
 		out = append(out, item.renderLines(maxW)...)
 	}
@@ -391,7 +447,7 @@ func parseTable(tbl *extast.Table, source []byte) *tableBlock {
 
 // ─── table rendering ──────────────────────────────────────────────────────────
 
-func renderTableBlock(tbl *tableBlock, maxW int, out *[]string) {
+func renderTableBlock(tbl *tableBlock, maxW int, out *[]renderedLine) {
 	numCols := len(tbl.alignments)
 	if numCols == 0 {
 		numCols = len(tbl.header)
@@ -504,18 +560,19 @@ func renderTableBlock(tbl *tableBlock, maxW int, out *[]string) {
 		}
 	}
 
-	// emitRow transposes per-cell line-slices into display rows.
-	// When cells have different line counts the shorter ones are padded with
-	// blank lines so all columns stay aligned.
-	emitRow := func(cellLines [][]string) []string {
+	// emitRow transposes per-cell line-slices into display rows with masks.
+	// Each row's mask marks │ separators and padding as non-copyable; only
+	// actual cell content columns are marked true.
+	emitRow := func(cellLines [][]string) []renderedLine {
 		maxL := 0
 		for _, lines := range cellLines {
 			if len(lines) > maxL {
 				maxL = len(lines)
 			}
 		}
-		out := make([]string, maxL)
+		result := make([]renderedLine, maxL)
 		for li := 0; li < maxL; li++ {
+			widths := make([]int, numCols)
 			parts := make([]string, numCols)
 			for i := 0; i < numCols; i++ {
 				var content string
@@ -524,15 +581,59 @@ func renderTableBlock(tbl *tableBlock, maxW int, out *[]string) {
 					content = cellLines[i][li]
 					w = tview.TaggedStringWidth(content)
 				}
+				widths[i] = w
 				parts[i] = " " + padCell(content, w, colW[i], alignOf(i)) + " "
 			}
 			inner := strings.Join(parts, fmt.Sprintf("[%s]│[-:-:-]", bc))
-			out[li] = fmt.Sprintf("[%s]│[-:-:-]%s[%s]│[-:-:-]", bc, inner, bc)
+			text := fmt.Sprintf("[%s]│[-:-:-]%s[%s]│[-:-:-]", bc, inner, bc)
+
+			// Build copyability mask: opening │, then per-column regions.
+			// Each column: space(F) + content/padding + space(F) + │(F)
+			mask := []bool{false} // opening │
+			for i := 0; i < numCols; i++ {
+				w := widths[i]
+				cw := colW[i]
+				extra := cw - w
+				if extra < 0 {
+					extra = 0
+				}
+				mask = append(mask, false) // space before cell
+				switch alignOf(i) {
+				case extast.AlignRight:
+					for j := 0; j < extra; j++ {
+						mask = append(mask, false) // left padding
+					}
+					for j := 0; j < w; j++ {
+						mask = append(mask, true) // content
+					}
+				case extast.AlignCenter:
+					l, r := extra/2, extra-extra/2
+					for j := 0; j < l; j++ {
+						mask = append(mask, false)
+					}
+					for j := 0; j < w; j++ {
+						mask = append(mask, true) // content
+					}
+					for j := 0; j < r; j++ {
+						mask = append(mask, false)
+					}
+				default: // AlignLeft / AlignNone
+					for j := 0; j < w; j++ {
+						mask = append(mask, true) // content
+					}
+					for j := 0; j < extra; j++ {
+						mask = append(mask, false) // right padding
+					}
+				}
+				mask = append(mask, false, false) // space after + │ separator/closer
+			}
+
+			result[li] = renderedLine{text: text, copyMask: mask}
 		}
-		return out
+		return result
 	}
 
-	hRule := func(left, mid, right string) string {
+	hRule := func(left, mid, right string) renderedLine {
 		var sb strings.Builder
 		fmt.Fprintf(&sb, "[%s]%s", bc, left)
 		for i, w := range colW {
@@ -542,7 +643,9 @@ func renderTableBlock(tbl *tableBlock, maxW int, out *[]string) {
 			sb.WriteString(strings.Repeat("─", w+2))
 		}
 		sb.WriteString(right + "[-:-:-]")
-		return sb.String()
+		text := sb.String()
+		// Entirely non-copyable.
+		return renderedLine{text: text, copyMask: make([]bool, tview.TaggedStringWidth(text))}
 	}
 
 	// Phase 3: wrap each cell to its column width, emit multi-line rows.
@@ -589,25 +692,38 @@ func renderTableBlock(tbl *tableBlock, maxW int, out *[]string) {
 	*out = append(*out, hRule("└", "┴", "┘"))
 }
 
-// ─── public render entry point ────────────────────────────────────────────────
+// ─── public render entry points ───────────────────────────────────────────────
 
-// renderMarkdown parses and immediately renders src to tview-tagged lines.
-// Callers that need resize-efficient rendering should use the cached path via
-// ChatView.renderMarkdownCached instead.
-func renderMarkdown(src string, maxW int) []string {
-	return renderBlocks(parseMarkdown(src), maxW)
-}
-
-// renderBlocks renders a pre-parsed block list to lines at the given width.
-func renderBlocks(blocks []mdBlock, maxW int) []string {
-	var out []string
+// renderBlocksAnnotated renders blocks to lines with per-column copy masks.
+func renderBlocksAnnotated(blocks []mdBlock, maxW int) []renderedLine {
+	var out []renderedLine
 	for _, b := range blocks {
 		out = append(out, b.renderLines(maxW)...)
 	}
 	if len(out) == 0 {
-		out = []string{""}
+		out = []renderedLine{{text: ""}}
 	}
 	return out
+}
+
+// renderBlocks renders blocks for display, discarding copy masks.
+func renderBlocks(blocks []mdBlock, maxW int) []string {
+	rls := renderBlocksAnnotated(blocks, maxW)
+	out := make([]string, len(rls))
+	for i, rl := range rls {
+		out[i] = rl.text
+	}
+	return out
+}
+
+// renderMarkdown parses and renders src for display (masks discarded).
+func renderMarkdown(src string, maxW int) []string {
+	return renderBlocks(parseMarkdown(src), maxW)
+}
+
+// renderMarkdownAnnotated parses and renders src with per-column copy masks.
+func renderMarkdownAnnotated(src string, maxW int) []renderedLine {
+	return renderBlocksAnnotated(parseMarkdown(src), maxW)
 }
 
 // ─── inline span collection ───────────────────────────────────────────────────

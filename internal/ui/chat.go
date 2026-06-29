@@ -2,7 +2,6 @@ package ui
 
 import (
 	"fmt"
-	"regexp"
 	"strings"
 
 	"github.com/gdamore/tcell/v2"
@@ -17,14 +16,36 @@ type selPoint struct {
 	screenX int
 }
 
-// tviewTagRe matches tview color/attribute tags like [#rrggbb], [-], [::b].
-// [^\[] excludes a literal '[' so [[] (escaped bracket) is never matched.
-var tviewTagRe = regexp.MustCompile(`\[[^\[]*\]`)
-
-// stripTags removes tview color tags and unescapes [[] → [.
+// stripTags removes tview color/attribute tags and restores escaped brackets.
+// tview.Escape converts [x] → [x[] so inner content containing '[' marks an
+// escape: the text before the '[' plus a literal ']' is the original sequence.
 func stripTags(s string) string {
-	s = tviewTagRe.ReplaceAllString(s, "")
-	return strings.ReplaceAll(s, "[[]", "[")
+	var out strings.Builder
+	for len(s) > 0 {
+		idx := strings.IndexByte(s, '[')
+		if idx < 0 {
+			out.WriteString(s)
+			return out.String()
+		}
+		out.WriteString(s[:idx])
+		s = s[idx:]
+		end := strings.IndexByte(s[1:], ']')
+		if end < 0 {
+			out.WriteByte('[')
+			s = s[1:]
+			continue
+		}
+		inner := s[1 : end+1]
+		if i := strings.LastIndexByte(inner, '['); i >= 0 {
+			// Escaped bracket sequence: emit the text before '[' wrapped in [ ].
+			out.WriteByte('[')
+			out.WriteString(inner[:i])
+			out.WriteByte(']')
+		}
+		// Otherwise it's a color/attribute tag — consume silently.
+		s = s[end+2:]
+	}
+	return out.String()
 }
 
 // ChatView displays the conversation as individually bordered message boxes.
@@ -55,6 +76,11 @@ type ChatView struct {
 	// mdCache stores parsed markdown blocks keyed by content string so that
 	// resize only re-wraps without re-running goldmark.
 	mdCache map[string][]mdBlock
+
+	// copyColMask maps doc-line → per-visible-column copyability mask, populated
+	// in buildText from renderBlocksAnnotated. Absent key = fully copyable.
+	// Present key: false columns are format/border chars, true are content.
+	copyColMask map[int][]bool
 }
 
 // NewChatView creates the scrollable message display.
@@ -127,14 +153,19 @@ func (cv *ChatView) boxDocRange(i int) (startDoc, endDoc int) {
 	return
 }
 
-// drawPartialSel highlights the column range within the anchor box's content
-// area (not including top/bottom border lines or the │ border columns).
-func (cv *ChatView) drawPartialSel(screen tcell.Screen) {
+// iterPartialSel calls fn for each content doc-line in the current partial
+// selection. fn receives content-relative column indices (colLo, colHi) and
+// the copyColMask for that line (nil = fully copyable). Box border lines are
+// skipped; anchor/cursor are normalised internally.
+func (cv *ChatView) iterPartialSel(fn func(docLine, colLo, colHi int, mask []bool)) {
 	if cv.anchorBox < 0 || cv.anchorBox >= len(cv.boxLeft) {
 		return
 	}
-	ix, iy, _, ih := cv.GetInnerRect()
-	scrollY, _ := cv.GetScrollOffset()
+	ix, _, _, _ := cv.GetInnerRect()
+	lp := cv.boxLeft[cv.anchorBox]
+	bw := cv.boxRight[cv.anchorBox] - lp
+	contentLeft := ix + lp + 2
+	contentRight := ix + lp + bw - 2
 
 	anchor, cur := cv.selAnchor, cv.selCursor
 	if anchor.docLine > cur.docLine ||
@@ -142,24 +173,11 @@ func (cv *ChatView) drawPartialSel(screen tcell.Screen) {
 		anchor, cur = cur, anchor
 	}
 
-	lp := cv.boxLeft[cv.anchorBox]
-	bw := cv.boxRight[cv.anchorBox] - lp
-	contentLeft := ix + lp + 2       // past left │ and its inner space
-	contentRight := ix + lp + bw - 2 // before inner space and right │
-
 	boxStart, boxEndExcl := cv.boxDocRange(cv.anchorBox)
 	bottomBorder := boxEndExcl - 1
 
-	selStyle := tcell.StyleDefault.
-		Foreground(tcell.NewRGBColor(220, 220, 230)).
-		Background(tcell.NewRGBColor(50, 80, 150))
-
 	for docLine := anchor.docLine; docLine <= cur.docLine; docLine++ {
 		if docLine == boxStart || docLine == bottomBorder {
-			continue // skip top and bottom border lines
-		}
-		sy := iy + (docLine - scrollY)
-		if sy < iy || sy >= iy+ih {
 			continue
 		}
 		x0 := contentLeft
@@ -170,11 +188,39 @@ func (cv *ChatView) drawPartialSel(screen tcell.Screen) {
 		if docLine == cur.docLine && cur.screenX < x1 {
 			x1 = cur.screenX
 		}
-		for x := x0; x < x1; x++ {
+		fn(docLine, x0-contentLeft, x1-contentLeft, cv.copyColMask[docLine])
+	}
+}
+
+// drawPartialSel highlights copyable columns within the anchor box's content
+// area (not including top/bottom border lines or the │ border columns).
+func (cv *ChatView) drawPartialSel(screen tcell.Screen) {
+	if cv.anchorBox < 0 || cv.anchorBox >= len(cv.boxLeft) {
+		return
+	}
+	ix, iy, _, ih := cv.GetInnerRect()
+	lp := cv.boxLeft[cv.anchorBox]
+	contentLeft := ix + lp + 2
+	scrollY, _ := cv.GetScrollOffset()
+
+	selStyle := tcell.StyleDefault.
+		Foreground(tcell.NewRGBColor(220, 220, 230)).
+		Background(tcell.NewRGBColor(50, 80, 150))
+
+	cv.iterPartialSel(func(docLine, colLo, colHi int, mask []bool) {
+		sy := iy + (docLine - scrollY)
+		if sy < iy || sy >= iy+ih {
+			return
+		}
+		for col := colLo; col < colHi; col++ {
+			if mask != nil && (col >= len(mask) || !mask[col]) {
+				continue // non-copyable: format char or trailing blank
+			}
+			x := contentLeft + col
 			r, comb, _, _ := screen.GetContent(x, sy)
 			screen.SetContent(x, sy, r, comb, selStyle)
 		}
-	}
+	})
 }
 
 // drawWholeSel highlights entire message boxes (including borders) for the
@@ -478,6 +524,105 @@ func (cv *ChatView) buildText(width int) {
 	cv.boxLeft = boxLeft
 	cv.boxRight = boxRight
 
+	// Build per-column copy mask for all message content lines.
+	// Absent key = fully copyable. Present key: false columns are non-copyable
+	// (format/border chars OR trailing blank padding inside the box).
+	cv.copyColMask = make(map[int][]bool)
+	cw := maxW - 4 // maxContentW shared across all messages
+
+	for i, msg := range renderedMsgs {
+		start := msgStartLine[i]
+		switch msg.Role {
+
+		case session.RoleUser:
+			lines := wordWrap(msg.Content, cw)
+			actualW := 0
+			for _, l := range lines {
+				if n := tview.TaggedStringWidth(tview.Escape(l)); n > actualW {
+					actualW = n
+				}
+			}
+			boxCW := max(4, actualW) // boxW min 8 → contentW min 4
+			for j, l := range lines {
+				vlen := tview.TaggedStringWidth(tview.Escape(l))
+				if vlen < boxCW {
+					cv.copyColMask[start+1+j] = allCopyMask(vlen)
+				}
+			}
+
+		case session.RoleAssistant:
+			if msg.Error != nil {
+				lines := wordWrap(msg.Error.Error(), cw)
+				actualW := 0
+				for _, l := range lines {
+					if n := tview.TaggedStringWidth(tview.Escape(l)); n > actualW {
+						actualW = n
+					}
+				}
+				boxCW := max(6, actualW) // boxW min 10 → contentW min 6
+				for j, l := range lines {
+					vlen := tview.TaggedStringWidth(tview.Escape(l))
+					if vlen < boxCW {
+						cv.copyColMask[start+1+j] = allCopyMask(vlen)
+					}
+				}
+			} else if msg.Content != "" {
+				blocks := cv.mdCache[msg.Content]
+				if blocks == nil {
+					break
+				}
+				rls := renderBlocksAnnotated(blocks, cw)
+
+				// Mirror renderMessageBox's boxW calculation to get actual contentW.
+				actualW := 0
+				for _, rl := range rls {
+					if n := len(rl.copyMask); n > actualW {
+						actualW = n
+					}
+				}
+				var tuLineGroups [][]string
+				for _, tu := range msg.ToolUses {
+					tul := fmtToolUseLines(tu, cw)
+					for _, l := range tul {
+						if n := tview.TaggedStringWidth(l); n > actualW {
+							actualW = n
+						}
+					}
+					tuLineGroups = append(tuLineGroups, tul)
+				}
+				minBW := 9
+				if msg.Partial {
+					minBW = 11
+				}
+				boxCW := max(minBW-4, actualW)
+
+				for j, rl := range rls {
+					mask := rl.copyMask
+					hasFormat := false
+					for _, v := range mask {
+						if !v {
+							hasFormat = true
+							break
+						}
+					}
+					if hasFormat || len(mask) < boxCW {
+						cv.copyColMask[start+1+j] = mask
+					}
+				}
+				base := len(rls)
+				for _, tul := range tuLineGroups {
+					for j, l := range tul {
+						vlen := tview.TaggedStringWidth(l)
+						if vlen < boxCW {
+							cv.copyColMask[start+1+base+j] = allCopyMask(vlen)
+						}
+					}
+					base += len(tul)
+				}
+			}
+		}
+	}
+
 	text := b.String()
 	cv.TotalLines = strings.Count(text, "\n") + 1
 	cv.TextView.SetText(text)
@@ -706,73 +851,49 @@ func (cv *ChatView) SelectedText() string {
 }
 
 func (cv *ChatView) selectedTextPartial() string {
-	ix, _, _, _ := cv.GetInnerRect()
-
-	anchor, cur := cv.selAnchor, cv.selCursor
-	if anchor.docLine > cur.docLine ||
-		(anchor.docLine == cur.docLine && anchor.screenX > cur.screenX) {
-		anchor, cur = cur, anchor
-	}
-
 	maxW := cv.lastWidth * 4 / 5
 	if maxW < 20 {
 		maxW = 20
 	}
 
-	var parts []string
 	lastMsgIdx := -2
 	var allLines []string
-	var leftPad int
+	var parts []string
 
-	for docLine := anchor.docLine; docLine <= cur.docLine; docLine++ {
+	cv.iterPartialSel(func(docLine, colLo, colHi int, mask []bool) {
 		msgIdx := cv.findMsgAt(docLine)
 		if msgIdx < 0 || msgIdx >= len(cv.renderedMsgs) {
-			continue
+			return
 		}
 		if msgIdx != lastMsgIdx {
 			lastMsgIdx = msgIdx
-			allLines, leftPad = computeMsgContent(cv.renderedMsgs[msgIdx], cv.lastWidth, maxW)
+			allLines, _ = computeMsgContent(cv.renderedMsgs[msgIdx], cv.lastWidth, maxW)
 		}
-
-		// line 0 within box = top border, lines 1..N = content, line N+1 = bottom border.
 		lineWithinBox := docLine - cv.msgStartLine[msgIdx] - 1
 		if lineWithinBox < 0 || lineWithinBox >= len(allLines) {
-			continue
+			return
 		}
-
-		contentLine := allLines[lineWithinBox]
-		runes := []rune(contentLine)
-
-		// Content text starts at ix + leftPad + 2 (past "│ ").
-		contentStartX := ix + leftPad + 2
-		from, to := 0, len(runes)
-		if docLine == anchor.docLine {
-			if f := anchor.screenX - contentStartX; f > from {
-				from = f
+		runes := []rune(allLines[lineWithinBox])
+		from := max(0, min(colLo, len(runes)))
+		to := max(0, min(colHi, len(runes)))
+		if from >= to {
+			return
+		}
+		if mask == nil {
+			parts = append(parts, string(runes[from:to]))
+		} else {
+			var sb strings.Builder
+			for col := from; col < to; col++ {
+				if col < len(mask) && !mask[col] {
+					continue
+				}
+				sb.WriteRune(runes[col])
+			}
+			if s := sb.String(); s != "" {
+				parts = append(parts, s)
 			}
 		}
-		if docLine == cur.docLine {
-			if t := cur.screenX - contentStartX; t < to {
-				to = t
-			}
-		}
-		if from < 0 {
-			from = 0
-		}
-		if to < 0 {
-			to = 0
-		}
-		if from > len(runes) {
-			from = len(runes)
-		}
-		if to > len(runes) {
-			to = len(runes)
-		}
-		if from > to {
-			to = from
-		}
-		parts = append(parts, string(runes[from:to]))
-	}
+	})
 
 	return strings.Join(parts, "\n")
 }
