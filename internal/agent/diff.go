@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"strings"
 
@@ -9,15 +10,18 @@ import (
 )
 
 // computeDiffForApproval pre-computes a unified diff for write_file/edit_file
-// before the approval prompt is shown. Returns empty strings for other tools.
-func computeDiffForApproval(toolName, argsJSON, workDir string) (filePath, patch string) {
+// before the approval prompt is shown. Returns a non-nil error when the edit
+// cannot be applied (e.g. old_string not found), in which case the caller
+// should auto-fail the tool call without showing the approval prompt.
+func computeDiffForApproval(toolName, argsJSON, workDir string) (filePath, patch string, err error) {
 	switch toolName {
 	case "write_file":
-		return computeWriteDiff(argsJSON, workDir)
+		fp, p := computeWriteDiff(argsJSON, workDir)
+		return fp, p, nil
 	case "edit_file":
 		return computeEditDiff(argsJSON, workDir)
 	}
-	return "", ""
+	return "", "", nil
 }
 
 func computeWriteDiff(argsJSON, workDir string) (filePath, patch string) {
@@ -36,34 +40,42 @@ func computeWriteDiff(argsJSON, workDir string) (filePath, patch string) {
 	return rel, generateUnifiedDiff(oldContent, newContent, rel)
 }
 
-func computeEditDiff(argsJSON, workDir string) (filePath, patch string) {
+func computeEditDiff(argsJSON, workDir string) (filePath, patch string, err error) {
 	var args map[string]any
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
-		return "", ""
+		return "", "", err
 	}
 	rel := str(args, "path")
 	path := resolvePath(rel, workDir)
 
 	b, err := os.ReadFile(path)
 	if err != nil {
-		return rel, ""
+		return rel, "", err
 	}
 	oldContent := string(b)
 	newContent := oldContent
 
 	edits, _ := args["edits"].([]any)
-	for _, e := range edits {
+	if len(edits) == 0 {
+		return rel, "", fmt.Errorf("edits must be a non-empty array")
+	}
+	for i, e := range edits {
 		em, ok := e.(map[string]any)
 		if !ok {
-			continue
+			return rel, "", fmt.Errorf("edit %d: invalid format", i)
 		}
 		oldStr := str(em, "old_string")
 		newStr := str(em, "new_string")
-		if strings.Contains(newContent, oldStr) {
-			newContent = strings.Replace(newContent, oldStr, newStr, 1)
+		count := strings.Count(newContent, oldStr)
+		if count == 0 {
+			return rel, "", fmt.Errorf("edit %d: old_string not found", i)
 		}
+		if count > 1 {
+			return rel, "", fmt.Errorf("edit %d: old_string appears %d times — add more context to make it unique", i, count)
+		}
+		newContent = strings.Replace(newContent, oldStr, newStr, 1)
 	}
-	return rel, generateUnifiedDiff(oldContent, newContent, rel)
+	return rel, generateUnifiedDiff(oldContent, newContent, rel), nil
 }
 
 // generateUnifiedDiff returns a unified diff of old vs new content.

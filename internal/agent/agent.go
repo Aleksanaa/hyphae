@@ -165,7 +165,23 @@ func (a *Agent) loop(ctx context.Context, sess *session.Session, ch chan<- Event
 
 			if requiresApproval(tc.Function.Name) {
 				te.Reasoning, te.Input = extractReasoning(tc.Function.Arguments)
-				te.FilePath, te.DiffPatch = computeDiffForApproval(tc.Function.Name, tc.Function.Arguments, sess.WorkDir)
+				var diffErr error
+				te.FilePath, te.DiffPatch, diffErr = computeDiffForApproval(tc.Function.Name, tc.Function.Arguments, sess.WorkDir)
+				if diffErr != nil {
+					errMsg := diffErr.Error()
+					sess.AddMessage(session.Message{
+						Role:       session.RoleTool,
+						ToolResult: &session.ToolResult{ID: tc.ID, Content: errMsg, IsError: true},
+					})
+					sess.SetToolResult(msgIdx, tc.ID, errMsg, true)
+					te.Output = errMsg
+					te.IsError = true
+					select {
+					case ch <- Event{Type: EventToolDone, Tool: te}:
+					case <-ctx.Done():
+					}
+					continue
+				}
 				sess.SetToolState(msgIdx, tc.ID, "pending")
 				respCh := make(chan ApprovalResult, 1)
 				select {
