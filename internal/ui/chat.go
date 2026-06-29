@@ -789,17 +789,21 @@ func (cv *ChatView) selectedTextWhole() string {
 		hi = len(cv.renderedMsgs) - 1
 	}
 
-	maxW := cv.lastWidth * 4 / 5
-	if maxW < 20 {
-		maxW = 20
-	}
-
 	multi := hi > lo
 	var parts []string
 	for i := lo; i <= hi; i++ {
 		msg := cv.renderedMsgs[i]
-		lines, _ := computeMsgContent(msg, cv.lastWidth, maxW)
-		content := strings.Join(lines, "\n")
+		var content string
+		switch msg.Role {
+		case session.RoleUser:
+			content = msg.Content
+		case session.RoleAssistant:
+			if msg.Error != nil {
+				content = msg.Error.Error()
+			} else {
+				content = msg.Content
+			}
+		}
 		if multi {
 			role := "assistant"
 			if msg.Role == session.RoleUser {
