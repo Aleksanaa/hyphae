@@ -531,7 +531,7 @@ func (cv *ChatView) renderMessageBox(b *strings.Builder, msg session.Message, wi
 		lines := wordWrap(msg.Content, maxContentW)
 		actualW := 0
 		for _, l := range lines {
-			if n := tview.TaggedStringWidth(l); n > actualW {
+			if n := tview.TaggedStringWidth(tview.Escape(l)); n > actualW {
 				actualW = n
 			}
 		}
@@ -548,7 +548,8 @@ func (cv *ChatView) renderMessageBox(b *strings.Builder, msg session.Message, wi
 		// ┌─ you ──...──┐  "─ you " = 6 visible cols
 		b.WriteString(p + fmt.Sprintf("[%s]┌─ [%s]you [%s]%s┐[-]", bc, uc, bc, dash(boxW-8)) + "\n")
 		for _, line := range lines {
-			b.WriteString(p + boxLine(tview.Escape(line), tview.TaggedStringWidth(line)) + "\n")
+			escaped := tview.Escape(line)
+			b.WriteString(p + boxLine(escaped, tview.TaggedStringWidth(escaped)) + "\n")
 		}
 		b.WriteString(p + fmt.Sprintf("[%s]└%s┘[-]", bc, dash(boxW-2)) + "\n")
 
@@ -562,7 +563,7 @@ func (cv *ChatView) renderMessageBox(b *strings.Builder, msg session.Message, wi
 			lines := wordWrap(msg.Error.Error(), maxContentW)
 			actualW := 0
 			for _, l := range lines {
-				if n := tview.TaggedStringWidth(l); n > actualW {
+				if n := tview.TaggedStringWidth(tview.Escape(l)); n > actualW {
 					actualW = n
 				}
 			}
@@ -573,8 +574,9 @@ func (cv *ChatView) renderMessageBox(b *strings.Builder, msg session.Message, wi
 
 			b.WriteString(fmt.Sprintf("[%s]┌─ [%s]error [%s]%s┐[-]", bc, ec, bc, dash(boxW-10)) + "\n")
 			for _, line := range lines {
-				inner := fmt.Sprintf("[%s]%s[-]", ec, tview.Escape(line))
-				b.WriteString(boxLine(inner, tview.TaggedStringWidth(line)) + "\n")
+				escaped := tview.Escape(line)
+				inner := fmt.Sprintf("[%s]%s[-]", ec, escaped)
+				b.WriteString(boxLine(inner, tview.TaggedStringWidth(escaped)) + "\n")
 			}
 			b.WriteString(fmt.Sprintf("[%s]└%s┘[-]", bc, dash(boxW-2)) + "\n")
 			return
@@ -820,7 +822,7 @@ func computeMsgContent(msg session.Message, width, maxW int) (allLines []string,
 		lines := wordWrap(msg.Content, maxContentW)
 		actualW := 0
 		for _, l := range lines {
-			if n := tview.TaggedStringWidth(l); n > actualW {
+			if n := tview.TaggedStringWidth(tview.Escape(l)); n > actualW {
 				actualW = n
 			}
 		}
@@ -960,5 +962,5 @@ func formatInput(input string) string {
 	if len(runes) > 50 {
 		input = string(runes[:47]) + "..."
 	}
-	return "(" + input + ")"
+	return "(" + tview.Escape(input) + ")"
 }

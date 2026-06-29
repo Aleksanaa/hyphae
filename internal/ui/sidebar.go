@@ -81,7 +81,7 @@ func (sv *SidebarView) rebuild() {
 			indicator = "✗"
 		}
 
-		label := fmt.Sprintf("%s %s", indicator, title)
+		label := fmt.Sprintf("%s %s", indicator, tview.Escape(title))
 		sv.AddItem(label, id, 0, func() {
 			if sv.onSelect != nil {
 				sv.onSelect(id)

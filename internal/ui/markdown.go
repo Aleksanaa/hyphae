@@ -175,21 +175,25 @@ func styledRunesToTagged(runes []diffStyledRune) string {
 		return ""
 	}
 	var sb strings.Builder
+	var text strings.Builder
 	first := true
 	var cur tcell.Color
 	for _, sr := range runes {
 		fg, _, _ := sr.Style.Decompose()
 		if first || fg != cur {
+			if text.Len() > 0 {
+				sb.WriteString(tview.Escape(text.String()))
+				text.Reset()
+			}
 			r8, g8, b8 := fg.RGB()
 			fmt.Fprintf(&sb, "[%s]", colorHex(r8, g8, b8))
 			cur = fg
 			first = false
 		}
-		if sr.R == '[' {
-			sb.WriteString("[[]")
-		} else {
-			sb.WriteRune(sr.R)
-		}
+		text.WriteRune(sr.R)
+	}
+	if text.Len() > 0 {
+		sb.WriteString(tview.Escape(text.String()))
 	}
 	sb.WriteString("[-:-:-]")
 	return sb.String()
@@ -713,20 +717,11 @@ func spansToTagged(spans []mdSpan) string {
 	var sb strings.Builder
 	cur := sentinel
 	for _, sp := range spans {
-		for _, r := range []rune(sp.text) {
-			if r == '\n' {
-				r = ' '
-			}
-			if sp.style != cur {
-				sb.WriteString(sp.style.openTag())
-				cur = sp.style
-			}
-			if r == '[' {
-				sb.WriteString("[[]")
-			} else {
-				sb.WriteRune(r)
-			}
+		if sp.style != cur {
+			sb.WriteString(sp.style.openTag())
+			cur = sp.style
 		}
+		sb.WriteString(tview.Escape(strings.ReplaceAll(sp.text, "\n", " ")))
 	}
 	return sb.String()
 }
@@ -761,17 +756,21 @@ func wrapSpans(spans []mdSpan, maxW int) []string {
 			return ""
 		}
 		var sb strings.Builder
+		var text strings.Builder
 		cur := sentinel
 		for i := from; i < to; i++ {
 			if chars[i].style != cur {
+				if text.Len() > 0 {
+					sb.WriteString(tview.Escape(text.String()))
+					text.Reset()
+				}
 				sb.WriteString(chars[i].style.openTag())
 				cur = chars[i].style
 			}
-			if chars[i].r == '[' {
-				sb.WriteString("[[]")
-			} else {
-				sb.WriteRune(chars[i].r)
-			}
+			text.WriteRune(chars[i].r)
+		}
+		if text.Len() > 0 {
+			sb.WriteString(tview.Escape(text.String()))
 		}
 		return sb.String()
 	}

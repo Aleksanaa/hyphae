@@ -74,17 +74,17 @@ func (sb *StatusBar) render() {
 	sb.SetText(fmt.Sprintf(" %s[%s]%s[-]  %s",
 		statusStr,
 		tviewColor(Theme.Muted),
-		modelStr,
+		tview.Escape(modelStr),
 		hints,
 	))
 }
 
 // SetMessage temporarily displays an informational message.
 func (sb *StatusBar) SetMessage(msg string) {
-	sb.SetText(fmt.Sprintf(" [%s]%s[-]", tviewColor(Theme.Accent), msg))
+	sb.SetText(fmt.Sprintf(" [%s]%s[-]", tviewColor(Theme.Accent), tview.Escape(msg)))
 }
 
 // SetError shows an error in red.
 func (sb *StatusBar) SetError(err string) {
-	sb.SetText(fmt.Sprintf(" [%s]✗ %s[-]", tviewColor(Theme.ErrorColor), err))
+	sb.SetText(fmt.Sprintf(" [%s]✗ %s[-]", tviewColor(Theme.ErrorColor), tview.Escape(err)))
 }
