@@ -61,7 +61,6 @@ type CommandPalette struct {
 
 func NewCommandPalette() *CommandPalette {
 	cp := &CommandPalette{Box: tview.NewBox()}
-	cp.Box.SetBackgroundColor(Theme.Surface)
 
 	mkField := func(label string) *tview.InputField {
 		f := tview.NewInputField()
@@ -256,11 +255,15 @@ func (cp *CommandPalette) Draw(screen tcell.Screen) {
 	// loop advances one column at a time, letting x be drawn normally.
 	// The right edge needs no fix: tview redraws all primitives each cycle,
 	// so the chat's Put for any wide char at x+w-1 already marks x+w dirty.
-	if x > 0 {
-		for row := range h {
+	bgSt := tcell.StyleDefault.Background(bg)
+	for row := range h {
+		if x > 0 {
 			if _, _, st, cw := screen.GetContent(x-1, y+row); cw == 2 {
 				screen.SetContent(x-1, y+row, ' ', nil, st)
 			}
+		}
+		for col := x; col < x+w; col++ {
+			screen.SetContent(col, y+row, ' ', nil, bgSt)
 		}
 	}
 
