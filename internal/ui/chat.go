@@ -81,6 +81,10 @@ type ChatView struct {
 	// in buildText from renderBlocksAnnotated. Absent key = fully copyable.
 	// Present key: false columns are format/border chars, true are content.
 	copyColMask map[int][]bool
+	// softWrapLine marks doc-lines whose trailing newline is a word-wrap artefact.
+	// When two consecutively-selected lines straddle one of these, they are joined
+	// with a space rather than \n so the reconstructed text reads as one paragraph.
+	softWrapLine map[int]bool
 }
 
 // NewChatView creates the scrollable message display.
@@ -524,10 +528,11 @@ func (cv *ChatView) buildText(width int) {
 	cv.boxLeft = boxLeft
 	cv.boxRight = boxRight
 
-	// Build per-column copy mask for all message content lines.
+	// Build per-column copy mask and soft-wrap map for all message content lines.
 	// Absent key = fully copyable. Present key: false columns are non-copyable
 	// (format/border chars OR trailing blank padding inside the box).
 	cv.copyColMask = make(map[int][]bool)
+	cv.softWrapLine = make(map[int]bool)
 	cw := maxW - 4 // maxContentW shared across all messages
 
 	for i, msg := range renderedMsgs {
@@ -549,6 +554,16 @@ func (cv *ChatView) buildText(width int) {
 					cv.copyColMask[start+1+j] = allCopyMask(vlen)
 				}
 			}
+			// Soft-wrap tracking: lines within the same \n-paragraph are wrapped,
+			// lines at a \n boundary are hard breaks.
+			offset := 0
+			for _, para := range strings.Split(msg.Content, "\n") {
+				wrapped := wrapParagraph(para, cw)
+				for k := 0; k < len(wrapped)-1; k++ {
+					cv.softWrapLine[start+1+offset+k] = true
+				}
+				offset += len(wrapped)
+			}
 
 		case session.RoleAssistant:
 			if msg.Error != nil {
@@ -565,6 +580,14 @@ func (cv *ChatView) buildText(width int) {
 					if vlen < boxCW {
 						cv.copyColMask[start+1+j] = allCopyMask(vlen)
 					}
+				}
+				offset := 0
+				for _, para := range strings.Split(msg.Error.Error(), "\n") {
+					wrapped := wrapParagraph(para, cw)
+					for k := 0; k < len(wrapped)-1; k++ {
+						cv.softWrapLine[start+1+offset+k] = true
+					}
+					offset += len(wrapped)
 				}
 			} else if msg.Content != "" {
 				blocks := cv.mdCache[msg.Content]
@@ -607,6 +630,9 @@ func (cv *ChatView) buildText(width int) {
 					}
 					if hasFormat || len(mask) < boxCW {
 						cv.copyColMask[start+1+j] = mask
+					}
+					if rl.softWrap {
+						cv.softWrapLine[start+1+j] = true
 					}
 				}
 				base := len(rls)
@@ -858,7 +884,8 @@ func (cv *ChatView) selectedTextPartial() string {
 
 	lastMsgIdx := -2
 	var allLines []string
-	var parts []string
+	var result strings.Builder
+	lastContribDocLine := -1
 
 	cv.iterPartialSel(func(docLine, colLo, colHi int, mask []bool) {
 		msgIdx := cv.findMsgAt(docLine)
@@ -888,12 +915,24 @@ func (cv *ChatView) selectedTextPartial() string {
 			}
 			col += rW
 		}
-		if s := sb.String(); s != "" {
-			parts = append(parts, s)
+		s := sb.String()
+		if s == "" {
+			return
 		}
+		if lastContribDocLine >= 0 {
+			// Use a space if the previous contributing line was a soft wrap
+			// directly into this one; otherwise a real newline.
+			if cv.softWrapLine[lastContribDocLine] && docLine == lastContribDocLine+1 {
+				result.WriteByte(' ')
+			} else {
+				result.WriteByte('\n')
+			}
+		}
+		result.WriteString(s)
+		lastContribDocLine = docLine
 	})
 
-	return strings.Join(parts, "\n")
+	return result.String()
 }
 
 func (cv *ChatView) selectedTextWhole() string {

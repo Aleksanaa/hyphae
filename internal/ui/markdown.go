@@ -26,9 +26,13 @@ var mdGold = goldmark.New(
 // copyability mask. copyMask[col] == false means the character at that column
 // is a non-copyable format/border element. len(copyMask) equals the visible
 // width of text. A nil mask means every column is copyable.
+// softWrap true means the line break after this line is a word-wrap artefact,
+// not a real newline in the source; adjacent selected lines should be joined
+// with a space rather than \n.
 type renderedLine struct {
 	text     string
 	copyMask []bool
+	softWrap bool
 }
 
 // allCopyMask returns a mask of length n with every position marked copyable.
@@ -75,12 +79,11 @@ type groupBlock struct{ items []mdBlock } // fallback for unknown block nodes
 // ─── renderLines implementations ─────────────────────────────────────────────
 
 func (b *paragraphBlock) renderLines(maxW int) []renderedLine {
-	lines := wrapSpans(b.spans, maxW)
-	out := make([]renderedLine, len(lines))
-	for i, l := range lines {
-		out[i] = renderedLine{text: l, copyMask: allCopyMask(tview.TaggedStringWidth(l))}
+	rls := wrapSpans(b.spans, maxW)
+	for i := range rls {
+		rls[i].copyMask = allCopyMask(tview.TaggedStringWidth(rls[i].text))
 	}
-	return out
+	return rls
 }
 
 func (b *headingBlock) renderLines(maxW int) []renderedLine {
@@ -91,7 +94,11 @@ func (b *headingBlock) renderLines(maxW int) []renderedLine {
 	out := make([]renderedLine, len(wrapped))
 	for i, l := range wrapped {
 		text := fmt.Sprintf("[%s][::b]%s[-:-:-]", ac, l)
-		out[i] = renderedLine{text: text, copyMask: allCopyMask(tview.TaggedStringWidth(text))}
+		out[i] = renderedLine{
+			text:     text,
+			copyMask: allCopyMask(tview.TaggedStringWidth(text)),
+			softWrap: i < len(wrapped)-1,
+		}
 	}
 	return out
 }
@@ -115,7 +122,7 @@ func (b *codeBlock) renderLines(maxW int) []renderedLine {
 	}
 	botBorder := fmt.Sprintf("[%s]└%s┘[-:-:-]", bc, strings.Repeat("─", maxW-2))
 
-	var inner []string
+	var inner []renderedLine
 	if b.lang != "" {
 		inner = b.renderHighlighted(innerW)
 	} else {
@@ -128,10 +135,10 @@ func (b *codeBlock) renderLines(maxW int) []renderedLine {
 	top := topBorder()
 	out = append(out, renderedLine{text: top, copyMask: make([]bool, tview.TaggedStringWidth(top))})
 
-	for _, line := range inner {
-		visW := tview.TaggedStringWidth(line)
+	for _, rl := range inner {
+		visW := tview.TaggedStringWidth(rl.text)
 		pad := max(0, innerW-visW)
-		text := fmt.Sprintf("[%s]│[-:-:-] %s%s [%s]│[-:-:-]", bc, line, strings.Repeat(" ", pad), bc)
+		text := fmt.Sprintf("[%s]│[-:-:-] %s%s [%s]│[-:-:-]", bc, rl.text, strings.Repeat(" ", pad), bc)
 		// Visible layout: │(1) space(1) content(visW) padding(pad) space(1) │(1)
 		// Only the content columns are copyable.
 		totalW := 2 + visW + pad + 2
@@ -139,7 +146,7 @@ func (b *codeBlock) renderLines(maxW int) []renderedLine {
 		for col := 2; col < 2+visW; col++ {
 			mask[col] = true
 		}
-		out = append(out, renderedLine{text: text, copyMask: mask})
+		out = append(out, renderedLine{text: text, copyMask: mask, softWrap: rl.softWrap})
 	}
 
 	// Bottom border: entirely non-copyable.
@@ -148,42 +155,46 @@ func (b *codeBlock) renderLines(maxW int) []renderedLine {
 	return out
 }
 
-func (b *codeBlock) renderPlain(innerW int) []string {
+func (b *codeBlock) renderPlain(innerW int) []renderedLine {
 	cc := tviewColor(Theme.CodeColor)
-	var out []string
+	var out []renderedLine
 	for _, line := range b.lines {
 		// Measure after escaping: raw code may contain "[word]" sequences that
 		// tview's tag parser treats as zero-width style tags, so
 		// TaggedStringWidth(line) would undercount and skip needed wrapping.
 		escaped := tview.Escape(line)
 		if innerW <= 0 || tview.TaggedStringWidth(escaped) <= innerW {
-			out = append(out, fmt.Sprintf("[%s]%s[-:-:-]", cc, escaped))
+			out = append(out, renderedLine{text: fmt.Sprintf("[%s]%s[-:-:-]", cc, escaped)})
 			continue
 		}
 		// Wrap by iterating runes of the unescaped line; individual runes are
 		// safe to measure (a lone '[' never forms a complete tag).
 		runes := []rune(line)
 		start, lineW := 0, 0
+		var sub []string
 		for i, r := range runes {
 			rW := tview.TaggedStringWidth(string(r))
 			if lineW+rW > innerW {
-				out = append(out, fmt.Sprintf("[%s]%s[-:-:-]", cc, tview.Escape(string(runes[start:i]))))
+				sub = append(sub, fmt.Sprintf("[%s]%s[-:-:-]", cc, tview.Escape(string(runes[start:i]))))
 				start, lineW = i, 0
 			}
 			lineW += rW
 		}
 		if start < len(runes) {
-			out = append(out, fmt.Sprintf("[%s]%s[-:-:-]", cc, tview.Escape(string(runes[start:]))))
+			sub = append(sub, fmt.Sprintf("[%s]%s[-:-:-]", cc, tview.Escape(string(runes[start:]))))
+		}
+		for i, s := range sub {
+			out = append(out, renderedLine{text: s, softWrap: i < len(sub)-1})
 		}
 	}
 	if len(out) == 0 {
-		out = []string{""}
+		out = []renderedLine{{text: ""}}
 	}
 	return out
 }
 
 // renderHighlighted uses chroma to produce per-token colored tview lines.
-func (b *codeBlock) renderHighlighted(maxW int) []string {
+func (b *codeBlock) renderHighlighted(maxW int) []renderedLine {
 	// tokenize the entire block at once so chroma tracks state across lines
 	// (e.g. multi-line strings, block comments)
 	content := strings.Join(b.lines, "\n")
@@ -200,12 +211,15 @@ func (b *codeBlock) renderHighlighted(maxW int) []string {
 	}
 	logicalLines = append(logicalLines, tokens[lineStart:])
 
-	var out []string
+	var out []renderedLine
 	for _, lt := range logicalLines {
-		out = append(out, wrapStyledRunesToTagged(lt, maxW)...)
+		sub := wrapStyledRunesToTagged(lt, maxW)
+		for i, s := range sub {
+			out = append(out, renderedLine{text: s, softWrap: i < len(sub)-1})
+		}
 	}
 	if len(out) == 0 {
-		out = []string{""}
+		out = []renderedLine{{text: ""}}
 	}
 	return out
 }
@@ -287,7 +301,7 @@ func (b *blockquoteBlock) renderLines(maxW int) []renderedLine {
 		// Prepend 2 non-copyable columns (▎ and space), then shift inner mask.
 		mask := make([]bool, 2+len(rl.copyMask))
 		copy(mask[2:], rl.copyMask)
-		out[i] = renderedLine{text: text, copyMask: mask}
+		out[i] = renderedLine{text: text, copyMask: mask, softWrap: rl.softWrap}
 	}
 	return out
 }
@@ -328,7 +342,7 @@ func (b *listBlock) renderLines(maxW int) []renderedLine {
 				mask[j] = true
 			}
 			copy(mask[bulletW:], rl.copyMask)
-			out = append(out, renderedLine{text: text, copyMask: mask})
+			out = append(out, renderedLine{text: text, copyMask: mask, softWrap: rl.softWrap})
 		}
 	}
 	return out
@@ -628,7 +642,7 @@ func renderTableBlock(tbl *tableBlock, maxW int, out *[]renderedLine) {
 				mask = append(mask, false, false) // space after + │ separator/closer
 			}
 
-			result[li] = renderedLine{text: text, copyMask: mask}
+			result[li] = renderedLine{text: text, copyMask: mask, softWrap: li < maxL-1}
 		}
 		return result
 	}
@@ -680,7 +694,11 @@ func renderTableBlock(tbl *tableBlock, maxW int, out *[]renderedLine) {
 			if i < len(row) {
 				spans = row[i]
 			}
-			lines := wrapSpans(spans, colW[i])
+			rls := wrapSpans(spans, colW[i])
+			lines := make([]string, len(rls))
+			for j, rl := range rls {
+				lines[j] = rl.text
+			}
 			if len(lines) == 0 {
 				lines = []string{""}
 			}
@@ -849,7 +867,7 @@ type styledRune struct {
 	style mdStyle
 }
 
-func wrapSpans(spans []mdSpan, maxW int) []string {
+func wrapSpans(spans []mdSpan, maxW int) []renderedLine {
 	if maxW <= 0 {
 		maxW = 40
 	}
@@ -862,7 +880,7 @@ func wrapSpans(spans []mdSpan, maxW int) []string {
 	}
 
 	if len(chars) == 0 {
-		return []string{""}
+		return []renderedLine{{text: ""}}
 	}
 
 	sentinel := mdStyle{code: true, bold: true, italic: true, strikethrough: true}
@@ -891,14 +909,14 @@ func wrapSpans(spans []mdSpan, maxW int) []string {
 		return sb.String()
 	}
 
-	var lines []string
+	var lines []renderedLine
 	start := 0
 	lineW := 0
 	lastSpace := -1
 
 	for i, ch := range chars {
 		if ch.r == '\n' {
-			lines = append(lines, emitLine(start, i))
+			lines = append(lines, renderedLine{text: emitLine(start, i), softWrap: false})
 			start = i + 1
 			lineW = 0
 			lastSpace = -1
@@ -908,7 +926,7 @@ func wrapSpans(spans []mdSpan, maxW int) []string {
 		rW := tview.TaggedStringWidth(string(ch.r))
 
 		if isCJKRune(ch.r) && lineW > 0 && lineW+rW > maxW {
-			lines = append(lines, emitLine(start, i))
+			lines = append(lines, renderedLine{text: emitLine(start, i), softWrap: true})
 			start = i
 			lineW = 0
 			lastSpace = -1
@@ -922,7 +940,7 @@ func wrapSpans(spans []mdSpan, maxW int) []string {
 
 		if lineW > maxW {
 			if lastSpace > start {
-				lines = append(lines, emitLine(start, lastSpace))
+				lines = append(lines, renderedLine{text: emitLine(start, lastSpace), softWrap: true})
 				start = lastSpace + 1
 				lineW = 0
 				for j := start; j <= i; j++ {
@@ -930,7 +948,7 @@ func wrapSpans(spans []mdSpan, maxW int) []string {
 				}
 				lastSpace = -1
 			} else {
-				lines = append(lines, emitLine(start, i))
+				lines = append(lines, renderedLine{text: emitLine(start, i), softWrap: true})
 				start = i
 				lineW = rW
 				lastSpace = -1
@@ -938,10 +956,10 @@ func wrapSpans(spans []mdSpan, maxW int) []string {
 		}
 	}
 
-	lines = append(lines, emitLine(start, len(chars)))
+	lines = append(lines, renderedLine{text: emitLine(start, len(chars)), softWrap: false})
 
 	if len(lines) == 0 {
-		lines = []string{""}
+		lines = []renderedLine{{text: ""}}
 	}
 	return lines
 }
