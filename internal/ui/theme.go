@@ -64,6 +64,29 @@ var Theme = struct {
 	StatusText: tcell.NewRGBColor(140, 145, 175),
 }
 
+// TC holds pre-computed tview color tag strings for each Theme color.
+var TC struct {
+	Background   string
+	Surface      string
+	Text         string
+	Muted        string
+	Accent       string
+	UserColor    string
+	ApexColor    string
+	ToolColor    string
+	ShellColor   string
+	SystemColor  string
+	ErrorColor   string
+	SuccessColor string
+	CodeColor    string
+	Border       string
+	BorderFocus  string
+	Header       string
+	PendingColor string
+	StatusBg     string
+	StatusText   string
+}
+
 func init() {
 	// tview's default PrimitiveBackgroundColor is tcell.ColorBlack. When tview
 	// renders a wide character (emoji, CJK) it explicitly writes a space at
@@ -72,23 +95,24 @@ func init() {
 	// Aligning these makes the phantom space invisible.
 	tview.Styles.PrimitiveBackgroundColor = Theme.Background
 	tview.Styles.PrimaryTextColor = Theme.Text
-}
 
-// tviewColor converts a tcell.Color to a tview-compatible color string.
-func tviewColor(c tcell.Color) string {
-	r, g, b := c.RGB()
-	return colorHex(r, g, b)
-}
-
-func colorHex(r, g, b int32) string {
-	const hex = "0123456789abcdef"
-	buf := make([]byte, 7)
-	buf[0] = '#'
-	buf[1] = hex[r>>4]
-	buf[2] = hex[r&0xf]
-	buf[3] = hex[g>>4]
-	buf[4] = hex[g&0xf]
-	buf[5] = hex[b>>4]
-	buf[6] = hex[b&0xf]
-	return string(buf)
+	TC.Background = Theme.Background.CSS()
+	TC.Surface = Theme.Surface.CSS()
+	TC.Text = Theme.Text.CSS()
+	TC.Muted = Theme.Muted.CSS()
+	TC.Accent = Theme.Accent.CSS()
+	TC.UserColor = Theme.UserColor.CSS()
+	TC.ApexColor = Theme.ApexColor.CSS()
+	TC.ToolColor = Theme.ToolColor.CSS()
+	TC.ShellColor = Theme.ShellColor.CSS()
+	TC.SystemColor = Theme.SystemColor.CSS()
+	TC.ErrorColor = Theme.ErrorColor.CSS()
+	TC.SuccessColor = Theme.SuccessColor.CSS()
+	TC.CodeColor = Theme.CodeColor.CSS()
+	TC.Border = Theme.Border.CSS()
+	TC.BorderFocus = Theme.BorderFocus.CSS()
+	TC.Header = Theme.Header.CSS()
+	TC.PendingColor = Theme.PendingColor.CSS()
+	TC.StatusBg = Theme.StatusBg.CSS()
+	TC.StatusText = Theme.StatusText.CSS()
 }

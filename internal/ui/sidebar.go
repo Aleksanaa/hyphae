@@ -91,7 +91,7 @@ func (sv *SidebarView) rebuild() {
 
 	// "New session" entry at the bottom
 	sv.AddItem(
-		fmt.Sprintf("[%s]+ new session[-]", tviewColor(Theme.Accent)),
+		fmt.Sprintf("[%s]+ new session[-]", TC.Accent),
 		"", 0,
 		func() {
 			if sv.onNew != nil {

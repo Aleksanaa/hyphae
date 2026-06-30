@@ -434,8 +434,8 @@ func (cv *ChatView) renderWelcome(b *strings.Builder, width int) {
 		topPad = 0
 	}
 
-	ac := tviewColor(Theme.Accent)
-	mc := tviewColor(Theme.Muted)
+	ac := TC.Accent
+	mc := TC.Muted
 
 	artW := 0
 	for _, line := range hyphaeArt {
@@ -673,7 +673,7 @@ func (cv *ChatView) renderMessageBox(b *strings.Builder, msg session.Message, wi
 	if isHovered {
 		borderColor = Theme.BorderFocus
 	}
-	bc := tviewColor(borderColor)
+	bc := borderColor.CSS()
 
 	dash := func(n int) string {
 		if n < 0 {
@@ -713,7 +713,7 @@ func (cv *ChatView) renderMessageBox(b *strings.Builder, msg session.Message, wi
 			leftPad = 0
 		}
 		p := strings.Repeat(" ", leftPad)
-		uc := tviewColor(Theme.UserColor)
+		uc := TC.UserColor
 		boxLine := mkBoxLine(contentW)
 
 		// ┌─ you ──...──┐  "─ you " = 6 visible cols
@@ -725,11 +725,11 @@ func (cv *ChatView) renderMessageBox(b *strings.Builder, msg session.Message, wi
 		b.WriteString(p + fmt.Sprintf("[%s]└%s┘[-]", bc, dash(boxW-2)) + "\n")
 
 	case session.RoleAssistant:
-		ac := tviewColor(Theme.ApexColor)
-		mc := tviewColor(Theme.Muted)
+		ac := TC.ApexColor
+		mc := TC.Muted
 
 		if msg.Error != nil {
-			ec := tviewColor(Theme.ErrorColor)
+			ec := TC.ErrorColor
 			maxContentW := maxW - 4
 			lines := wordWrap(msg.Error.Error(), maxContentW)
 			actualW := 0
@@ -809,20 +809,20 @@ func (cv *ChatView) renderMessageBox(b *strings.Builder, msg session.Message, wi
 // 2 is already accounted for, so callers pass maxContentW directly).
 func fmtToolUseLines(tu session.ToolUse, maxW int) []string {
 	arg := formatInput(tu.Input)
-	toolC := tviewColor(Theme.ToolColor)
-	mutedC := tviewColor(Theme.Muted)
-	errC := tviewColor(Theme.ErrorColor)
+	toolC := TC.ToolColor
+	mutedC := TC.Muted
+	errC := TC.ErrorColor
 
 	switch tu.State {
 	case "pending":
 		return []string{fmt.Sprintf("[%s]⏸ %s[-][%s]%s[-] [%s]waiting…[-]",
-			tviewColor(Theme.PendingColor), tview.Escape(tu.Name), mutedC, arg, mutedC)}
+			TC.PendingColor, tview.Escape(tu.Name), mutedC, arg, mutedC)}
 	case "running":
 		return []string{fmt.Sprintf("[%s]▶ %s[-][%s]%s[-] [%s]…[-]",
 			toolC, tview.Escape(tu.Name), mutedC, arg, mutedC)}
 	case "done":
 		return []string{fmt.Sprintf("[%s]▶ %s[-][%s]%s[-] [%s]✓[-]",
-			toolC, tview.Escape(tu.Name), mutedC, arg, tviewColor(Theme.SuccessColor))}
+			toolC, tview.Escape(tu.Name), mutedC, arg, TC.SuccessColor)}
 	case "error":
 		out := []string{fmt.Sprintf("[%s]✗ %s[-][%s]%s[-]",
 			errC, tview.Escape(tu.Name), mutedC, arg)}

@@ -53,11 +53,11 @@ func (sb *StatusBar) render() {
 	statusStr := ""
 	switch sb.status {
 	case session.StatusRunning:
-		statusStr = fmt.Sprintf("[%s]● running[-]  ", tviewColor(Theme.SuccessColor))
+		statusStr = fmt.Sprintf("[%s]● running[-]  ", TC.SuccessColor)
 	case session.StatusError:
-		statusStr = fmt.Sprintf("[%s]✗ error[-]  ", tviewColor(Theme.ErrorColor))
+		statusStr = fmt.Sprintf("[%s]✗ error[-]  ", TC.ErrorColor)
 	default:
-		statusStr = fmt.Sprintf("[%s]○ idle[-]  ", tviewColor(Theme.Muted))
+		statusStr = fmt.Sprintf("[%s]○ idle[-]  ", TC.Muted)
 	}
 
 	ctrlC := "interrupt"
@@ -65,7 +65,7 @@ func (sb *StatusBar) render() {
 		ctrlC = "copy"
 	}
 
-	ac := tviewColor(Theme.Accent)
+	ac := TC.Accent
 	hints := fmt.Sprintf(
 		"[%s]Ctrl+S[-]:send  [%s]Ctrl+C[-]:%s  [%s]Ctrl+P[-]:palette  [%s]Tab[-]:focus  [%s]Ctrl+D[-]:quit",
 		ac, ac, ctrlC, ac, ac, ac,
@@ -73,7 +73,7 @@ func (sb *StatusBar) render() {
 
 	sb.SetText(fmt.Sprintf(" %s[%s]%s[-]  %s",
 		statusStr,
-		tviewColor(Theme.Muted),
+		TC.Muted,
 		tview.Escape(modelStr),
 		hints,
 	))
@@ -81,10 +81,10 @@ func (sb *StatusBar) render() {
 
 // SetMessage temporarily displays an informational message.
 func (sb *StatusBar) SetMessage(msg string) {
-	sb.SetText(fmt.Sprintf(" [%s]%s[-]", tviewColor(Theme.Accent), tview.Escape(msg)))
+	sb.SetText(fmt.Sprintf(" [%s]%s[-]", TC.Accent, tview.Escape(msg)))
 }
 
 // SetError shows an error in red.
 func (sb *StatusBar) SetError(err string) {
-	sb.SetText(fmt.Sprintf(" [%s]✗ %s[-]", tviewColor(Theme.ErrorColor), tview.Escape(err)))
+	sb.SetText(fmt.Sprintf(" [%s]✗ %s[-]", TC.ErrorColor, tview.Escape(err)))
 }

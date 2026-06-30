@@ -89,7 +89,7 @@ func (b *paragraphBlock) renderLines(maxW int) []renderedLine {
 func (b *headingBlock) renderLines(maxW int) []renderedLine {
 	prefix := strings.Repeat("#", b.level) + " "
 	plain := spansPlain(b.spans)
-	ac := tviewColor(Theme.Accent)
+	ac := TC.Accent
 	wrapped := tview.WordWrap(tview.Escape(prefix+plain), maxW)
 	out := make([]renderedLine, len(wrapped))
 	for i, l := range wrapped {
@@ -104,8 +104,8 @@ func (b *headingBlock) renderLines(maxW int) []renderedLine {
 }
 
 func (b *codeBlock) renderLines(maxW int) []renderedLine {
-	bc := tviewColor(Theme.Border)
-	mc := tviewColor(Theme.Muted)
+	bc := TC.Border
+	mc := TC.Muted
 	innerW := max(1, maxW-4) // │·content·│ → 2 borders + 2 spaces
 
 	// top border: ┌──── lang ─┐  (label on right, like chat name but mirrored)
@@ -156,7 +156,7 @@ func (b *codeBlock) renderLines(maxW int) []renderedLine {
 }
 
 func (b *codeBlock) renderPlain(innerW int) []renderedLine {
-	cc := tviewColor(Theme.CodeColor)
+	cc := TC.CodeColor
 	var out []renderedLine
 	for _, line := range b.lines {
 		// Measure after escaping: raw code may contain "[word]" sequences that
@@ -240,8 +240,7 @@ func styledRunesToTagged(runes []diffStyledRune) string {
 				sb.WriteString(tview.Escape(text.String()))
 				text.Reset()
 			}
-			r8, g8, b8 := fg.RGB()
-			fmt.Fprintf(&sb, "[%s]", colorHex(r8, g8, b8))
+			fmt.Fprintf(&sb, "[%s]", fg.CSS())
 			cur = fg
 			first = false
 		}
@@ -279,14 +278,14 @@ func wrapStyledRunesToTagged(runes []diffStyledRune, maxW int) []string {
 }
 
 func (b *thematicBreakBlock) renderLines(maxW int) []renderedLine {
-	mc := tviewColor(Theme.Muted)
+	mc := TC.Muted
 	text := fmt.Sprintf("[%s]%s[-:-:-]", mc, strings.Repeat("─", maxW))
 	// Entirely non-copyable: mask is all-false.
 	return []renderedLine{{text: text, copyMask: make([]bool, maxW)}}
 }
 
 func (b *blockquoteBlock) renderLines(maxW int) []renderedLine {
-	mc := tviewColor(Theme.Muted)
+	mc := TC.Muted
 	innerW := maxW - 2
 	if innerW < 1 {
 		innerW = 1
@@ -545,8 +544,8 @@ func renderTableBlock(tbl *tableBlock, maxW int, out *[]renderedLine) {
 		}
 	}
 
-	ac := tviewColor(Theme.Accent)
-	bc := tviewColor(Theme.Border)
+	ac := TC.Accent
+	bc := TC.Border
 
 	alignOf := func(i int) extast.Alignment {
 		if i < len(tbl.alignments) {
@@ -755,7 +754,7 @@ type mdStyle struct {
 
 func (s mdStyle) openTag() string {
 	if s.code {
-		return fmt.Sprintf("[-:-:-][%s]", tviewColor(Theme.CodeColor))
+		return fmt.Sprintf("[-:-:-][%s]", TC.CodeColor)
 	}
 	attrs := ""
 	if s.bold {

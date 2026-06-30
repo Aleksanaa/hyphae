@@ -131,27 +131,9 @@ func tokenizeForTcell(content, filename string, bg tcell.Color) []diffStyledRune
 
 func chromaToTcell(entry chroma.StyleEntry, fallback tcell.Color) tcell.Color {
 	if entry.Colour.IsSet() {
-		h := entry.Colour.String()
-		if len(h) == 7 && h[0] == '#' {
-			r := parseHexByte(h[1], h[2])
-			g := parseHexByte(h[3], h[4])
-			b := parseHexByte(h[5], h[6])
-			return tcell.NewRGBColor(int32(r), int32(g), int32(b))
+		if c := tcell.GetColor(entry.Colour.String()); c.Valid() {
+			return c
 		}
 	}
 	return fallback
-}
-
-func parseHexByte(hi, lo byte) byte { return parseHexNibble(hi)<<4 | parseHexNibble(lo) }
-
-func parseHexNibble(c byte) byte {
-	switch {
-	case c >= '0' && c <= '9':
-		return c - '0'
-	case c >= 'a' && c <= 'f':
-		return c - 'a' + 10
-	case c >= 'A' && c <= 'F':
-		return c - 'A' + 10
-	}
-	return 0
 }
