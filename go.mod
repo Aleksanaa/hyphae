@@ -10,6 +10,7 @@ require (
 	github.com/gdamore/tcell/v2 v2.8.1
 	github.com/openai/openai-go/v3 v3.41.0
 	github.com/rivo/tview v0.42.0
+	github.com/rivo/uniseg v0.4.7
 	github.com/yuin/goldmark v1.8.2
 	golang.org/x/net v0.56.0
 )
@@ -19,7 +20,6 @@ require (
 	github.com/gdamore/encoding v1.0.1 // indirect
 	github.com/lucasb-eyer/go-colorful v1.2.0 // indirect
 	github.com/mattn/go-runewidth v0.0.16 // indirect
-	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/tidwall/gjson v1.18.0 // indirect
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.1 // indirect

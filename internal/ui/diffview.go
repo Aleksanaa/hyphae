@@ -178,10 +178,10 @@ func (dv *DiffView) buildScreenLines(contentW int) []screenLine {
 			continue
 		}
 		content := strings.ReplaceAll(dl.Content, "\t", "    ")
-		for j, chunk := range wrapParagraph(content, codeW) {
+		for j, chunk := range tview.WordWrap(tview.Escape(content), codeW) {
 			result = append(result, screenLine{
 				dl:             dl,
-				content:        chunk,
+				content:        tview.Unescape(chunk),
 				isContinuation: j > 0,
 			})
 		}

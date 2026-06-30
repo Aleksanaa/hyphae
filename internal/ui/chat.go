@@ -540,16 +540,16 @@ func (cv *ChatView) buildText(width int) {
 		switch msg.Role {
 
 		case session.RoleUser:
-			lines := wordWrap(msg.Content, cw)
+			lines := tview.WordWrap(tview.Escape(msg.Content), cw)
 			actualW := 0
 			for _, l := range lines {
-				if n := tview.TaggedStringWidth(tview.Escape(l)); n > actualW {
+				if n := tview.TaggedStringWidth(l); n > actualW {
 					actualW = n
 				}
 			}
 			boxCW := max(4, actualW) // boxW min 8 → contentW min 4
 			for j, l := range lines {
-				vlen := tview.TaggedStringWidth(tview.Escape(l))
+				vlen := tview.TaggedStringWidth(l)
 				if vlen < boxCW {
 					cv.copyColMask[start+1+j] = allCopyMask(vlen)
 				}
@@ -558,7 +558,7 @@ func (cv *ChatView) buildText(width int) {
 			// lines at a \n boundary are hard breaks.
 			offset := 0
 			for _, para := range strings.Split(msg.Content, "\n") {
-				wrapped := wrapParagraph(para, cw)
+				wrapped := tview.WordWrap(tview.Escape(para), cw)
 				for k := 0; k < len(wrapped)-1; k++ {
 					cv.softWrapLine[start+1+offset+k] = true
 				}
@@ -567,23 +567,23 @@ func (cv *ChatView) buildText(width int) {
 
 		case session.RoleAssistant:
 			if msg.Error != nil {
-				lines := wordWrap(msg.Error.Error(), cw)
+				lines := tview.WordWrap(tview.Escape(msg.Error.Error()), cw)
 				actualW := 0
 				for _, l := range lines {
-					if n := tview.TaggedStringWidth(tview.Escape(l)); n > actualW {
+					if n := tview.TaggedStringWidth(l); n > actualW {
 						actualW = n
 					}
 				}
 				boxCW := max(6, actualW) // boxW min 10 → contentW min 6
 				for j, l := range lines {
-					vlen := tview.TaggedStringWidth(tview.Escape(l))
+					vlen := tview.TaggedStringWidth(l)
 					if vlen < boxCW {
 						cv.copyColMask[start+1+j] = allCopyMask(vlen)
 					}
 				}
 				offset := 0
 				for _, para := range strings.Split(msg.Error.Error(), "\n") {
-					wrapped := wrapParagraph(para, cw)
+					wrapped := tview.WordWrap(tview.Escape(para), cw)
 					for k := 0; k < len(wrapped)-1; k++ {
 						cv.softWrapLine[start+1+offset+k] = true
 					}
@@ -699,10 +699,10 @@ func (cv *ChatView) renderMessageBox(b *strings.Builder, msg session.Message, wi
 	case session.RoleUser:
 		// label overhead: ┌─ you ┐ = 8 visible cols minimum
 		maxContentW := maxW - 4
-		lines := wordWrap(msg.Content, maxContentW)
+		lines := tview.WordWrap(tview.Escape(msg.Content), maxContentW)
 		actualW := 0
 		for _, l := range lines {
-			if n := tview.TaggedStringWidth(tview.Escape(l)); n > actualW {
+			if n := tview.TaggedStringWidth(l); n > actualW {
 				actualW = n
 			}
 		}
@@ -719,8 +719,7 @@ func (cv *ChatView) renderMessageBox(b *strings.Builder, msg session.Message, wi
 		// ┌─ you ──...──┐  "─ you " = 6 visible cols
 		b.WriteString(p + fmt.Sprintf("[%s]┌─ [%s]you [%s]%s┐[-]", bc, uc, bc, dash(boxW-8)) + "\n")
 		for _, line := range lines {
-			escaped := tview.Escape(line)
-			b.WriteString(p + boxLine(escaped, tview.TaggedStringWidth(escaped)) + "\n")
+			b.WriteString(p + boxLine(line, tview.TaggedStringWidth(line)) + "\n")
 		}
 		b.WriteString(p + fmt.Sprintf("[%s]└%s┘[-]", bc, dash(boxW-2)) + "\n")
 
@@ -731,10 +730,10 @@ func (cv *ChatView) renderMessageBox(b *strings.Builder, msg session.Message, wi
 		if msg.Error != nil {
 			ec := TC.ErrorColor
 			maxContentW := maxW - 4
-			lines := wordWrap(msg.Error.Error(), maxContentW)
+			lines := tview.WordWrap(tview.Escape(msg.Error.Error()), maxContentW)
 			actualW := 0
 			for _, l := range lines {
-				if n := tview.TaggedStringWidth(tview.Escape(l)); n > actualW {
+				if n := tview.TaggedStringWidth(l); n > actualW {
 					actualW = n
 				}
 			}
@@ -745,9 +744,8 @@ func (cv *ChatView) renderMessageBox(b *strings.Builder, msg session.Message, wi
 
 			b.WriteString(fmt.Sprintf("[%s]┌─ [%s]error [%s]%s┐[-]", bc, ec, bc, dash(boxW-10)) + "\n")
 			for _, line := range lines {
-				escaped := tview.Escape(line)
-				inner := fmt.Sprintf("[%s]%s[-]", ec, escaped)
-				b.WriteString(boxLine(inner, tview.TaggedStringWidth(escaped)) + "\n")
+				inner := fmt.Sprintf("[%s]%s[-]", ec, line)
+				b.WriteString(boxLine(inner, tview.TaggedStringWidth(line)) + "\n")
 			}
 			b.WriteString(fmt.Sprintf("[%s]└%s┘[-]", bc, dash(boxW-2)) + "\n")
 			return
@@ -832,8 +830,8 @@ func fmtToolUseLines(tu session.ToolUse, maxW int) []string {
 				wrapW = 10
 			}
 			prefix := fmt.Sprintf("[%s]  ", errC)
-			for _, l := range wordWrap(tu.Output, wrapW) {
-				out = append(out, prefix+tview.Escape(l)+"[-]")
+			for _, l := range tview.WordWrap(tview.Escape(tu.Output), wrapW) {
+				out = append(out, prefix+l+"[-]")
 			}
 		}
 		return out
@@ -981,10 +979,10 @@ func computeMsgContent(msg session.Message, width, maxW int) (allLines []string,
 	maxContentW := maxW - 4
 	switch msg.Role {
 	case session.RoleUser:
-		lines := wordWrap(msg.Content, maxContentW)
+		lines := tview.WordWrap(tview.Escape(msg.Content), maxContentW)
 		actualW := 0
 		for _, l := range lines {
-			if n := tview.TaggedStringWidth(tview.Escape(l)); n > actualW {
+			if n := tview.TaggedStringWidth(l); n > actualW {
 				actualW = n
 			}
 		}
@@ -993,10 +991,17 @@ func computeMsgContent(msg session.Message, width, maxW int) (allLines []string,
 		if lp < 0 {
 			lp = 0
 		}
+		for i, l := range lines {
+			lines[i] = tview.Unescape(l)
+		}
 		return lines, lp
 	case session.RoleAssistant:
 		if msg.Error != nil {
-			return wordWrap(msg.Error.Error(), maxContentW), 0
+			lines := tview.WordWrap(tview.Escape(msg.Error.Error()), maxContentW)
+			for i, l := range lines {
+				lines[i] = tview.Unescape(l)
+			}
+			return lines, 0
 		}
 		raw := renderMarkdown(msg.Content, maxContentW)
 		all := make([]string, len(raw))
@@ -1015,105 +1020,6 @@ func computeMsgContent(msg session.Message, width, maxW int) (allLines []string,
 
 // ─── text helpers ─────────────────────────────────────────────────────────────
 
-// wordWrap splits text into lines of at most maxW columns.
-// Breaks on spaces and CJK character boundaries; hard-breaks overlong tokens.
-func wordWrap(text string, maxW int) []string {
-	if maxW <= 0 {
-		maxW = 40
-	}
-	var out []string
-	for _, para := range strings.Split(text, "\n") {
-		out = append(out, wrapParagraph(para, maxW)...)
-	}
-	if len(out) == 0 {
-		out = []string{""}
-	}
-	return out
-}
-
-// isCJKRune reports whether r is a CJK ideograph or similar character that
-// may be broken at any position (each rune is its own break opportunity).
-func isCJKRune(r rune) bool {
-	return (r >= 0x1100 && r <= 0x11FF) || // Hangul Jamo
-		(r >= 0x2E80 && r <= 0x2FFF) || // CJK Radicals, Kangxi
-		(r >= 0x3000 && r <= 0x9FFF) || // CJK Unified + kana + misc
-		(r >= 0xA000 && r <= 0xA4CF) || // Yi
-		(r >= 0xAC00 && r <= 0xD7AF) || // Hangul Syllables
-		(r >= 0xF900 && r <= 0xFAFF) || // CJK Compatibility Ideographs
-		(r >= 0xFE30 && r <= 0xFE4F) || // CJK Compatibility Forms
-		(r >= 0xFF00 && r <= 0xFFEF) || // Halfwidth/Fullwidth Forms
-		(r >= 0x20000 && r <= 0x2A6DF) || // CJK Extension B
-		(r >= 0x2A700 && r <= 0x2CEAF) || // CJK Extensions C/D/E
-		(r >= 0x2CEB0 && r <= 0x2EBEF) // CJK Extension F
-}
-
-func wrapParagraph(para string, maxW int) []string {
-	runes := []rune(para)
-	if len(runes) == 0 {
-		return []string{""}
-	}
-
-	// Measure width per-rune: TaggedStringWidth on a multi-char string miscounts
-	// content containing "[word]" patterns (Go types, generics) as zero-width tags.
-	totalW := 0
-	for _, r := range runes {
-		totalW += tview.TaggedStringWidth(string(r))
-	}
-	if totalW <= maxW {
-		return []string{para}
-	}
-
-	var out []string
-
-	lineStart := 0  // rune index where current line begins
-	lineW := 0      // column width of current line
-	lastSpace := -1 // rune index of last space break opportunity
-
-	flush := func(end int, nextStart int) {
-		out = append(out, string(runes[lineStart:end]))
-		lineStart = nextStart
-		lineW = 0
-		lastSpace = -1
-	}
-
-	for i, r := range runes {
-		rW := tview.TaggedStringWidth(string(r))
-		cjk := isCJKRune(r)
-
-		// CJK: break before this rune if it would overflow.
-		if cjk && lineW+rW > maxW && lineW > 0 {
-			flush(i, i)
-		}
-
-		if r == ' ' {
-			lastSpace = i
-		}
-
-		lineW += rW
-
-		// After adding this rune, did we overflow?
-		if lineW > maxW {
-			if lastSpace > lineStart {
-				// Break at the last space; skip the space itself.
-				flush(lastSpace, lastSpace+1)
-				// Recompute lineW per-rune for chars after the break up to current.
-				lineW = 0
-				for _, r2 := range runes[lineStart : i+1] {
-					lineW += tview.TaggedStringWidth(string(r2))
-				}
-			} else {
-				// No break opportunity — hard-break before current rune.
-				flush(i, i)
-				lineW = rW
-			}
-		}
-	}
-
-	if lineStart < len(runes) {
-		out = append(out, string(runes[lineStart:]))
-	}
-	return out
-}
 
 func formatInput(input string) string {
 	if input == "" || input == "{}" {

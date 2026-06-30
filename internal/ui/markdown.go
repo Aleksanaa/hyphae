@@ -6,6 +6,7 @@ import (
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
+	"github.com/rivo/uniseg"
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/ast"
 	"github.com/yuin/goldmark/extension"
@@ -922,9 +923,9 @@ func wrapSpans(spans []mdSpan, maxW int) []renderedLine {
 			continue
 		}
 
-		rW := tview.TaggedStringWidth(string(ch.r))
+		rW := uniseg.StringWidth(string(ch.r))
 
-		if isCJKRune(ch.r) && lineW > 0 && lineW+rW > maxW {
+		if rW >= 2 && lineW > 0 && lineW+rW > maxW {
 			lines = append(lines, renderedLine{text: emitLine(start, i), softWrap: true})
 			start = i
 			lineW = 0
@@ -943,7 +944,7 @@ func wrapSpans(spans []mdSpan, maxW int) []renderedLine {
 				start = lastSpace + 1
 				lineW = 0
 				for j := start; j <= i; j++ {
-					lineW += tview.TaggedStringWidth(string(chars[j].r))
+					lineW += uniseg.StringWidth(string(chars[j].r))
 				}
 				lastSpace = -1
 			} else {
