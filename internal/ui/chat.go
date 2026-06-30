@@ -506,19 +506,23 @@ func (cv *ChatView) buildText(width int) {
 	var boxLeft, boxRight []int
 
 	first := true
+	lineCount := 0
 	for _, msg := range cv.messages {
 		if msg.Role == session.RoleTool {
 			continue
 		}
 		if !first {
 			b.WriteString("\n")
+			lineCount++
 		}
 		first = false
 
-		msgStartLine = append(msgStartLine, strings.Count(b.String(), "\n"))
+		msgStartLine = append(msgStartLine, lineCount)
 		renderedMsgs = append(renderedMsgs, msg)
 		msgIdx := len(renderedMsgs) - 1
+		prevLen := b.Len()
 		lp, bw := cv.renderMessageBox(&b, msg, width, maxW, msgIdx == cv.selectedIdx)
+		lineCount += strings.Count(b.String()[prevLen:], "\n")
 		boxLeft = append(boxLeft, lp)
 		boxRight = append(boxRight, lp+bw)
 	}
