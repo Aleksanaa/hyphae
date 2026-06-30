@@ -8,7 +8,7 @@ import (
 	openai "github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
 
-	"github.com/aleksana/hyphae/internal/session"
+	"github.com/aleksanaa/hyphae/internal/session"
 )
 
 const systemPrompt = `You are a skilled coding assistant. You help the user read, write, and reason about code.

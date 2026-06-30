@@ -10,9 +10,9 @@ import (
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 
-	"github.com/aleksana/hyphae/internal/agent"
-	"github.com/aleksana/hyphae/internal/config"
-	"github.com/aleksana/hyphae/internal/session"
+	"github.com/aleksanaa/hyphae/internal/agent"
+	"github.com/aleksanaa/hyphae/internal/config"
+	"github.com/aleksanaa/hyphae/internal/session"
 )
 
 // App is the root application coordinator.

@@ -7,7 +7,7 @@ import (
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 
-	"github.com/aleksana/hyphae/internal/session"
+	"github.com/aleksanaa/hyphae/internal/session"
 )
 
 // selPoint is a (document-line, absolute-screen-column) pair for drag selection.

@@ -7,9 +7,9 @@ import (
 	"os"
 	"sort"
 
-	"github.com/aleksana/hyphae/internal/agent"
-	"github.com/aleksana/hyphae/internal/config"
-	"github.com/aleksana/hyphae/internal/ui"
+	"github.com/aleksanaa/hyphae/internal/agent"
+	"github.com/aleksanaa/hyphae/internal/config"
+	"github.com/aleksanaa/hyphae/internal/ui"
 )
 
 func main() {

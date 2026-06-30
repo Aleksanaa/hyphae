@@ -1,4 +1,4 @@
-module github.com/aleksana/hyphae
+module github.com/aleksanaa/hyphae
 
 go 1.25.0
 

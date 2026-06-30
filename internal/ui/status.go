@@ -5,7 +5,7 @@ import (
 
 	"github.com/rivo/tview"
 
-	"github.com/aleksana/hyphae/internal/session"
+	"github.com/aleksanaa/hyphae/internal/session"
 )
 
 // StatusBar renders one-line context at the bottom of the screen.
