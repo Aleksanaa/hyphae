@@ -64,6 +64,7 @@ type DiffView struct {
 
 func NewDiffView() *DiffView {
 	dv := &DiffView{Box: tview.NewBox(), btnSelected: "allow"}
+	dv.Box.SetBackgroundColor(Theme.Surface)
 
 	dv.denyField = tview.NewInputField()
 	dv.denyField.SetPlaceholder("type reason here (optional)...")
@@ -199,19 +200,12 @@ func (dv *DiffView) Draw(screen tcell.Screen) {
 	}
 	h := DiffViewHeight
 
-	pending := Theme.PendingColor
-	borderSt := tcell.StyleDefault.Foreground(pending)
 	bg := Theme.Surface
+	pending := Theme.PendingColor
+	borderSt := tcell.StyleDefault.Foreground(pending).Background(bg)
 	bgSt := tcell.StyleDefault.Background(bg)
 	mutedSt := tcell.StyleDefault.Foreground(Theme.Muted).Background(bg)
 	textSt := tcell.StyleDefault.Foreground(Theme.Text).Background(bg)
-
-	// Fill all rows.
-	for row := range h {
-		for col := range w {
-			screen.SetContent(x+col, y+row, ' ', nil, bgSt)
-		}
-	}
 
 	// ── row 0: top border ┌─ toolname ──────────────┐ ─────────────────────
 	screen.SetContent(x, y, '┌', nil, borderSt)

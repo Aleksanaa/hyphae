@@ -61,6 +61,7 @@ type CommandPalette struct {
 
 func NewCommandPalette() *CommandPalette {
 	cp := &CommandPalette{Box: tview.NewBox()}
+	cp.Box.SetBackgroundColor(Theme.Surface)
 
 	mkField := func(label string) *tview.InputField {
 		f := tview.NewInputField()
@@ -242,14 +243,12 @@ func (cp *CommandPalette) Draw(screen tcell.Screen) {
 	bg := Theme.Surface
 
 	borderSt := tcell.StyleDefault.Foreground(bc).Background(bg)
-	bgSt := tcell.StyleDefault.Background(bg)
 	mutedSt := tcell.StyleDefault.Foreground(Theme.Muted).Background(bg)
 	textSt := tcell.StyleDefault.Foreground(Theme.Text).Background(bg)
 	selSt := tcell.StyleDefault.Background(tcell.NewRGBColor(40, 44, 70)).Foreground(Theme.Text)
 	selMutedSt := tcell.StyleDefault.Background(tcell.NewRGBColor(40, 44, 70)).Foreground(Theme.Muted)
 
-	// Fill background (palette rect only).
-	// Before filling, check whether a wide (CJK) char straddles the left edge:
+	// Before drawing, check whether a wide (CJK) char straddles the left edge:
 	// its left half is at x-1 (outside palette) and right half at x (inside).
 	// tcell's draw loop returns width=2 for that cell and advances past x even
 	// when x is dirty, so our space at x would be skipped. Fix: write a space
@@ -257,14 +256,11 @@ func (cp *CommandPalette) Draw(screen tcell.Screen) {
 	// loop advances one column at a time, letting x be drawn normally.
 	// The right edge needs no fix: tview redraws all primitives each cycle,
 	// so the chat's Put for any wide char at x+w-1 already marks x+w dirty.
-	for row := range h {
-		if x > 0 {
+	if x > 0 {
+		for row := range h {
 			if _, _, st, cw := screen.GetContent(x-1, y+row); cw == 2 {
 				screen.SetContent(x-1, y+row, ' ', nil, st)
 			}
-		}
-		for col := x; col < x+w; col++ {
-			screen.SetContent(col, y+row, ' ', nil, bgSt)
 		}
 	}
 

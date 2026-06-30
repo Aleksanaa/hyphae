@@ -40,6 +40,7 @@ func NewApprovalView() *ApprovalView {
 		Box:      tview.NewBox(),
 		selected: "allow",
 	}
+	av.Box.SetBackgroundColor(Theme.Surface)
 
 	av.denyField = tview.NewInputField()
 	av.denyField.SetPlaceholder("type reason here (optional)...")
@@ -146,20 +147,12 @@ func (av *ApprovalView) Draw(screen tcell.Screen) {
 		return
 	}
 
-	pending := Theme.PendingColor
-	borderSt := tcell.StyleDefault.Foreground(pending)
 	bg := Theme.Surface
-	bgSt := tcell.StyleDefault.Background(bg)
+	pending := Theme.PendingColor
+	borderSt := tcell.StyleDefault.Foreground(pending).Background(bg)
 	mutedSt := tcell.StyleDefault.Foreground(Theme.Muted).Background(bg)
 	textSt := tcell.StyleDefault.Foreground(Theme.Text).Background(bg)
 	shellSt := tcell.StyleDefault.Foreground(Theme.ShellColor).Background(bg)
-
-	// Fill all rows.
-	for row := range ApprovalHeight {
-		for col := range w {
-			screen.SetContent(x+col, y+row, ' ', nil, bgSt)
-		}
-	}
 
 	// ── top border: ┌─ tool_name ──...──┐ ─────────────────────────────────
 	screen.SetContent(x, y, '┌', nil, borderSt)
