@@ -67,8 +67,8 @@ func (sb *Scrollbar) Draw(screen tcell.Screen) {
 func (sb *Scrollbar) MouseHandler() func(tview.MouseAction, *tcell.EventMouse, func(tview.Primitive)) (bool, tview.Primitive) {
 	return func(action tview.MouseAction, event *tcell.EventMouse, _ func(tview.Primitive)) (bool, tview.Primitive) {
 		mx, my := event.Position()
-		rx, ry, rw, rh := sb.GetRect()
-		inRect := mx >= rx && mx < rx+rw && my >= ry && my < ry+rh
+		_, ry, _, rh := sb.GetRect()
+		inRect := sb.InRect(mx, my)
 
 		switch action {
 		case tview.MouseLeftDown:
