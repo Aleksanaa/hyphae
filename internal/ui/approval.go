@@ -6,6 +6,7 @@ import (
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
+	"github.com/rivo/uniseg"
 )
 
 // ApprovalHeight is the fixed row count of the approval bar when visible.
@@ -338,8 +339,8 @@ func (av *ApprovalView) MouseHandler() func(tview.MouseAction, *tcell.EventMouse
 
 func drawText(screen tcell.Screen, text string, col, row, maxCols int, st tcell.Style) int {
 	used := 0
-	for _, r := range []rune(text) {
-		rw := tview.TaggedStringWidth(tview.Escape(string(r)))
+	for _, r := range text {
+		rw := uniseg.StringWidth(string(r))
 		if rw == 0 {
 			rw = 1
 		}

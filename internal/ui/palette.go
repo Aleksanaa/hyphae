@@ -282,17 +282,8 @@ func (cp *CommandPalette) Draw(screen tcell.Screen) {
 		screen.SetContent(x+1+i, y, '─', nil, borderSt)
 	}
 	screen.SetContent(x+1+fill, y, ' ', nil, borderSt)
-	titleSt := tcell.StyleDefault.Foreground(ac).Background(bg)
-	titleCol := x + 2 + fill
-	for _, r := range []rune(title) {
-		rw := tview.TaggedStringWidth(tview.Escape(string(r)))
-		if rw == 0 {
-			rw = 1
-		}
-		screen.SetContent(titleCol, y, r, nil, titleSt)
-		titleCol += rw
-	}
-	screen.SetContent(titleCol, y, ' ', nil, borderSt)
+	tview.Print(screen, title, x+2+fill, y, titleW, tview.AlignLeft, ac)
+	screen.SetContent(x+2+fill+titleW, y, ' ', nil, borderSt)
 	screen.SetContent(x+w-1, y, '┐', nil, borderSt)
 
 	// Query row (y+1): sides + InputField or hint text.
@@ -385,34 +376,17 @@ func (cp *CommandPalette) drawItems(screen tcell.Screen, x, y, w, h int, selSt, 
 
 		// Label left-aligned.
 		col := inner
-		labelW := 0
-		for _, r := range []rune(item.Label) {
-			rw := tview.TaggedStringWidth(tview.Escape(string(r)))
-			if rw == 0 {
-				rw = 1
-			}
-			if col+rw > x+w-2 {
-				break
-			}
-			screen.SetContent(col, rowY, r, nil, lineSt)
-			col += rw
-			labelW += rw
-		}
+		labelFg, _, _ := lineSt.Decompose()
+		_, labelW := tview.Print(screen, item.Label, col, rowY, x+w-2-col, tview.AlignLeft, labelFg)
+		col += labelW
 
 		// Sub right-aligned when there is room (at least 1-col gap after label).
 		if item.Sub != "" {
+			subFg, _, _ := subSt.Decompose()
 			subW := tview.TaggedStringWidth(tview.Escape(item.Sub))
 			subStart := x + w - 2 - subW
 			if subStart > inner+labelW+1 {
-				sc := subStart
-				for _, r := range []rune(item.Sub) {
-					rw := tview.TaggedStringWidth(tview.Escape(string(r)))
-					if rw == 0 {
-						rw = 1
-					}
-					screen.SetContent(sc, rowY, r, nil, subSt)
-					sc += rw
-				}
+				tview.Print(screen, item.Sub, subStart, rowY, subW, tview.AlignLeft, subFg)
 			}
 		}
 	}
