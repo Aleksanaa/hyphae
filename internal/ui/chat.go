@@ -873,25 +873,23 @@ func (cv *ChatView) selectedTextPartial() string {
 		if lineWithinBox < 0 || lineWithinBox >= len(allLines) {
 			return
 		}
-		runes := []rune(allLines[lineWithinBox])
-		from := max(0, min(colLo, len(runes)))
-		to := max(0, min(colHi, len(runes)))
-		if from >= to {
-			return
-		}
-		if mask == nil {
-			parts = append(parts, string(runes[from:to]))
-		} else {
-			var sb strings.Builder
-			for col := from; col < to; col++ {
-				if col < len(mask) && !mask[col] {
-					continue
+		line := allLines[lineWithinBox]
+		var sb strings.Builder
+		col := 0
+		for _, r := range line {
+			rW := tview.TaggedStringWidth(string(r))
+			if col >= colHi {
+				break
+			}
+			if col >= colLo {
+				if mask == nil || (col < len(mask) && mask[col]) {
+					sb.WriteRune(r)
 				}
-				sb.WriteRune(runes[col])
 			}
-			if s := sb.String(); s != "" {
-				parts = append(parts, s)
-			}
+			col += rW
+		}
+		if s := sb.String(); s != "" {
+			parts = append(parts, s)
 		}
 	})
 
