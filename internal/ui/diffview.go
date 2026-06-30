@@ -3,7 +3,6 @@ package ui
 import (
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
@@ -56,9 +55,7 @@ type DiffView struct {
 	// deny text is managed by a native InputField.
 	denyField *tview.InputField
 
-	lastClickSide string
-	lastClickTime time.Time
-	onAllow       func()
+	onAllow func()
 	onDeny        func(string)
 
 	cachedLines []screenLine
@@ -108,7 +105,7 @@ func (dv *DiffView) Show(toolName, reasoning string, files []DiffFileChange) {
 	dv.visible = true
 	dv.btnSelected = "allow"
 	dv.denyField.SetText("")
-	dv.lastClickSide = ""
+
 	dv.cacheW = 0
 	dv.cachedLines = nil
 }
@@ -591,16 +588,12 @@ func (dv *DiffView) MouseHandler() func(tview.MouseAction, *tcell.EventMouse, fu
 			setFocus(dv)
 			return true, nil
 		case tview.MouseLeftClick:
-			now := time.Now()
-			if side == dv.lastClickSide && now.Sub(dv.lastClickTime) < 400*time.Millisecond {
-				dv.btnSelected = side
-				dv.confirm()
-			} else {
-				dv.btnSelected = side
-				dv.lastClickSide = side
-				dv.lastClickTime = now
-				setFocus(dv)
-			}
+			dv.btnSelected = side
+			setFocus(dv)
+			return true, nil
+		case tview.MouseLeftDoubleClick:
+			dv.btnSelected = side
+			dv.confirm()
 			return true, nil
 		}
 		return false, nil

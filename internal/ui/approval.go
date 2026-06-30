@@ -2,7 +2,6 @@ package ui
 
 import (
 	"encoding/json"
-	"time"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
@@ -30,9 +29,6 @@ type ApprovalView struct {
 
 	// deny text is managed by a native InputField (handles cursor, CJK, wide chars).
 	denyField *tview.InputField
-
-	lastClickSide string
-	lastClickTime time.Time
 
 	visible bool
 	onAllow func()
@@ -110,7 +106,6 @@ func (av *ApprovalView) Show(toolName, argsJSON, reasoning string) {
 	av.reasoning = reasoning
 	av.selected = "allow"
 	av.denyField.SetText("")
-	av.lastClickSide = ""
 	av.visible = true
 }
 
@@ -321,16 +316,12 @@ func (av *ApprovalView) MouseHandler() func(tview.MouseAction, *tcell.EventMouse
 			setFocus(av)
 			return true, nil
 		case tview.MouseLeftClick:
-			now := time.Now()
-			if side == av.lastClickSide && now.Sub(av.lastClickTime) < 400*time.Millisecond {
-				av.selected = side
-				av.confirm()
-			} else {
-				av.selected = side
-				av.lastClickSide = side
-				av.lastClickTime = now
-				setFocus(av)
-			}
+			av.selected = side
+			setFocus(av)
+			return true, nil
+		case tview.MouseLeftDoubleClick:
+			av.selected = side
+			av.confirm()
 			return true, nil
 		}
 		return false, nil
