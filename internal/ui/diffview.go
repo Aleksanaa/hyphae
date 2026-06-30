@@ -54,9 +54,10 @@ type DiffView struct {
 
 	// deny text is managed by a native InputField.
 	denyField *tview.InputField
+	scrollbar *Scrollbar
 
 	onAllow func()
-	onDeny        func(string)
+	onDeny  func(string)
 
 	cachedLines []screenLine
 	cacheW      int
@@ -65,6 +66,12 @@ type DiffView struct {
 func NewDiffView() *DiffView {
 	dv := &DiffView{Box: tview.NewBox(), btnSelected: "allow"}
 	dv.Box.SetBackgroundColor(Theme.Surface)
+	dv.scrollbar = NewScrollbar(
+		func() int { return len(dv.cachedLines) },
+		func() int { return contentH },
+		func() int { return dv.scrollTop },
+		func(y int) { dv.scrollTop = y; dv.clampScroll() },
+	)
 
 	dv.denyField = tview.NewInputField()
 	dv.denyField.SetPlaceholder("type reason here (optional)...")
@@ -283,7 +290,8 @@ func (dv *DiffView) Draw(screen tcell.Screen) {
 		}
 	}
 
-	dv.drawScrollbar(screen, scrollbarX, y+3, contentH, len(dv.cachedLines), dv.scrollTop)
+	dv.scrollbar.SetRect(scrollbarX, y+3, 1, contentH)
+	dv.scrollbar.Draw(screen)
 
 	// ── separator before footer ───────────────────────────────────────────
 	sepY := y + 3 + contentH
@@ -464,28 +472,6 @@ func (dv *DiffView) drawScreenLine(screen tcell.Screen, sl *screenLine, rowY, x,
 	}
 }
 
-func (dv *DiffView) drawScrollbar(screen tcell.Screen, x, y, h, total, scrollTop int) {
-	trackSt := tcell.StyleDefault.Foreground(Theme.Border).Background(Theme.Surface)
-	thumbSt := tcell.StyleDefault.Foreground(Theme.Accent).Background(Theme.Surface)
-	if total <= h {
-		for i := range h {
-			screen.SetContent(x, y+i, '│', nil, trackSt)
-		}
-		return
-	}
-	thumbH := max(1, h*h/total)
-	thumbTop := 0
-	if total > h {
-		thumbTop = scrollTop * (h - thumbH) / (total - h)
-	}
-	for i := range h {
-		if i >= thumbTop && i < thumbTop+thumbH {
-			screen.SetContent(x, y+i, '█', nil, thumbSt)
-		} else {
-			screen.SetContent(x, y+i, '│', nil, trackSt)
-		}
-	}
-}
 
 func fmtDiffNum(n int) string {
 	if n < 0 {
@@ -546,7 +532,12 @@ func (dv *DiffView) MouseHandler() func(tview.MouseAction, *tcell.EventMouse, fu
 
 		contentStartY := y + 3
 		contentEndY := y + 3 + contentH - 1
+		scrollbarX := x + w - 2
 		if my >= contentStartY && my <= contentEndY {
+			if mx == scrollbarX {
+				h := dv.scrollbar.MouseHandler()
+				return h(action, event, setFocus)
+			}
 			switch action {
 			case tview.MouseScrollUp:
 				dv.scrollTop--

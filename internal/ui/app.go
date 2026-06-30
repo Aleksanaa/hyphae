@@ -46,7 +46,12 @@ func New(cfg *config.Config) *App {
 	}
 
 	chat := NewChatView()
-	scrollbar := NewScrollbar(chat)
+	scrollbar := NewScrollbar(
+		func() int { return chat.TotalLines },
+		func() int { _, _, _, h := chat.GetInnerRect(); return h },
+		func() int { y, _ := chat.GetScrollOffset(); return y },
+		func(y int) { chat.ScrollTo(y, 0) },
+	)
 	status := NewStatusBar()
 	input := NewInputView(a.sendMessage)
 	approval := NewApprovalView()

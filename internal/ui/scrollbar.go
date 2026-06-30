@@ -5,17 +5,54 @@ import (
 	"github.com/rivo/tview"
 )
 
-// Scrollbar is a 1-column primitive that reflects and controls a ChatView's scroll position.
+// Scrollbar is a 1-column primitive that reflects and controls a scroll position.
 type Scrollbar struct {
 	*tview.Box
-	chat        *ChatView
+	getTotal   func() int
+	getPageH   func() int
+	getScrollY func() int
+	scrollTo   func(int)
 	dragging    bool
 	lastScrollY int
 }
 
-// NewScrollbar creates a scrollbar linked to chat.
-func NewScrollbar(chat *ChatView) *Scrollbar {
-	return &Scrollbar{Box: tview.NewBox(), chat: chat}
+// NewScrollbar creates a scrollbar driven by the provided callbacks.
+// getTotal returns total content lines; getPageH returns visible page height;
+// getScrollY returns the current scroll offset; scrollTo sets the offset.
+func NewScrollbar(getTotal, getPageH, getScrollY func() int, scrollTo func(int)) *Scrollbar {
+	return &Scrollbar{
+		Box:        tview.NewBox(),
+		getTotal:   getTotal,
+		getPageH:   getPageH,
+		getScrollY: getScrollY,
+		scrollTo:   scrollTo,
+	}
+}
+
+// drawScrollbarTrack renders a scrollbar track and thumb at column x starting
+// at row y. trackH is the visible height of the scrollbar. total is the total
+// content rows, pageH is the number of rows visible in the content area, and
+// scrollTop is the current scroll offset. trackR/thumbR are the runes for the
+// track and thumb; trackSt/thumbSt are their styles.
+func drawScrollbarTrack(screen tcell.Screen, x, y, trackH, total, pageH, scrollTop int, trackR, thumbR rune, trackSt, thumbSt tcell.Style) {
+	for i := range trackH {
+		screen.SetContent(x, y+i, trackR, nil, trackSt)
+	}
+	if total <= pageH {
+		return
+	}
+	thumbH := max(1, trackH*pageH/total)
+	maxOff := total - pageH
+	thumbTop := 0
+	if maxOff > 0 {
+		thumbTop = (trackH - thumbH) * scrollTop / maxOff
+	}
+	if thumbTop+thumbH > trackH {
+		thumbTop = trackH - thumbH
+	}
+	for i := thumbTop; i < thumbTop+thumbH; i++ {
+		screen.SetContent(x, y+i, thumbR, nil, thumbSt)
+	}
 }
 
 // Draw renders the track and thumb.
@@ -26,9 +63,9 @@ func (sb *Scrollbar) Draw(screen tcell.Screen) {
 		return
 	}
 
-	total := sb.chat.TotalLines
-	scrollY, _ := sb.chat.GetScrollOffset()
-	_, _, _, pageH := sb.chat.GetInnerRect()
+	total := sb.getTotal()
+	scrollY := sb.getScrollY()
+	pageH := sb.getPageH()
 
 	scrolled := scrollY != sb.lastScrollY
 	sb.lastScrollY = scrollY
@@ -40,27 +77,7 @@ func (sb *Scrollbar) Draw(screen tcell.Screen) {
 	}
 	thumbSt := tcell.StyleDefault.Background(thumbColor)
 
-	for i := range h {
-		screen.SetContent(x, y+i, ' ', nil, trackSt)
-	}
-
-	if total <= pageH || total == 0 {
-		return
-	}
-
-	thumbH := max(1, h*pageH/total)
-	maxOff := total - pageH
-	thumbTop := 0
-	if maxOff > 0 {
-		thumbTop = (h - thumbH) * scrollY / maxOff
-	}
-	if thumbTop+thumbH > h {
-		thumbTop = h - thumbH
-	}
-
-	for i := thumbTop; i < thumbTop+thumbH; i++ {
-		screen.SetContent(x, y+i, ' ', nil, thumbSt)
-	}
+	drawScrollbarTrack(screen, x, y, h, total, pageH, scrollY, ' ', ' ', trackSt, thumbSt)
 }
 
 // MouseHandler handles left-click and drag to set scroll position.
@@ -104,8 +121,8 @@ func (sb *Scrollbar) MouseHandler() func(tview.MouseAction, *tcell.EventMouse, f
 }
 
 func (sb *Scrollbar) scrollToY(relY, trackH int) {
-	total := sb.chat.TotalLines
-	_, _, _, pageH := sb.chat.GetInnerRect()
+	total := sb.getTotal()
+	pageH := sb.getPageH()
 	if total <= pageH || trackH <= 1 {
 		return
 	}
@@ -116,5 +133,5 @@ func (sb *Scrollbar) scrollToY(relY, trackH int) {
 	} else if newOff > maxOff {
 		newOff = maxOff
 	}
-	sb.chat.ScrollTo(newOff, 0)
+	sb.scrollTo(newOff)
 }
