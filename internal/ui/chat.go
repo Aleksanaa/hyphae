@@ -982,8 +982,8 @@ func (cv *ChatView) renderMessageBox(b *strings.Builder, msg session.Message, wi
 				b.WriteString(boxLine("", 0) + "\n")
 			}
 		} else {
-			fmt.Fprintf(b, "[%s]┌─ [%s]apex [%s]%s%s┐[-]\n",
-				bc, ac, bc, partialFrag, fill(boxW-9-extraW))
+			fmt.Fprintf(b, "[%s]┌─ [%s]apex [%s]%s[%s]%s┐[-]\n",
+				bc, ac, bc, partialFrag, bc, fill(boxW-9-extraW))
 		}
 		for _, line := range lines {
 			b.WriteString(boxLine(line, tview.TaggedStringWidth(line)) + "\n")
