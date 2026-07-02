@@ -66,6 +66,10 @@ type DiffView struct {
 func NewDiffView() *DiffView {
 	dv := &DiffView{Box: tview.NewBox(), btnSelected: "allow"}
 	dv.Box.SetBackgroundColor(Theme.Surface)
+	dv.SetBorder(true)
+	dv.SetBorderColor(Theme.PendingColor)
+	dv.SetTitleColor(Theme.PendingColor)
+	dv.SetTitleAlign(tview.AlignLeft)
 	dv.scrollbar = NewScrollbar(
 		func() int { return len(dv.cachedLines) },
 		func() int { return contentH },
@@ -106,6 +110,7 @@ func (dv *DiffView) SetSelected(s string) { dv.btnSelected = s }
 
 func (dv *DiffView) Show(toolName, reasoning string, files []DiffFileChange) {
 	dv.toolName = toolName
+	dv.SetTitle(" " + toolName + " ")
 	dv.reasoning = reasoning
 	dv.files = files
 	dv.activeFile = 0
@@ -205,42 +210,25 @@ func (dv *DiffView) Draw(screen tcell.Screen) {
 	if w < 30 {
 		return
 	}
-	h := DiffViewHeight
 
 	bg := Theme.Surface
-	pending := Theme.PendingColor
-	borderSt := tcell.StyleDefault.Foreground(pending).Background(bg)
+	borderSt := tcell.StyleDefault.Foreground(Theme.PendingColor).Background(bg)
 	bgSt := tcell.StyleDefault.Background(bg)
 	mutedSt := tcell.StyleDefault.Foreground(Theme.Muted).Background(bg)
 	textSt := tcell.StyleDefault.Foreground(Theme.Text).Background(bg)
 
-	// ── row 0: top border ┌─ toolname ──────────────┐ ─────────────────────
-	screen.SetContent(x, y, '┌', nil, borderSt)
-	screen.SetContent(x+w-1, y, '┐', nil, borderSt)
-	col := x + 1
-	screen.SetContent(col, y, '─', nil, borderSt)
-	col++
-	screen.SetContent(col, y, ' ', nil, borderSt)
-	col++
-	toolSt := tcell.StyleDefault.Foreground(Theme.PendingColor).Background(bg)
-	col += drawText(screen, dv.toolName, col, y, x+w-1-col, toolSt)
-	screen.SetContent(col, y, ' ', nil, borderSt)
-	col++
-	for ; col < x+w-1; col++ {
-		screen.SetContent(col, y, '─', nil, borderSt)
-	}
-
-	// ── side borders (rows 1..h-2) ────────────────────────────────────────
-	for row := 1; row < h-1; row++ {
-		screen.SetContent(x, y+row, '│', nil, borderSt)
-		screen.SetContent(x+w-1, y+row, '│', nil, borderSt)
+	leftT, rightT, horiz := tview.Borders.LeftT, tview.Borders.RightT, tview.Borders.Horizontal
+	if dv.HasFocus() {
+		leftT = tview.BoxDrawingsHeavyVerticalAndRight
+		rightT = tview.BoxDrawingsHeavyVerticalAndLeft
+		horiz = tview.BoxDrawingsHeavyHorizontal
 	}
 
 	inner := x + 2
 	innerW := w - 4
 
 	// ── row 1: file tabs ──────────────────────────────────────────────────
-	col = inner
+	col := inner
 	for i, fc := range dv.files {
 		isActive := i == dv.activeFile
 		label := " " + truncateStr(fc.Path, 40) + " "
@@ -260,10 +248,10 @@ func (dv *DiffView) Draw(screen tcell.Screen) {
 	}
 
 	// ── row 2: separator ─────────────────────────────────────────────────
-	screen.SetContent(x, y+2, '├', nil, borderSt)
-	screen.SetContent(x+w-1, y+2, '┤', nil, borderSt)
+	screen.SetContent(x, y+2, leftT, nil, borderSt)
+	screen.SetContent(x+w-1, y+2, rightT, nil, borderSt)
 	for col := x + 1; col < x+w-1; col++ {
-		screen.SetContent(col, y+2, '─', nil, borderSt)
+		screen.SetContent(col, y+2, horiz, nil, borderSt)
 	}
 
 	// ── rows 3..3+contentH-1: diff content ───────────────────────────────
@@ -295,10 +283,10 @@ func (dv *DiffView) Draw(screen tcell.Screen) {
 
 	// ── separator before footer ───────────────────────────────────────────
 	sepY := y + 3 + contentH
-	screen.SetContent(x, sepY, '├', nil, borderSt)
-	screen.SetContent(x+w-1, sepY, '┤', nil, borderSt)
+	screen.SetContent(x, sepY, leftT, nil, borderSt)
+	screen.SetContent(x+w-1, sepY, rightT, nil, borderSt)
 	for col := x + 1; col < x+w-1; col++ {
-		screen.SetContent(col, sepY, '─', nil, borderSt)
+		screen.SetContent(col, sepY, horiz, nil, borderSt)
 	}
 
 	// ── row sepY+1: reasoning ─────────────────────────────────────────────
@@ -313,13 +301,6 @@ func (dv *DiffView) Draw(screen tcell.Screen) {
 	// ── row sepY+2: buttons ───────────────────────────────────────────────
 	dv.drawButtons(screen, sepY+2, inner, innerW, bg)
 
-	// ── bottom border ─────────────────────────────────────────────────────
-	botY := y + h - 1
-	screen.SetContent(x, botY, '└', nil, borderSt)
-	screen.SetContent(x+w-1, botY, '┘', nil, borderSt)
-	for col := x + 1; col < x+w-1; col++ {
-		screen.SetContent(col, botY, '─', nil, borderSt)
-	}
 }
 
 func (dv *DiffView) drawButtons(screen tcell.Screen, y, inner, innerW int, bg tcell.Color) {
@@ -471,7 +452,6 @@ func (dv *DiffView) drawScreenLine(screen tcell.Screen, sl *screenLine, rowY, x,
 		col += cw
 	}
 }
-
 
 func fmtDiffNum(n int) string {
 	if n < 0 {

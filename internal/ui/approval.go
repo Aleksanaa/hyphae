@@ -21,9 +21,9 @@ var (
 // It sits between the chat and input in the layout. When hidden its height is 0.
 type ApprovalView struct {
 	*tview.Box
-	toolName string
-	argLabel string
-	argValue string
+	toolName  string
+	argLabel  string
+	argValue  string
 	reasoning string
 	selected  string // "allow" | "deny"
 
@@ -41,6 +41,10 @@ func NewApprovalView() *ApprovalView {
 		selected: "allow",
 	}
 	av.Box.SetBackgroundColor(Theme.Surface)
+	av.SetBorder(true)
+	av.SetBorderColor(Theme.PendingColor)
+	av.SetTitleColor(Theme.PendingColor)
+	av.SetTitleAlign(tview.AlignLeft)
 
 	av.denyField = tview.NewInputField()
 	av.denyField.SetPlaceholder("type reason here (optional)...")
@@ -79,6 +83,7 @@ func (av *ApprovalView) SetSelected(s string) { av.selected = s }
 
 func (av *ApprovalView) Show(toolName, argsJSON, reasoning string) {
 	av.toolName = toolName
+	av.SetTitle(" " + toolName + " ")
 	var args map[string]any
 	if err := json.Unmarshal([]byte(argsJSON), &args); err == nil {
 		switch toolName {
@@ -148,39 +153,15 @@ func (av *ApprovalView) Draw(screen tcell.Screen) {
 	}
 
 	bg := Theme.Surface
-	pending := Theme.PendingColor
-	borderSt := tcell.StyleDefault.Foreground(pending).Background(bg)
 	mutedSt := tcell.StyleDefault.Foreground(Theme.Muted).Background(bg)
 	textSt := tcell.StyleDefault.Foreground(Theme.Text).Background(bg)
 	shellSt := tcell.StyleDefault.Foreground(Theme.ShellColor).Background(bg)
-
-	// ── top border: ┌─ tool_name ──...──┐ ─────────────────────────────────
-	screen.SetContent(x, y, '┌', nil, borderSt)
-	screen.SetContent(x+w-1, y, '┐', nil, borderSt)
-	col := x + 1
-	screen.SetContent(col, y, '─', nil, borderSt)
-	col++
-	screen.SetContent(col, y, ' ', nil, borderSt)
-	col++
-	toolSt := tcell.StyleDefault.Foreground(Theme.PendingColor).Background(bg)
-	col += drawText(screen, av.toolName, col, y, x+w-1-col, toolSt)
-	screen.SetContent(col, y, ' ', nil, borderSt)
-	col++
-	for ; col < x+w-1; col++ {
-		screen.SetContent(col, y, '─', nil, borderSt)
-	}
-
-	// ── side borders (rows 1–3) ────────────────────────────────────────────
-	for row := 1; row <= 3; row++ {
-		screen.SetContent(x, y+row, '│', nil, borderSt)
-		screen.SetContent(x+w-1, y+row, '│', nil, borderSt)
-	}
 
 	inner := x + 2
 	innerW := w - 4
 
 	// ── row 1: <label> ❯ <value> ──────────────────────────────────────────
-	col = inner
+	col := inner
 	used := drawText(screen, av.argLabel+" ❯ ", col, y+1, innerW, mutedSt)
 	col += used
 	drawText(screen, truncateStr(av.argValue, innerW-used), col, y+1, innerW-used, shellSt)
@@ -237,12 +218,6 @@ func (av *ApprovalView) Draw(screen tcell.Screen) {
 		drawText(screen, denySfx, col, y+3, len([]rune(denySfx)), denyBracketSt)
 	}
 
-	// ── bottom border ─────────────────────────────────────────────────────
-	screen.SetContent(x, y+4, '└', nil, borderSt)
-	screen.SetContent(x+w-1, y+4, '┘', nil, borderSt)
-	for col := x + 1; col < x+w-1; col++ {
-		screen.SetContent(col, y+4, '─', nil, borderSt)
-	}
 }
 
 // ── InputHandler ─────────────────────────────────────────────────────────────

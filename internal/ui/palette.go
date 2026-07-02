@@ -51,7 +51,6 @@ type CommandPalette struct {
 	filtered  []int
 	sel       int
 
-
 	// callbacks wired by App
 	onClose       func()
 	onAddEndpoint func(name, baseURL, apiKey string)
@@ -62,6 +61,11 @@ type CommandPalette struct {
 
 func NewCommandPalette() *CommandPalette {
 	cp := &CommandPalette{Box: tview.NewBox()}
+	cp.SetBorder(true)
+	cp.SetBackgroundColor(Theme.Surface)
+	cp.SetBorderColor(Theme.BorderFocus)
+	cp.SetTitleColor(Theme.Accent)
+	cp.SetTitleAlign(tview.AlignRight)
 
 	mkField := func(label string) *tview.InputField {
 		f := tview.NewInputField()
@@ -106,9 +110,9 @@ func (cp *CommandPalette) Focus(delegate func(p tview.Primitive)) {
 
 // ── public API ────────────────────────────────────────────────────────────────
 
-func (cp *CommandPalette) IsVisible() bool      { return cp.visible }
-func (cp *CommandPalette) GetMode() paletteMode { return cp.mode }
-func (cp *CommandPalette) QueryField() *tview.InputField { return cp.queryField }
+func (cp *CommandPalette) IsVisible() bool                    { return cp.visible }
+func (cp *CommandPalette) GetMode() paletteMode               { return cp.mode }
+func (cp *CommandPalette) QueryField() *tview.InputField      { return cp.queryField }
 func (cp *CommandPalette) ActiveFormField() *tview.InputField { return cp.activeFormField() }
 
 func (cp *CommandPalette) Open() {
@@ -297,58 +301,33 @@ func (cp *CommandPalette) Draw(screen tcell.Screen) {
 	// Self-assign rect so GetRect() and WrapMouseHandler's InRect check reflect
 	// the actual visual bounds (Pages gives us the full-screen rect by default).
 	cp.SetRect(x, y, w, h)
+	cp.SetTitle(" " + cp.modeTitle() + " ")
 
-	bc := Theme.BorderFocus
-	ac := Theme.Accent
+	// Fix CJK wide chars that straddle the left edge before Box fills the area.
+	if x > 0 {
+		for row := range h {
+			if _, _, st, cw := screen.GetContent(x-1, y+row); cw == 2 {
+				screen.SetContent(x-1, y+row, ' ', nil, st)
+			}
+		}
+	}
+
+	cp.Box.DrawForSubclass(screen, cp)
+
 	bg := Theme.Surface
-
-	borderSt := tcell.StyleDefault.Foreground(bc).Background(bg)
+	borderSt := tcell.StyleDefault.Foreground(Theme.BorderFocus).Background(bg)
+	leftT, rightT, horiz := tview.Borders.LeftT, tview.Borders.RightT, tview.Borders.Horizontal
+	if cp.HasFocus() {
+		leftT = tview.BoxDrawingsHeavyVerticalAndRight
+		rightT = tview.BoxDrawingsHeavyVerticalAndLeft
+		horiz = tview.BoxDrawingsHeavyHorizontal
+	}
 	mutedSt := tcell.StyleDefault.Foreground(Theme.Muted).Background(bg)
 	textSt := tcell.StyleDefault.Foreground(Theme.Text).Background(bg)
 	selSt := tcell.StyleDefault.Background(tcell.NewRGBColor(40, 44, 70)).Foreground(Theme.Text)
 	selMutedSt := tcell.StyleDefault.Background(tcell.NewRGBColor(40, 44, 70)).Foreground(Theme.Muted)
 
-	// Before drawing, check whether a wide (CJK) char straddles the left edge:
-	// its left half is at x-1 (outside palette) and right half at x (inside).
-	// tcell's draw loop returns width=2 for that cell and advances past x even
-	// when x is dirty, so our space at x would be skipped. Fix: write a space
-	// at x-1 using the cell's own style — this converts it to width=1 so the
-	// loop advances one column at a time, letting x be drawn normally.
-	// The right edge needs no fix: tview redraws all primitives each cycle,
-	// so the chat's Put for any wide char at x+w-1 already marks x+w dirty.
-	bgSt := tcell.StyleDefault.Background(bg)
-	for row := range h {
-		if x > 0 {
-			if _, _, st, cw := screen.GetContent(x-1, y+row); cw == 2 {
-				screen.SetContent(x-1, y+row, ' ', nil, st)
-			}
-		}
-		for col := x; col < x+w; col++ {
-			screen.SetContent(col, y+row, ' ', nil, bgSt)
-		}
-	}
-
-	// Top border: ┌──── title ────┐
-	// Title is right-aligned so dashes fill left.
-	title := cp.modeTitle()
-	titleW := tview.TaggedStringWidth(tview.Escape(title))
-	labelW := titleW + 2 // " title "
-	fill := w - 2 - labelW
-	if fill < 0 {
-		fill = 0
-	}
-	screen.SetContent(x, y, '┌', nil, borderSt)
-	for i := range fill {
-		screen.SetContent(x+1+i, y, '─', nil, borderSt)
-	}
-	screen.SetContent(x+1+fill, y, ' ', nil, borderSt)
-	tview.Print(screen, title, x+2+fill, y, titleW, tview.AlignLeft, ac)
-	screen.SetContent(x+2+fill+titleW, y, ' ', nil, borderSt)
-	screen.SetContent(x+w-1, y, '┐', nil, borderSt)
-
-	// Query row (y+1): sides + InputField or hint text.
-	screen.SetContent(x, y+1, '│', nil, borderSt)
-	screen.SetContent(x+w-1, y+1, '│', nil, borderSt)
+	// Query row (y+1).
 	if cp.mode == paletteModeAddEndpoint {
 		drawText(screen, "fill in fields below, Enter to confirm", x+2, y+1, w-4, mutedSt)
 	} else {
@@ -358,12 +337,12 @@ func (cp *CommandPalette) Draw(screen tcell.Screen) {
 		cp.queryField.Draw(screen)
 	}
 
-	// Divider (y+2).
-	screen.SetContent(x, y+2, '├', nil, borderSt)
+	// Internal divider (y+2) — overwrite Box's │ with ├┤.
+	screen.SetContent(x, y+2, leftT, nil, borderSt)
 	for col := 1; col < w-1; col++ {
-		screen.SetContent(x+col, y+2, '─', nil, borderSt)
+		screen.SetContent(x+col, y+2, horiz, nil, borderSt)
 	}
-	screen.SetContent(x+w-1, y+2, '┤', nil, borderSt)
+	screen.SetContent(x+w-1, y+2, rightT, nil, borderSt)
 
 	// Content area (y+3 .. y+h-2).
 	itemsH := h - 4
@@ -372,19 +351,6 @@ func (cp *CommandPalette) Draw(screen tcell.Screen) {
 	} else {
 		cp.drawItems(screen, x, y+3, w, itemsH, selSt, selMutedSt, mutedSt, textSt)
 	}
-
-	// Side borders for content rows.
-	for row := 3; row < h-1; row++ {
-		screen.SetContent(x, y+row, '│', nil, borderSt)
-		screen.SetContent(x+w-1, y+row, '│', nil, borderSt)
-	}
-
-	// Bottom border.
-	screen.SetContent(x, y+h-1, '└', nil, borderSt)
-	for col := 1; col < w-1; col++ {
-		screen.SetContent(x+col, y+h-1, '─', nil, borderSt)
-	}
-	screen.SetContent(x+w-1, y+h-1, '┘', nil, borderSt)
 }
 
 func (cp *CommandPalette) drawFormFields(screen tcell.Screen, x, y, w int, bg tcell.Color) {

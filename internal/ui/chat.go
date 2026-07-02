@@ -1024,7 +1024,6 @@ func computeMsgContent(msg session.Message, width, maxW int) (allLines []string,
 
 // ─── text helpers ─────────────────────────────────────────────────────────────
 
-
 func formatInput(input string) string {
 	if input == "" || input == "{}" {
 		return "()"

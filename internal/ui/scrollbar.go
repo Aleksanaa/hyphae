@@ -8,10 +8,10 @@ import (
 // Scrollbar is a 1-column primitive that reflects and controls a scroll position.
 type Scrollbar struct {
 	*tview.Box
-	getTotal   func() int
-	getPageH   func() int
-	getScrollY func() int
-	scrollTo   func(int)
+	getTotal    func() int
+	getPageH    func() int
+	getScrollY  func() int
+	scrollTo    func(int)
 	dragging    bool
 	lastScrollY int
 }

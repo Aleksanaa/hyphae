@@ -115,4 +115,11 @@ func init() {
 	TC.PendingColor = Theme.PendingColor.CSS()
 	TC.StatusBg = Theme.StatusBg.CSS()
 	TC.StatusText = Theme.StatusText.CSS()
+
+	tview.Borders.HorizontalFocus = tview.BoxDrawingsHeavyHorizontal
+	tview.Borders.VerticalFocus = tview.BoxDrawingsHeavyVertical
+	tview.Borders.TopLeftFocus = tview.BoxDrawingsHeavyDownAndRight
+	tview.Borders.TopRightFocus = tview.BoxDrawingsHeavyDownAndLeft
+	tview.Borders.BottomLeftFocus = tview.BoxDrawingsHeavyUpAndRight
+	tview.Borders.BottomRightFocus = tview.BoxDrawingsHeavyUpAndLeft
 }
