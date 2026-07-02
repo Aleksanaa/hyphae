@@ -58,10 +58,6 @@ type ChatView struct {
 	hoverIdx        int // index into renderedMsgs; -1 = none
 	selectedIdx     int // box highlighted by last click; -1 = none
 	lastSelectedIdx int // selectedIdx at last buildText call; -2 = never built
-	// Agent activity rendered after the last message.
-	// currentStatus is ephemeral UI-only state for retry countdown; overwritten each update.
-	currentStatus      string
-	lastCurrentStatus  string
 	renderedMsgs       []session.Message
 	renderedMsgSessIdx []int // session-message index for each renderedMsg entry
 	renderedMsgToolIdx []int // tool-use index within the session message (-1 if not a tool item)
@@ -117,10 +113,6 @@ func NewChatView() *ChatView {
 	}
 }
 
-// UpdateCurrentStatus sets the ephemeral status line (connecting, preparing).
-// Each call replaces the previous; empty string hides it.
-func (cv *ChatView) UpdateCurrentStatus(text string) { cv.currentStatus = text }
-
 // SetStatusExpandCallback registers a function called when the user double-clicks
 // a RoleStatus message. The argument is the session-message index.
 func (cv *ChatView) SetStatusExpandCallback(fn func(sessionIdx int)) { cv.onStatusExpand = fn }
@@ -136,10 +128,9 @@ func (cv *ChatView) SetFocused(_ bool) {}
 // Activity items from the session are updated via Render; no extra check needed.
 func (cv *ChatView) Draw(screen tcell.Screen) {
 	_, _, w, _ := cv.GetInnerRect()
-	if w > 0 && (w != cv.lastWidth || cv.selectedIdx != cv.lastSelectedIdx || cv.currentStatus != cv.lastCurrentStatus) {
+	if w > 0 && (w != cv.lastWidth || cv.selectedIdx != cv.lastSelectedIdx) {
 		cv.lastWidth = w
 		cv.lastSelectedIdx = cv.selectedIdx
-		cv.lastCurrentStatus = cv.currentStatus
 		cv.buildText(w)
 	}
 	cv.TextView.Draw(screen)
@@ -306,7 +297,6 @@ func (cv *ChatView) Render(messages []session.Message) {
 	scrollY, _ := cv.GetScrollOffset()
 	atBottom := h <= 0 || scrollY+h >= cv.TotalLines
 	cv.lastWidth = w
-	cv.lastCurrentStatus = cv.currentStatus
 	cv.buildText(w)
 	if atBottom {
 		cv.TextView.ScrollToEnd()
@@ -545,7 +535,6 @@ func (cv *ChatView) buildText(width int) {
 		cv.msgStartLine = nil
 		cv.boxLeft = nil
 		cv.boxRight = nil
-		cv.appendRetryCountdown(&b)
 		text := b.String()
 		cv.TotalLines = strings.Count(text, "\n") + 1
 		cv.TextView.SetText(text)
@@ -796,19 +785,9 @@ func (cv *ChatView) buildText(width int) {
 		}
 	}
 
-	cv.appendRetryCountdown(&b)
 	text := b.String()
 	cv.TotalLines = strings.Count(text, "\n") + 1
 	cv.TextView.SetText(text)
-}
-
-// appendRetryCountdown renders the ephemeral retry countdown line, if active.
-func (cv *ChatView) appendRetryCountdown(b *strings.Builder) {
-	if cv.currentStatus != "" {
-		b.WriteString("\n  ")
-		b.WriteString(cv.currentStatus)
-		b.WriteString("\n")
-	}
 }
 
 // renderMessageBox writes a single bordered message box into b.

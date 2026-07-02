@@ -28,7 +28,8 @@ type App struct {
 	sendCancel context.CancelFunc
 
 	// status indicators
-	statusCancel    context.CancelFunc // cancels the active retry countdown goroutine
+	statusCancel    context.CancelFunc // cancels the active connecting timer goroutine
+	connectStart    time.Time          // when the current connect attempt began
 	thinkingPending bool               // true once reasoning_content has started streaming
 	thinkingStart   time.Time          // when first reasoning chunk arrived
 	thinkingFrozen  bool               // true once "thought for Xs" has been set for this turn
@@ -282,66 +283,48 @@ func (a *App) stopCountdown() {
 // Called at the start of each new agent turn.
 func (a *App) resetTurnState() {
 	a.stopCountdown()
+	a.connectStart = time.Time{}
 	a.thinkingPending = false
 	a.thinkingFrozen = false
 }
 
-// startConnectingTimer ticks the "connecting to apex model... (Xs)" session
-// status every second until cancelled.
-func (a *App) startConnectingTimer(sess *session.Session) {
+// startConnectingTimer ticks the session status every second until cancelled.
+// retryAttempt > 0 means a retry countdown is active; the status then reads
+// "connecting to apex model... (Xs, retrying N/M in Ys)".
+func (a *App) startConnectingTimer(sess *session.Session, retryAttempt, maxAttempts int, retryDelay time.Duration) {
+	a.stopCountdown()
 	ctx, cancel := context.WithCancel(a.appCtx)
 	a.statusCancel = cancel
-	start := time.Now()
+	start := a.connectStart
 	go func() {
+		retryRemaining := int(retryDelay.Seconds())
 		for {
-			select {
-			case <-time.After(time.Second):
-			case <-ctx.Done():
-				return
+			elapsed := int(time.Since(start).Seconds())
+			var text string
+			if retryAttempt > 0 {
+				text = fmt.Sprintf(
+					"[%s]connecting to [%s]apex[-][%s] model... (%ds, retrying %d/%d in %ds)[-]",
+					TC.Muted, TC.ApexDim, TC.Muted, elapsed, retryAttempt+1, maxAttempts, retryRemaining)
+			} else {
+				text = fmt.Sprintf(
+					"[%s]connecting to [%s]apex[-][%s] model... (%ds)[-]",
+					TC.Muted, TC.ApexDim, TC.Muted, elapsed)
 			}
-			secs := int(time.Since(start).Seconds())
 			a.tapp.QueueUpdateDraw(func() {
 				if ctx.Err() != nil {
 					return
 				}
-				sess.UpdateStatus(fmt.Sprintf(
-					"[%s]connecting to [%s]apex[-][%s] model... (%ds)[-]",
-					TC.Muted, TC.ApexDim, TC.Muted, secs))
+				sess.UpdateStatus(text)
 				a.redrawActive()
 			})
-		}
-	}()
-}
-
-// startCountdown ticks the "retrying in Xs…" current status every second until
-// the delay expires or the countdown is cancelled by the next event.
-func (a *App) startCountdown(attempt, maxAttempts int, delay time.Duration) {
-	ctx, cancel := context.WithCancel(a.appCtx)
-	a.statusCancel = cancel
-	go func() {
-		remaining := int(delay.Seconds())
-		nextAttempt := attempt + 1
-		for remaining >= 0 {
-			if ctx.Err() != nil {
-				return
-			}
-			r := remaining
-			a.tapp.QueueUpdateDraw(func() {
-				if ctx.Err() != nil {
-					return
-				}
-				a.layout.Chat.UpdateCurrentStatus(fmt.Sprintf(
-					"[%s]retrying in %ds (attempt %d/%d)…[-]", TC.Muted, r, nextAttempt, maxAttempts))
-			})
-			if remaining == 0 {
-				return
-			}
 			select {
 			case <-time.After(time.Second):
 			case <-ctx.Done():
 				return
 			}
-			remaining--
+			if retryAttempt > 0 && retryRemaining > 0 {
+				retryRemaining--
+			}
 		}
 	}()
 }
@@ -487,28 +470,23 @@ func (a *App) handleAgentEvents(sessionID string, ch <-chan agent.Event) {
 			attempt, maxAttempts, retryAfter, connErr := ev.Attempt, ev.MaxAttempts, ev.RetryAfter, ev.Err
 			if isActive {
 				a.tapp.QueueUpdateDraw(func() {
-					if attempt == 1 {
-						// New turn — reset thinking state so finalizeStatus works correctly.
+					if attempt == 1 && retryAfter == 0 {
+						// Brand new turn — reset all per-turn state.
 						a.resetTurnState()
-					} else {
-						a.stopCountdown()
+						a.connectStart = time.Now()
 					}
 					if retryAfter > 0 {
-						// This attempt failed; surface the error immediately.
+						// This attempt failed; surface the error and fold countdown into the timer.
 						if connErr != nil {
 							a.layout.Status.SetError(fmt.Sprintf("error: %s", connErr.Error()))
 						}
-						a.startCountdown(attempt, maxAttempts, retryAfter)
+						a.startConnectingTimer(sess, attempt, maxAttempts, retryAfter)
 					} else {
-						// A new attempt is starting; clear any error shown for a previous attempt.
+						// A new attempt is starting; clear any error shown for the previous attempt.
 						if attempt > 1 {
 							a.layout.Status.SetDefault(a.cfg.Model, session.StatusRunning)
 						}
-						sess.UpdateStatus(fmt.Sprintf(
-							"[%s]connecting to [%s]apex[-][%s] model...[-]",
-							TC.Muted, TC.ApexDim, TC.Muted))
-						a.redrawActive()
-						a.startConnectingTimer(sess)
+						a.startConnectingTimer(sess, 0, 0, 0)
 					}
 				})
 			}
