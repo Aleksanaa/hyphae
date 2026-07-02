@@ -642,13 +642,35 @@ func (cv *ChatView) buildText(width int) {
 				lp2, bw2 := cv.renderMessageBox(&b, entry, width, maxW, eIdx2 == cv.selectedIdx)
 				addEntry(entry, i, -2, lp2, bw2, strings.Count(b.String()[prevLen:], "\n"))
 			} else {
-				// One aggregate summary line.
-				line := toolGroupLabel(msg.ToolUses)
-				entry := session.Message{Role: session.RoleStatus, Content: line}
-				b.WriteString("  ")
-				b.WriteString(line)
-				b.WriteString("\n")
-				addEntry(entry, i, -2, 2, tview.TaggedStringWidth(line), strings.Count(b.String()[prevLen:], "\n"))
+				// Pending and denied (error) tools are shown individually;
+				// the rest are collapsed into one aggregate summary.
+				var collapsible []session.ToolUse
+				var individual []session.ToolUse
+				for _, tu := range msg.ToolUses {
+					if tu.State == "pending" || tu.State == "error" {
+						individual = append(individual, tu)
+					} else {
+						collapsible = append(collapsible, tu)
+					}
+				}
+				if len(collapsible) > 0 {
+					lp := b.Len()
+					line := toolGroupLabel(collapsible)
+					entry := session.Message{Role: session.RoleStatus, Content: line}
+					b.WriteString("  ")
+					b.WriteString(line)
+					b.WriteString("\n")
+					addEntry(entry, i, -2, 2, tview.TaggedStringWidth(line), strings.Count(b.String()[lp:], "\n"))
+				}
+				for _, tu := range individual {
+					lp := b.Len()
+					line := toolSingleLabel(tu)
+					entry := session.Message{Role: session.RoleStatus, Content: line}
+					b.WriteString("  ")
+					b.WriteString(line)
+					b.WriteString("\n")
+					addEntry(entry, i, -2, 2, tview.TaggedStringWidth(line), strings.Count(b.String()[lp:], "\n"))
+				}
 			}
 		}
 	}
