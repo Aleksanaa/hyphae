@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -57,8 +58,18 @@ type ChatView struct {
 	hoverIdx        int // index into renderedMsgs; -1 = none
 	selectedIdx     int // box highlighted by last click; -1 = none
 	lastSelectedIdx int // selectedIdx at last buildText call; -2 = never built
-	renderedMsgs    []session.Message
-	msgStartLine    []int // document line where each renderedMsg's top border starts
+	// Agent activity rendered after the last message.
+	// currentStatus is ephemeral UI-only state for retry countdown; overwritten each update.
+	currentStatus      string
+	lastCurrentStatus  string
+	renderedMsgs       []session.Message
+	renderedMsgSessIdx []int // session-message index for each renderedMsg entry
+	renderedMsgToolIdx []int // tool-use index within the session message (-1 if not a tool item)
+	msgStartLine       []int // document line where each renderedMsg's top border starts
+
+	// callbacks for double-clicking expandable items
+	onStatusExpand    func(sessionIdx int)
+	onToolGroupExpand func(sessionIdx int)
 
 	// drag-to-select state
 	selAnchor    selPoint
@@ -106,15 +117,29 @@ func NewChatView() *ChatView {
 	}
 }
 
+// UpdateCurrentStatus sets the ephemeral status line (connecting, preparing).
+// Each call replaces the previous; empty string hides it.
+func (cv *ChatView) UpdateCurrentStatus(text string) { cv.currentStatus = text }
+
+// SetStatusExpandCallback registers a function called when the user double-clicks
+// a RoleStatus message. The argument is the session-message index.
+func (cv *ChatView) SetStatusExpandCallback(fn func(sessionIdx int)) { cv.onStatusExpand = fn }
+
+// SetToolGroupExpandCallback registers a function called when the user double-clicks
+// a tool-group summary or an expanded tool box, toggling the whole group.
+func (cv *ChatView) SetToolGroupExpandCallback(fn func(sessionIdx int)) { cv.onToolGroupExpand = fn }
+
 // SetFocused is called by focus/blur hooks; no visible border to update.
 func (cv *ChatView) SetFocused(_ bool) {}
 
-// Draw rebuilds text when width or hover changes, then renders and draws overlays.
+// Draw rebuilds text when width, selection, or ephemeral status changes.
+// Activity items from the session are updated via Render; no extra check needed.
 func (cv *ChatView) Draw(screen tcell.Screen) {
 	_, _, w, _ := cv.GetInnerRect()
-	if w > 0 && (w != cv.lastWidth || cv.selectedIdx != cv.lastSelectedIdx) {
+	if w > 0 && (w != cv.lastWidth || cv.selectedIdx != cv.lastSelectedIdx || cv.currentStatus != cv.lastCurrentStatus) {
 		cv.lastWidth = w
 		cv.lastSelectedIdx = cv.selectedIdx
+		cv.lastCurrentStatus = cv.currentStatus
 		cv.buildText(w)
 	}
 	cv.TextView.Draw(screen)
@@ -269,16 +294,25 @@ func (cv *ChatView) drawWholeSel(screen tcell.Screen) {
 	}
 }
 
-// Render stores the message list and rebuilds the display text.
+// Render updates messages from the session snapshot and rebuilds the display text.
+// Auto-scrolls to the end only when the view was already at the bottom; otherwise
+// restores the previous scroll position so the user can read earlier content.
 func (cv *ChatView) Render(messages []session.Message) {
 	cv.messages = messages
-	_, _, w, _ := cv.GetInnerRect()
+	_, _, w, h := cv.GetInnerRect()
 	if w <= 0 {
 		w = 80
 	}
+	scrollY, _ := cv.GetScrollOffset()
+	atBottom := h <= 0 || scrollY+h >= cv.TotalLines
 	cv.lastWidth = w
+	cv.lastCurrentStatus = cv.currentStatus
 	cv.buildText(w)
-	cv.TextView.ScrollToEnd()
+	if atBottom {
+		cv.TextView.ScrollToEnd()
+	} else {
+		cv.TextView.ScrollTo(scrollY, 0)
+	}
 }
 
 // HoveredContent returns the raw content of whichever message the mouse is over.
@@ -352,6 +386,21 @@ func (cv *ChatView) MouseHandler() func(tview.MouseAction, *tcell.EventMouse, fu
 		case tview.MouseLeftClick:
 			cv.hoverIdx = cv.findMsgAt(docLine)
 			cv.selectedIdx = cv.hoverIdx
+
+		case tview.MouseLeftDoubleClick:
+			idx := cv.findMsgAt(docLine)
+			if idx < 0 || idx >= len(cv.renderedMsgs) {
+				break
+			}
+			m := cv.renderedMsgs[idx]
+			sessIdx := cv.renderedMsgSessIdx[idx]
+			toolIdx := cv.renderedMsgToolIdx[idx]
+			if (toolIdx >= 0 || toolIdx == -2) && cv.onToolGroupExpand != nil {
+				// Tool group summary (toolIdx==-2) or expanded tool box (toolIdx>=0): toggle group.
+				cv.onToolGroupExpand(sessIdx)
+			} else if ((m.Role == session.RoleStatus && m.Content != "") || m.ExpandedBox) && cv.onStatusExpand != nil {
+				cv.onStatusExpand(sessIdx)
+			}
 		}
 
 		return consumed, capture
@@ -491,9 +540,12 @@ func (cv *ChatView) buildText(width int) {
 		var b strings.Builder
 		cv.renderWelcome(&b, width)
 		cv.renderedMsgs = nil
+		cv.renderedMsgSessIdx = nil
+		cv.renderedMsgToolIdx = nil
 		cv.msgStartLine = nil
 		cv.boxLeft = nil
 		cv.boxRight = nil
+		cv.appendRetryCountdown(&b)
 		text := b.String()
 		cv.TotalLines = strings.Count(text, "\n") + 1
 		cv.TextView.SetText(text)
@@ -502,32 +554,119 @@ func (cv *ChatView) buildText(width int) {
 
 	var b strings.Builder
 	var renderedMsgs []session.Message
+	var renderedMsgSessIdx []int
+	var renderedMsgToolIdx []int
 	var msgStartLine []int
 	var boxLeft, boxRight []int
 
 	first := true
 	lineCount := 0
-	for _, msg := range cv.messages {
+
+	addEntry := func(entry session.Message, sessIdx, toolIdx int, lp, bw, lines int) {
+		renderedMsgs = append(renderedMsgs, entry)
+		renderedMsgSessIdx = append(renderedMsgSessIdx, sessIdx)
+		renderedMsgToolIdx = append(renderedMsgToolIdx, toolIdx)
+		msgStartLine = append(msgStartLine, lineCount)
+		boxLeft = append(boxLeft, lp)
+		boxRight = append(boxRight, lp+bw)
+		lineCount += lines
+	}
+	for i, msg := range cv.messages {
 		if msg.Role == session.RoleTool {
 			continue
 		}
-		if !first {
-			b.WriteString("\n")
-			lineCount++
+		if msg.Role == session.RoleStatus {
+			if msg.Content == "" {
+				continue
+			}
+			if !first {
+				b.WriteString("\n")
+				lineCount++
+			}
+			first = false
+			prevLen := b.Len()
+			if msg.ThinkingExpanded {
+				thinking, partial := "", false
+				for j := i + 1; j < len(cv.messages); j++ {
+					if cv.messages[j].Role == session.RoleAssistant {
+						thinking = cv.messages[j].Thinking
+						partial = cv.messages[j].Partial
+						break
+					}
+				}
+				entry := session.Message{
+					Role:        session.RoleAssistant,
+					Content:     thinking,
+					Partial:     partial,
+					ExpandedBox: true,
+					BoxTitle:    fmt.Sprintf("[%s]apex[-][%s] (thoughts)[-]", TC.ApexColor, TC.Muted),
+				}
+				eIdx := len(renderedMsgs) // index before append
+				lp, bw := cv.renderMessageBox(&b, entry, width, maxW, eIdx == cv.selectedIdx)
+				addEntry(entry, i, -1, lp, bw, strings.Count(b.String()[prevLen:], "\n"))
+			} else {
+				b.WriteString("  ")
+				b.WriteString(msg.Content)
+				b.WriteString("\n")
+				addEntry(msg, i, -1, 2, tview.TaggedStringWidth(msg.Content), strings.Count(b.String()[prevLen:], "\n"))
+			}
+			continue
 		}
-		first = false
+		// Skip the assistant message box when there is no content yet.
+		skipBox := msg.Role == session.RoleAssistant && msg.Content == "" && msg.Error == nil
+		if !skipBox {
+			if !first {
+				b.WriteString("\n")
+				lineCount++
+			}
+			first = false
+			prevLen := b.Len()
+			eIdx := len(renderedMsgs)
+			lp, bw := cv.renderMessageBox(&b, msg, width, maxW, eIdx == cv.selectedIdx)
+			addEntry(msg, i, -1, lp, bw, strings.Count(b.String()[prevLen:], "\n"))
+		}
 
-		msgStartLine = append(msgStartLine, lineCount)
-		renderedMsgs = append(renderedMsgs, msg)
-		msgIdx := len(renderedMsgs) - 1
-		prevLen := b.Len()
-		lp, bw := cv.renderMessageBox(&b, msg, width, maxW, msgIdx == cv.selectedIdx)
-		lineCount += strings.Count(b.String()[prevLen:], "\n")
-		boxLeft = append(boxLeft, lp)
-		boxRight = append(boxRight, lp+bw)
+		// Tool calls: one summary line (collapsed) or one expanded box (expanded).
+		if msg.Role == session.RoleAssistant && len(msg.ToolUses) > 0 {
+			if !first {
+				b.WriteString("\n")
+				lineCount++
+			}
+			first = false
+			prevLen := b.Len()
+			if msg.ToolGroupExpanded {
+				// Single expanded box containing all tool params.
+				var boxTitle string
+				if len(msg.ToolUses) == 1 {
+					boxTitle = toolSingleLabel(msg.ToolUses[0])
+				} else {
+					boxTitle = toolGroupLabel(msg.ToolUses)
+				}
+				entry := session.Message{
+					Role:          session.RoleAssistant,
+					ExpandedBox:   true,
+					BoxTitle:      boxTitle,
+					Content:       formatAllToolParams(msg.ToolUses),
+					ContentTagged: true,
+				}
+				eIdx2 := len(renderedMsgs)
+				lp2, bw2 := cv.renderMessageBox(&b, entry, width, maxW, eIdx2 == cv.selectedIdx)
+				addEntry(entry, i, -2, lp2, bw2, strings.Count(b.String()[prevLen:], "\n"))
+			} else {
+				// One aggregate summary line.
+				line := toolGroupLabel(msg.ToolUses)
+				entry := session.Message{Role: session.RoleStatus, Content: line}
+				b.WriteString("  ")
+				b.WriteString(line)
+				b.WriteString("\n")
+				addEntry(entry, i, -2, 2, tview.TaggedStringWidth(line), strings.Count(b.String()[prevLen:], "\n"))
+			}
+		}
 	}
 
 	cv.renderedMsgs = renderedMsgs
+	cv.renderedMsgSessIdx = renderedMsgSessIdx
+	cv.renderedMsgToolIdx = renderedMsgToolIdx
 	cv.msgStartLine = msgStartLine
 	cv.boxLeft = boxLeft
 	cv.boxRight = boxRight
@@ -570,7 +709,34 @@ func (cv *ChatView) buildText(width int) {
 			}
 
 		case session.RoleAssistant:
-			if msg.Error != nil {
+			if msg.ExpandedBox {
+				// Plain-text or pre-tagged content (reasoning or tool params).
+				escapedContent := msg.Content
+				if !msg.ContentTagged {
+					escapedContent = tview.Escape(msg.Content)
+				}
+				lines := tview.WordWrap(escapedContent, cw)
+				actualW := 0
+				for _, l := range lines {
+					if n := tview.TaggedStringWidth(l); n > actualW {
+						actualW = n
+					}
+				}
+				boxCW := max(1, actualW)
+				for j, l := range lines {
+					if vlen := tview.TaggedStringWidth(l); vlen < boxCW {
+						cv.copyColMask[start+1+j] = allCopyMask(vlen)
+					}
+				}
+				offset := 0
+				for _, para := range strings.Split(escapedContent, "\n") {
+					wrapped := tview.WordWrap(para, cw)
+					for k := 0; k < len(wrapped)-1; k++ {
+						cv.softWrapLine[start+1+offset+k] = true
+					}
+					offset += len(wrapped)
+				}
+			} else if msg.Error != nil {
 				lines := tview.WordWrap(tview.Escape(msg.Error.Error()), cw)
 				actualW := 0
 				for _, l := range lines {
@@ -599,30 +765,17 @@ func (cv *ChatView) buildText(width int) {
 					break
 				}
 				rls := renderBlocksAnnotated(blocks, cw)
-
-				// Mirror renderMessageBox's boxW calculation to get actual contentW.
 				actualW := 0
 				for _, rl := range rls {
 					if n := len(rl.copyMask); n > actualW {
 						actualW = n
 					}
 				}
-				var tuLineGroups [][]string
-				for _, tu := range msg.ToolUses {
-					tul := fmtToolUseLines(tu, cw)
-					for _, l := range tul {
-						if n := tview.TaggedStringWidth(l); n > actualW {
-							actualW = n
-						}
-					}
-					tuLineGroups = append(tuLineGroups, tul)
-				}
 				minBW := 9
 				if msg.Partial {
 					minBW = 11
 				}
 				boxCW := max(minBW-4, actualW)
-
 				for j, rl := range rls {
 					mask := rl.copyMask
 					hasFormat := false
@@ -639,23 +792,23 @@ func (cv *ChatView) buildText(width int) {
 						cv.softWrapLine[start+1+j] = true
 					}
 				}
-				base := len(rls)
-				for _, tul := range tuLineGroups {
-					for j, l := range tul {
-						vlen := tview.TaggedStringWidth(l)
-						if vlen < boxCW {
-							cv.copyColMask[start+1+base+j] = allCopyMask(vlen)
-						}
-					}
-					base += len(tul)
-				}
 			}
 		}
 	}
 
+	cv.appendRetryCountdown(&b)
 	text := b.String()
 	cv.TotalLines = strings.Count(text, "\n") + 1
 	cv.TextView.SetText(text)
+}
+
+// appendRetryCountdown renders the ephemeral retry countdown line, if active.
+func (cv *ChatView) appendRetryCountdown(b *strings.Builder) {
+	if cv.currentStatus != "" {
+		b.WriteString("\n  ")
+		b.WriteString(cv.currentStatus)
+		b.WriteString("\n")
+	}
 }
 
 // renderMessageBox writes a single bordered message box into b.
@@ -755,36 +908,50 @@ func (cv *ChatView) renderMessageBox(b *strings.Builder, msg session.Message, wi
 			return
 		}
 
-		maxContentW := maxW - 4
-		blocks, ok := cv.mdCache[msg.Content]
-		if !ok {
-			blocks = parseMarkdown(msg.Content)
-			cv.mdCache[msg.Content] = blocks
+		// ExpandedBox: dotted borders, BoxTitle label, plain-text content.
+		// Normal: solid borders, "apex" label, markdown content.
+		hChar, vChar := "─", "│"
+		if msg.ExpandedBox {
+			hChar, vChar = "╌", "╎"
 		}
-		lines := renderBlocks(blocks, maxContentW)
+		fill := func(n int) string {
+			if n < 0 {
+				n = 0
+			}
+			return strings.Repeat(hChar, n)
+		}
+		mkBoxLineV := func(contentW int) func(inner string, vlen int) string {
+			return func(inner string, vlen int) string {
+				pad := contentW - vlen
+				if pad < 0 {
+					pad = 0
+				}
+				return fmt.Sprintf("[%s]%s[-] %s[-:-:-]%s [%s]%s[-]", bc, vChar, inner, strings.Repeat(" ", pad), bc, vChar)
+			}
+		}
+
+		maxContentW := maxW - 4
+		var lines []string
+		if msg.ExpandedBox {
+			content := msg.Content
+			if !msg.ContentTagged {
+				content = tview.Escape(content)
+			}
+			lines = tview.WordWrap(content, maxContentW)
+		} else {
+			blocks, ok := cv.mdCache[msg.Content]
+			if !ok {
+				blocks = parseMarkdown(msg.Content)
+				cv.mdCache[msg.Content] = blocks
+			}
+			lines = renderBlocks(blocks, maxContentW)
+		}
 		actualW := 0
 		for _, l := range lines {
 			if n := tview.TaggedStringWidth(l); n > actualW {
 				actualW = n
 			}
 		}
-		var tuLines []string
-		for _, tu := range msg.ToolUses {
-			for _, l := range fmtToolUseLines(tu, maxContentW) {
-				if n := tview.TaggedStringWidth(l); n > actualW {
-					actualW = n
-				}
-				tuLines = append(tuLines, l)
-			}
-		}
-		// ┌─ apex ┐ = 9 cols, ┌─ apex … ┐ = 11 cols
-		minBoxW := 9
-		if msg.Partial {
-			minBoxW = 11
-		}
-		boxW = max(minBoxW, actualW+4)
-		contentW := boxW - 4
-		boxLine := mkBoxLine(contentW)
 
 		partialFrag := ""
 		extraW := 0
@@ -792,57 +959,247 @@ func (cv *ChatView) renderMessageBox(b *strings.Builder, msg session.Message, wi
 			partialFrag = fmt.Sprintf("[%s]… [-]", mc)
 			extraW = 2
 		}
-		// ┌─ apex ──...──┐  "─ apex " = 7 visible cols
-		b.WriteString(fmt.Sprintf("[%s]┌─ [%s]apex [%s]%s%s┐[-]",
-			bc, ac, bc, partialFrag, dash(boxW-9-extraW)) + "\n")
+
+		// ExpandedBox: "┌╌ {BoxTitle} ┐" — fixed = titleW + 5 ("┌╌ " + " " + "┐")
+		// Normal:      "┌─ apex ┐"     — fixed = 9; with partial: 11
+		var minBoxW int
+		if msg.ExpandedBox {
+			minBoxW = tview.TaggedStringWidth(msg.BoxTitle) + 5
+		} else if msg.Partial {
+			minBoxW = 11
+		} else {
+			minBoxW = 9
+		}
+		boxW = max(minBoxW+extraW, actualW+4)
+		contentW := boxW - 4
+		boxLine := mkBoxLineV(contentW)
+
+		if msg.ExpandedBox {
+			titleW := tview.TaggedStringWidth(msg.BoxTitle)
+			fmt.Fprintf(b, "[%s]┌╌ %s %s[%s]%s┐[-]\n",
+				bc, msg.BoxTitle, partialFrag, bc, fill(boxW-titleW-5-extraW))
+			if len(lines) == 0 {
+				b.WriteString(boxLine("", 0) + "\n")
+			}
+		} else {
+			fmt.Fprintf(b, "[%s]┌─ [%s]apex [%s]%s%s┐[-]\n",
+				bc, ac, bc, partialFrag, fill(boxW-9-extraW))
+		}
 		for _, line := range lines {
 			b.WriteString(boxLine(line, tview.TaggedStringWidth(line)) + "\n")
 		}
-		for _, line := range tuLines {
-			b.WriteString(boxLine(line, tview.TaggedStringWidth(line)) + "\n")
-		}
-		b.WriteString(fmt.Sprintf("[%s]└%s┘[-]", bc, dash(boxW-2)) + "\n")
+		fmt.Fprintf(b, "[%s]└%s┘[-]\n", bc, fill(boxW-2))
 	}
 	return
 }
 
-// fmtToolUseLines formats a tool use into one or more tview-tagged lines.
-// Output text for error states is word-wrapped to maxW columns (the indent of
-// 2 is already accounted for, so callers pass maxContentW directly).
-func fmtToolUseLines(tu session.ToolUse, maxW int) []string {
-	arg := formatInput(tu.Input)
-	toolC := TC.ToolColor
-	mutedC := TC.Muted
-	errC := TC.ErrorColor
+// toolKeyArg extracts the primary display value from a tool call's JSON arguments.
+func toolKeyArg(name, input string) string {
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(input), &m); err != nil {
+		return ""
+	}
+	field := "path"
+	switch name {
+	case "run_shell":
+		field = "command"
+	case "web_fetch":
+		field = "url"
+	case "search_files":
+		field = "pattern"
+	}
+	v, ok := m[field]
+	if !ok {
+		return ""
+	}
+	var s string
+	if json.Unmarshal(v, &s) != nil {
+		return ""
+	}
+	runes := []rune(s)
+	if len(runes) > 50 {
+		return string(runes[:47]) + "…"
+	}
+	return s
+}
 
-	switch tu.State {
-	case "pending":
-		return []string{fmt.Sprintf("[%s]⏸ %s[-][%s]%s[-] [%s]waiting…[-]",
-			TC.PendingColor, tview.Escape(tu.Name), mutedC, arg, mutedC)}
-	case "running":
-		return []string{fmt.Sprintf("[%s]▶ %s[-][%s]%s[-] [%s]…[-]",
-			toolC, tview.Escape(tu.Name), mutedC, arg, mutedC)}
-	case "done":
-		return []string{fmt.Sprintf("[%s]▶ %s[-][%s]%s[-] [%s]✓[-]",
-			toolC, tview.Escape(tu.Name), mutedC, arg, TC.SuccessColor)}
-	case "error":
-		out := []string{fmt.Sprintf("[%s]✗ %s[-][%s]%s[-]",
-			errC, tview.Escape(tu.Name), mutedC, arg)}
-		if tu.Output != "" {
-			wrapW := maxW - 2
-			if wrapW < 10 {
-				wrapW = 10
-			}
-			prefix := fmt.Sprintf("[%s]  ", errC)
-			for _, l := range tview.WordWrap(tview.Escape(tu.Output), wrapW) {
-				out = append(out, prefix+l+"[-]")
+type toolCat struct{ verb, infin, noun, nouns string }
+
+var toolCats = map[string]toolCat{
+	"read_file":      {"read", "read", "file", "files"},
+	"write_file":     {"wrote", "write", "file", "files"},
+	"edit_file":      {"edited", "edit", "file", "files"},
+	"list_directory": {"listed", "list", "directory", "directories"},
+	"run_shell":      {"ran", "run", "command", "commands"},
+	"web_fetch":      {"fetched", "fetch", "URL", "URLs"},
+	"search_files":   {"searched for", "search for", "pattern", "patterns"},
+}
+
+// toolGroupLabel generates a natural-language tview-tagged summary for a set of tool uses.
+// Single tool delegates to toolSingleLabel; multiple tools produce an aggregate count line.
+func toolGroupLabel(tools []session.ToolUse) string {
+	if len(tools) == 0 {
+		return ""
+	}
+	if len(tools) == 1 {
+		return toolSingleLabel(tools[0])
+	}
+	ac, mc := TC.ApexDim, TC.Muted
+	apex := fmt.Sprintf("[%s]apex[-][%s] ", ac, mc)
+
+	type group struct {
+		cat   toolCat
+		count int
+	}
+	var groups []group
+	seen := map[string]int{}
+	for _, tu := range tools {
+		cat, ok := toolCats[tu.Name]
+		if !ok {
+			cat = toolCat{"called", "call", "tool", "tools"}
+		}
+		if idx, exists := seen[tu.Name]; exists {
+			groups[idx].count++
+		} else {
+			seen[tu.Name] = len(groups)
+			groups = append(groups, group{cat: cat, count: 1})
+		}
+	}
+	parts := make([]string, len(groups))
+	for i, g := range groups {
+		if g.count == 1 {
+			parts[i] = fmt.Sprintf("%s 1 %s", g.cat.verb, g.cat.noun)
+		} else {
+			parts[i] = fmt.Sprintf("%s %d %s", g.cat.verb, g.count, g.cat.nouns)
+		}
+	}
+	var desc string
+	switch len(parts) {
+	case 1:
+		desc = parts[0]
+	case 2:
+		desc = parts[0] + " and " + parts[1]
+	default:
+		desc = strings.Join(parts[:len(parts)-1], ", ") + ", and " + parts[len(parts)-1]
+	}
+	return fmt.Sprintf("%s%s[-]", apex, desc)
+}
+
+// toolSingleLabel generates a natural-language tview-tagged summary for one tool use.
+func toolSingleLabel(tu session.ToolUse) string {
+	ac, mc := TC.ApexDim, TC.Muted
+	apex := fmt.Sprintf("[%s]apex[-][%s] ", ac, mc)
+	cat, ok := toolCats[tu.Name]
+	key := toolKeyArg(tu.Name, tu.Input)
+	if key == "" {
+		key = tu.Name
+	}
+	var desc string
+	switch {
+	case !ok:
+		desc = "used " + tu.Name
+	case tu.State == "pending":
+		desc = fmt.Sprintf("wants to %s %s", cat.infin, key)
+	case tu.State == "error":
+		desc = fmt.Sprintf("failed to %s %s", cat.infin, key)
+	default:
+		desc = fmt.Sprintf("%s %s", cat.verb, key)
+	}
+	return fmt.Sprintf("%s%s[-]", apex, desc)
+}
+
+// formatToolParams renders tool input JSON as highlighted key: value lines.
+func formatToolParams(name, input string) string {
+	if input == "" || input == "{}" {
+		return ""
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(input), &m); err != nil {
+		return input
+	}
+
+	lc := TC.ToolColor // label color
+
+	var sb strings.Builder
+	written := 0
+
+	writeField := func(key string, raw json.RawMessage) {
+		if written > 0 {
+			sb.WriteByte('\n')
+		}
+		fmt.Fprintf(&sb, "[%s]%s:[-] ", lc, key)
+		switch {
+		case len(raw) > 0 && raw[0] == '[':
+			var arr []json.RawMessage
+			_ = json.Unmarshal(raw, &arr)
+			fmt.Fprintf(&sb, "[%d items]", len(arr))
+		case len(raw) > 0 && raw[0] == '{':
+			sb.WriteString("{...}")
+		default:
+			var s string
+			if json.Unmarshal(raw, &s) == nil {
+				runes := []rune(s)
+				if len(runes) > 200 {
+					sb.WriteString(tview.Escape(string(runes[:197]) + "…"))
+				} else {
+					sb.WriteString(tview.Escape(s))
+				}
+			} else {
+				sb.Write(raw)
 			}
 		}
-		return out
-	default:
-		return []string{fmt.Sprintf("[%s]▷ %s[-][%s]%s[-]",
-			mutedC, tview.Escape(tu.Name), mutedC, arg)}
+		written++
 	}
+
+	// Primary key first.
+	primary := "path"
+	switch name {
+	case "run_shell":
+		primary = "command"
+	case "web_fetch":
+		primary = "url"
+	case "search_files":
+		primary = "pattern"
+	}
+	if v, ok := m[primary]; ok {
+		writeField(primary, v)
+		delete(m, primary)
+	}
+
+	// Secondary fields in a stable order, reasoning always last.
+	for _, k := range []string{"offset", "limit", "format", "timeout", "edits", "content"} {
+		if v, ok := m[k]; ok {
+			writeField(k, v)
+			delete(m, k)
+		}
+	}
+	reasoning, hasReasoning := m["reasoning"]
+	delete(m, "reasoning")
+	for k, v := range m {
+		writeField(k, v)
+	}
+	if hasReasoning {
+		writeField("reasoning", reasoning)
+	}
+
+	return sb.String()
+}
+
+// formatAllToolParams formats all tool uses in a group into a single tagged string
+// with a name header and key-value params for each tool, separated by blank lines.
+func formatAllToolParams(tools []session.ToolUse) string {
+	if len(tools) == 1 {
+		return formatToolParams(tools[0].Name, tools[0].Input)
+	}
+	var sb strings.Builder
+	for i, tu := range tools {
+		if i > 0 {
+			sb.WriteString("\n")
+		}
+		fmt.Fprintf(&sb, "[%s]%s[-]\n", TC.ToolColor, tview.Escape(tu.Name))
+		sb.WriteString(formatToolParams(tu.Name, tu.Input))
+	}
+	return sb.String()
 }
 
 // ─── selection ───────────────────────────────────────────────────────────────
@@ -968,6 +1325,8 @@ func (cv *ChatView) selectedTextWhole() string {
 			role := "assistant"
 			if msg.Role == session.RoleUser {
 				role = "you"
+			} else if msg.ExpandedBox {
+				role = "thoughts"
 			}
 			parts = append(parts, role+":\n"+content)
 		} else {
@@ -1000,6 +1359,13 @@ func computeMsgContent(msg session.Message, width, maxW int) (allLines []string,
 		}
 		return lines, lp
 	case session.RoleAssistant:
+		if msg.ExpandedBox {
+			lines := tview.WordWrap(tview.Escape(msg.Content), maxContentW)
+			for i, l := range lines {
+				lines[i] = tview.Unescape(l)
+			}
+			return lines, 0
+		}
 		if msg.Error != nil {
 			lines := tview.WordWrap(tview.Escape(msg.Error.Error()), maxContentW)
 			for i, l := range lines {
@@ -1012,26 +1378,9 @@ func computeMsgContent(msg session.Message, width, maxW int) (allLines []string,
 		for i, l := range raw {
 			all[i] = stripTags(l)
 		}
-		for _, tu := range msg.ToolUses {
-			for _, l := range fmtToolUseLines(tu, maxContentW) {
-				all = append(all, stripTags(l))
-			}
-		}
 		return all, 0
+	case session.RoleStatus:
+		return []string{stripTags(msg.Content)}, 2
 	}
 	return nil, 0
-}
-
-// ─── text helpers ─────────────────────────────────────────────────────────────
-
-func formatInput(input string) string {
-	if input == "" || input == "{}" {
-		return "()"
-	}
-	input = strings.TrimSpace(input)
-	runes := []rune(input)
-	if len(runes) > 50 {
-		input = string(runes[:47]) + "..."
-	}
-	return "(" + tview.Escape(input) + ")"
 }

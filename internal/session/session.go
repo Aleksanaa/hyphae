@@ -13,6 +13,7 @@ const (
 	RoleUser      Role = "user"
 	RoleAssistant Role = "assistant"
 	RoleTool      Role = "tool"
+	RoleStatus    Role = "status" // UI-only status message; empty content = hidden
 )
 
 // Status mirrors the agent's current state.
@@ -42,30 +43,67 @@ type ToolResult struct {
 
 // Message is one turn in the conversation.
 type Message struct {
-	Role       Role
-	Content    string
-	ToolUses   []ToolUse   // assistant turns only
-	ToolResult *ToolResult // tool turns only
-	Partial    bool        // streaming in progress
-	Error      error       // set if the turn failed
+	Role              Role
+	Content           string
+	Thinking          string      // reasoning_content from CoT-capable models
+	ThinkingExpanded  bool        // UI: whether the thoughts box is expanded (RoleStatus only)
+	ToolGroupExpanded bool        // UI: whether the tool-call group is shown as expanded param boxes
+	ExpandedBox       bool        // UI: synthetic renderedMsgs entry rendered as an expanded dotted box
+	BoxTitle          string      // tview-tagged label for ExpandedBox (e.g. "[c]apex (thoughts)[-]")
+	ContentTagged     bool        // UI: Content already contains tview tags; skip Escape in rendering
+	ToolUses          []ToolUse   // assistant turns only
+	ToolResult        *ToolResult // tool turns only
+	Partial           bool        // streaming in progress
+	Error             error       // set if the turn failed
+}
+
+// ToggleToolGroupExpanded flips the ToolGroupExpanded flag on an assistant message,
+// toggling whether the tool-call group is shown as expanded parameter boxes.
+func (s *Session) ToggleToolGroupExpanded(msgIdx int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if msgIdx >= 0 && msgIdx < len(s.msgs) {
+		s.msgs[msgIdx].ToolGroupExpanded = !s.msgs[msgIdx].ToolGroupExpanded
+	}
+}
+
+// ToggleThinkingExpanded flips the ThinkingExpanded flag on a RoleStatus message.
+func (s *Session) ToggleThinkingExpanded(idx int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if idx >= 0 && idx < len(s.msgs) && s.msgs[idx].Role == RoleStatus {
+		s.msgs[idx].ThinkingExpanded = !s.msgs[idx].ThinkingExpanded
+	}
 }
 
 // Session holds the full local state for one conversation.
 type Session struct {
-	mu      sync.RWMutex
-	ID      string
-	Title   string
-	Status  Status
-	WorkDir string
-	msgs    []Message
+	mu           sync.RWMutex
+	ID           string
+	Title        string
+	Status       Status
+	WorkDir      string
+	msgs         []Message
+	statusMsgIdx int // index of current turn's RoleStatus message; -1 if none
+}
+
+// UpdateStatus replaces the content of the current turn's status message.
+// Empty string hides it. No-op if no status message is set.
+func (s *Session) UpdateStatus(content string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.statusMsgIdx >= 0 && s.statusMsgIdx < len(s.msgs) {
+		s.msgs[s.statusMsgIdx].Content = content
+	}
 }
 
 // NewSession creates an empty session.
 func NewSession(id, workDir string) *Session {
 	return &Session{
-		ID:      id,
-		WorkDir: workDir,
-		Status:  StatusIdle,
+		ID:           id,
+		WorkDir:      workDir,
+		Status:       StatusIdle,
+		statusMsgIdx: -1,
 	}
 }
 
@@ -75,6 +113,9 @@ func (s *Session) AddMessage(m Message) int {
 	defer s.mu.Unlock()
 	idx := len(s.msgs)
 	s.msgs = append(s.msgs, m)
+	if m.Role == RoleStatus {
+		s.statusMsgIdx = idx
+	}
 	// Use first user message as title
 	if s.Title == "" && m.Role == RoleUser && m.Content != "" {
 		t := m.Content
@@ -92,6 +133,15 @@ func (s *Session) AppendTextDelta(idx int, delta string) {
 	defer s.mu.Unlock()
 	if idx < len(s.msgs) {
 		s.msgs[idx].Content += delta
+	}
+}
+
+// AppendThinkingDelta appends streaming reasoning_content to the message at idx.
+func (s *Session) AppendThinkingDelta(idx int, delta string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if idx < len(s.msgs) {
+		s.msgs[idx].Thinking += delta
 	}
 }
 

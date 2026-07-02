@@ -19,6 +19,7 @@ var Theme = struct {
 	// Message roles
 	UserColor    tcell.Color
 	ApexColor    tcell.Color
+	ApexDim      tcell.Color // slightly darker ApexColor for status text
 	ToolColor    tcell.Color
 	ShellColor   tcell.Color
 	SystemColor  tcell.Color
@@ -48,6 +49,7 @@ var Theme = struct {
 
 	UserColor:    tcell.NewRGBColor(100, 200, 255),
 	ApexColor:    tcell.NewRGBColor(180, 140, 220),
+	ApexDim:      tcell.NewRGBColor(140, 105, 175),
 	ToolColor:    tcell.NewRGBColor(130, 200, 130),
 	ShellColor:   tcell.NewRGBColor(200, 160, 100),
 	CodeColor:    tcell.NewRGBColor(185, 200, 240),
@@ -73,6 +75,7 @@ var TC struct {
 	Accent       string
 	UserColor    string
 	ApexColor    string
+	ApexDim      string
 	ToolColor    string
 	ShellColor   string
 	SystemColor  string
@@ -103,6 +106,7 @@ func init() {
 	TC.Accent = Theme.Accent.CSS()
 	TC.UserColor = Theme.UserColor.CSS()
 	TC.ApexColor = Theme.ApexColor.CSS()
+	TC.ApexDim = Theme.ApexDim.CSS()
 	TC.ToolColor = Theme.ToolColor.CSS()
 	TC.ShellColor = Theme.ShellColor.CSS()
 	TC.SystemColor = Theme.SystemColor.CSS()

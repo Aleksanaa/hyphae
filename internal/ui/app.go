@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/atotto/clipboard"
 	"github.com/gdamore/tcell/v2"
@@ -25,6 +26,12 @@ type App struct {
 	appCtx     context.Context
 	appCancel  context.CancelFunc
 	sendCancel context.CancelFunc
+
+	// status indicators
+	statusCancel    context.CancelFunc // cancels the active retry countdown goroutine
+	thinkingPending bool               // true once reasoning_content has started streaming
+	thinkingStart   time.Time          // when first reasoning chunk arrived
+	thinkingFrozen  bool               // true once "thought for Xs" has been set for this turn
 }
 
 // New wires up and returns a ready-to-run App.
@@ -62,6 +69,19 @@ func New(cfg *config.Config) *App {
 	status.SetDefault(cfg.Model, session.StatusIdle)
 
 	a.setupPalette()
+
+	chat.SetStatusExpandCallback(func(sessionIdx int) {
+		if sess, ok := a.manager.Active(); ok {
+			sess.ToggleThinkingExpanded(sessionIdx)
+			a.redrawActive()
+		}
+	})
+	chat.SetToolGroupExpandCallback(func(sessionIdx int) {
+		if sess, ok := a.manager.Active(); ok {
+			sess.ToggleToolGroupExpanded(sessionIdx)
+			a.redrawActive()
+		}
+	})
 
 	chat.TextView.SetFocusFunc(func() { chat.SetFocused(true) })
 	chat.TextView.SetBlurFunc(func() { chat.SetFocused(false) })
@@ -250,6 +270,106 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 	return event
 }
 
+// stopCountdown cancels any running retry countdown goroutine.
+func (a *App) stopCountdown() {
+	if a.statusCancel != nil {
+		a.statusCancel()
+		a.statusCancel = nil
+	}
+}
+
+// resetTurnState clears per-turn thinking/connecting state.
+// Called at the start of each new agent turn.
+func (a *App) resetTurnState() {
+	a.stopCountdown()
+	a.thinkingPending = false
+	a.thinkingFrozen = false
+}
+
+// startConnectingTimer ticks the "connecting to apex model... (Xs)" session
+// status every second until cancelled.
+func (a *App) startConnectingTimer(sess *session.Session) {
+	ctx, cancel := context.WithCancel(a.appCtx)
+	a.statusCancel = cancel
+	start := time.Now()
+	go func() {
+		for {
+			select {
+			case <-time.After(time.Second):
+			case <-ctx.Done():
+				return
+			}
+			secs := int(time.Since(start).Seconds())
+			a.tapp.QueueUpdateDraw(func() {
+				if ctx.Err() != nil {
+					return
+				}
+				sess.UpdateStatus(fmt.Sprintf(
+					"[%s]connecting to [%s]apex[-][%s] model... (%ds)[-]",
+					TC.Muted, TC.ApexDim, TC.Muted, secs))
+				a.redrawActive()
+			})
+		}
+	}()
+}
+
+// startCountdown ticks the "retrying in Xs…" current status every second until
+// the delay expires or the countdown is cancelled by the next event.
+func (a *App) startCountdown(attempt, maxAttempts int, delay time.Duration) {
+	ctx, cancel := context.WithCancel(a.appCtx)
+	a.statusCancel = cancel
+	go func() {
+		remaining := int(delay.Seconds())
+		nextAttempt := attempt + 1
+		for remaining >= 0 {
+			if ctx.Err() != nil {
+				return
+			}
+			r := remaining
+			a.tapp.QueueUpdateDraw(func() {
+				if ctx.Err() != nil {
+					return
+				}
+				a.layout.Chat.UpdateCurrentStatus(fmt.Sprintf(
+					"[%s]retrying in %ds (attempt %d/%d)…[-]", TC.Muted, r, nextAttempt, maxAttempts))
+			})
+			if remaining == 0 {
+				return
+			}
+			select {
+			case <-time.After(time.Second):
+			case <-ctx.Done():
+				return
+			}
+			remaining--
+		}
+	}()
+}
+
+// finalizeStatus sets the status message for the current turn to its final value.
+// If CoT was active, shows "apex thought for Xs". Otherwise clears it (hidden).
+// No-op after the first call per turn.
+func (a *App) finalizeStatus(sess *session.Session) {
+	if a.thinkingFrozen {
+		return
+	}
+	a.thinkingFrozen = true
+	a.stopCountdown()
+	if a.thinkingPending {
+		secs := int(time.Since(a.thinkingStart).Seconds())
+		var label string
+		if secs < 1 {
+			label = fmt.Sprintf("[%s]apex[-][%s] thought for a moment[-]", TC.ApexDim, TC.Muted)
+		} else {
+			label = fmt.Sprintf("[%s]apex[-][%s] thought for %ds[-]", TC.ApexDim, TC.Muted, secs)
+		}
+		sess.UpdateStatus(label)
+		a.thinkingPending = false
+	} else {
+		sess.UpdateStatus("") // no CoT — connecting status disappears with no artifact
+	}
+}
+
 // sendMessage sends user text to the active (or a new) session.
 // Called from the TextArea input capture → we are in the event loop, call directly.
 func (a *App) sendMessage(text string) {
@@ -263,7 +383,7 @@ func (a *App) sendMessage(text string) {
 		a.manager.SetActive(sess.ID)
 	}
 
-	// Add user message and render before the goroutine starts so it appears immediately.
+	a.resetTurnState()
 	sess.AddMessage(session.Message{Role: session.RoleUser, Content: text})
 	msgs, _ := sess.Snapshot()
 	a.layout.Chat.Render(msgs)
@@ -337,12 +457,66 @@ func (a *App) handleAgentEvents(sessionID string, ch <-chan agent.Event) {
 				}
 			})
 
-		case agent.EventTextDelta, agent.EventToolStart, agent.EventToolDone:
+		case agent.EventReasoningDelta:
 			if isActive {
 				a.tapp.QueueUpdateDraw(func() {
-					msgs, status := sess.Snapshot()
-					a.layout.Chat.Render(msgs)
-					a.layout.Status.SetDefault(a.cfg.Model, status)
+					if a.thinkingFrozen {
+						return
+					}
+					if !a.thinkingPending {
+						a.thinkingPending = true
+						a.thinkingStart = time.Now()
+						a.stopCountdown() // cancel connecting timer; reasoning has started
+					}
+					secs := int(time.Since(a.thinkingStart).Seconds())
+					sess.UpdateStatus(fmt.Sprintf(
+						"[%s]apex[-][%s] is thinking... (%ds)[-]", TC.ApexDim, TC.Muted, secs))
+					a.redrawActive()
+				})
+			}
+
+		case agent.EventTextDelta:
+			if isActive {
+				a.tapp.QueueUpdateDraw(func() {
+					a.finalizeStatus(sess)
+					a.redrawActive()
+				})
+			}
+
+		case agent.EventConnecting:
+			attempt, maxAttempts, retryAfter := ev.Attempt, ev.MaxAttempts, ev.RetryAfter
+			if isActive {
+				a.tapp.QueueUpdateDraw(func() {
+					if attempt == 1 {
+						// New turn — reset thinking state so finalizeStatus works correctly.
+						a.resetTurnState()
+					} else {
+						a.stopCountdown()
+					}
+					if retryAfter > 0 {
+						a.startCountdown(attempt, maxAttempts, retryAfter)
+					} else {
+						sess.UpdateStatus(fmt.Sprintf(
+							"[%s]connecting to [%s]apex[-][%s] model...[-]",
+							TC.Muted, TC.ApexDim, TC.Muted))
+						a.redrawActive()
+						a.startConnectingTimer(sess)
+					}
+				})
+			}
+
+		case agent.EventPreparingTool:
+			if isActive {
+				a.tapp.QueueUpdateDraw(func() {
+					a.finalizeStatus(sess)
+					a.redrawActive()
+				})
+			}
+
+		case agent.EventToolStart, agent.EventToolDone:
+			if isActive {
+				a.tapp.QueueUpdateDraw(func() {
+					a.redrawActive()
 				})
 			}
 
@@ -350,9 +524,8 @@ func (a *App) handleAgentEvents(sessionID string, ch <-chan agent.Event) {
 			sess.SetStatus(session.StatusIdle)
 			if isActive {
 				a.tapp.QueueUpdateDraw(func() {
-					msgs, status := sess.Snapshot()
-					a.layout.Chat.Render(msgs)
-					a.layout.Status.SetDefault(a.cfg.Model, status)
+					a.finalizeStatus(sess)
+					a.redrawActive()
 				})
 			}
 

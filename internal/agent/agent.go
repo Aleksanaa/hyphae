@@ -3,7 +3,9 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"time"
 
 	openai "github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
@@ -23,13 +25,18 @@ run_shell, web_fetch, write_file, and edit_file require user approval before exe
 type EventType string
 
 const (
-	EventTextDelta    EventType = "text_delta"    // partial assistant text
-	EventToolStart    EventType = "tool_start"    // tool call beginning
-	EventToolDone     EventType = "tool_done"     // tool call finished
-	EventDone         EventType = "done"          // turn complete
-	EventError        EventType = "error"         // unrecoverable error
-	EventToolApproval EventType = "tool_approval" // waiting for user approval
+	EventTextDelta      EventType = "text_delta"      // partial assistant text
+	EventReasoningDelta EventType = "reasoning_delta" // partial reasoning/thinking content
+	EventToolStart      EventType = "tool_start"      // tool call beginning
+	EventToolDone       EventType = "tool_done"       // tool call finished
+	EventDone           EventType = "done"            // turn complete
+	EventError          EventType = "error"           // unrecoverable error
+	EventToolApproval   EventType = "tool_approval"   // waiting for user approval
+	EventConnecting     EventType = "connecting"      // establishing connection (may be retrying)
+	EventPreparingTool  EventType = "preparing_tool"  // tool calls received, about to execute
 )
+
+const maxConnectAttempts = 3
 
 // ApprovalResult is the user's response to an approval request.
 type ApprovalResult struct {
@@ -57,6 +64,10 @@ type Event struct {
 	Tool   *ToolEvent
 	Err    error               // EventError
 	RespCh chan ApprovalResult // EventToolApproval only; send exactly once
+	// EventConnecting fields:
+	Attempt     int           // current attempt number (1-based)
+	MaxAttempts int           // total allowed attempts
+	RetryAfter  time.Duration // >0 means waiting before the next attempt
 }
 
 // Agent orchestrates the LLM ↔ tool loop.
@@ -109,34 +120,77 @@ func (a *Agent) loop(ctx context.Context, sess *session.Session, ch chan<- Event
 
 		msgs := buildMessages(sess)
 
+		sess.AddMessage(session.Message{Role: session.RoleStatus})
 		assistantMsg := session.Message{Role: session.RoleAssistant, Partial: true}
 		msgIdx := sess.AddMessage(assistantMsg)
 
-		stream := a.client.Chat.Completions.NewStreaming(ctx, openai.ChatCompletionNewParams{
-			Model:    a.model,
-			Messages: msgs,
-			Tools:    tools,
-		})
+		var acc openai.ChatCompletionAccumulator
+		var streamErr error
+		for attempt := 1; attempt <= maxConnectAttempts; attempt++ {
+			select {
+			case ch <- Event{Type: EventConnecting, Attempt: attempt, MaxAttempts: maxConnectAttempts}:
+			case <-ctx.Done():
+				return
+			}
 
-		acc := openai.ChatCompletionAccumulator{}
-		for stream.Next() {
-			chunk := stream.Current()
-			acc.AddChunk(chunk)
-			if len(chunk.Choices) > 0 {
-				delta := chunk.Choices[0].Delta.Content
-				if delta != "" {
-					sess.AppendTextDelta(msgIdx, delta)
-					select {
-					case ch <- Event{Type: EventTextDelta, Text: delta}:
-					case <-ctx.Done():
+			stream := a.client.Chat.Completions.NewStreaming(ctx, openai.ChatCompletionNewParams{
+				Model:    a.model,
+				Messages: msgs,
+				Tools:    tools,
+			})
+
+			acc = openai.ChatCompletionAccumulator{}
+			for stream.Next() {
+				chunk := stream.Current()
+				acc.AddChunk(chunk)
+				if len(chunk.Choices) > 0 {
+					d := chunk.Choices[0].Delta
+					// Emit reasoning before content so the UI freeze order is correct.
+					var raw struct {
+						ReasoningContent string `json:"reasoning_content"`
+					}
+					if err := json.Unmarshal([]byte(d.RawJSON()), &raw); err == nil && raw.ReasoningContent != "" {
+						sess.AppendThinkingDelta(msgIdx, raw.ReasoningContent)
+						select {
+						case ch <- Event{Type: EventReasoningDelta, Text: raw.ReasoningContent}:
+						case <-ctx.Done():
+						}
+					}
+					if d.Content != "" {
+						sess.AppendTextDelta(msgIdx, d.Content)
+						select {
+						case ch <- Event{Type: EventTextDelta, Text: d.Content}:
+						case <-ctx.Done():
+						}
 					}
 				}
 			}
+			streamErr = stream.Err()
+
+			// Stop retrying on success, context cancellation, or if a partial
+			// response was already received (mid-stream failures are not resumable).
+			if streamErr == nil || !isRetryable(streamErr) || len(acc.Choices) > 0 {
+				break
+			}
+			if attempt < maxConnectAttempts {
+				delay := time.Duration(1<<attempt) * time.Second // 2s, 4s
+				select {
+				case ch <- Event{Type: EventConnecting, Attempt: attempt, MaxAttempts: maxConnectAttempts, RetryAfter: delay}:
+				case <-ctx.Done():
+					return
+				}
+				select {
+				case <-time.After(delay):
+				case <-ctx.Done():
+					return
+				}
+			}
 		}
-		if err := stream.Err(); err != nil {
-			sess.SetMessageError(msgIdx, err)
+
+		if streamErr != nil {
+			sess.SetMessageError(msgIdx, streamErr)
 			select {
-			case ch <- Event{Type: EventError, Err: err}:
+			case ch <- Event{Type: EventError, Err: streamErr}:
 			default:
 			}
 			return
@@ -153,6 +207,12 @@ func (a *Agent) loop(ctx context.Context, sess *session.Session, ch chan<- Event
 
 		if len(toolCalls) == 0 {
 			ch <- Event{Type: EventDone}
+			return
+		}
+
+		select {
+		case ch <- Event{Type: EventPreparingTool}:
+		case <-ctx.Done():
 			return
 		}
 
@@ -257,6 +317,9 @@ func buildMessages(sess *session.Session) []openai.ChatCompletionMessageParamUni
 			continue
 		}
 		switch m.Role {
+		case session.RoleStatus:
+			// UI-only; never sent to the model
+
 		case session.RoleUser:
 			msgs = append(msgs, openai.UserMessage(m.Content))
 
@@ -308,6 +371,14 @@ func extractReasoning(argsJSON string) (reasoning, input string) {
 		json.Unmarshal(r, &reasoning)
 	}
 	return reasoning, argsJSON
+}
+
+// isRetryable returns true for transient errors that warrant a retry.
+// Context cancellation and deadline are not retried.
+func isRetryable(err error) bool {
+	return err != nil &&
+		!errors.Is(err, context.Canceled) &&
+		!errors.Is(err, context.DeadlineExceeded)
 }
 
 func toSessionToolUses(tcs []openai.ChatCompletionMessageToolCallUnion) []session.ToolUse {
