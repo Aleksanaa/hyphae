@@ -51,6 +51,7 @@ type CommandPalette struct {
 	filtered  []int
 	sel       int
 
+
 	// callbacks wired by App
 	onClose       func()
 	onAddEndpoint func(name, baseURL, apiKey string)
@@ -191,6 +192,62 @@ func (cp *CommandPalette) InputHandler() func(*tcell.EventKey, func(tview.Primit
 	})
 }
 
+// MouseHandler handles item selection (single click) and confirmation (double click),
+// and form-field focus switching in add-endpoint mode.
+func (cp *CommandPalette) MouseHandler() func(tview.MouseAction, *tcell.EventMouse, func(tview.Primitive)) (bool, tview.Primitive) {
+	return cp.WrapMouseHandler(func(action tview.MouseAction, event *tcell.EventMouse, setFocus func(tview.Primitive)) (bool, tview.Primitive) {
+		if !cp.visible {
+			return false, nil
+		}
+		_, my := event.Position()
+		_, y, _, h := cp.GetRect()
+
+		contentY := y + 3 // after: top border, query/hint row, divider
+		if my < contentY || my >= y+h-1 {
+			if action == tview.MouseLeftDown || action == tview.MouseLeftClick {
+				setFocus(cp)
+			}
+			return true, nil
+		}
+
+		row := my - contentY
+
+		if cp.mode == paletteModeAddEndpoint {
+			if row < 3 {
+				switch action {
+				case tview.MouseLeftDown:
+					setFocus(cp)
+				case tview.MouseLeftClick:
+					cp.activeForm = row
+					setFocus(cp)
+				}
+			}
+			return true, nil
+		}
+
+		itemsH := h - 4
+		offset := 0
+		if cp.sel >= itemsH {
+			offset = cp.sel - itemsH + 1
+		}
+		fi := offset + row
+		if fi < 0 || fi >= len(cp.filtered) {
+			return true, nil
+		}
+		switch action {
+		case tview.MouseLeftDown:
+			setFocus(cp)
+		case tview.MouseLeftClick:
+			cp.sel = fi
+			setFocus(cp)
+		case tview.MouseLeftDoubleClick:
+			cp.sel = fi
+			cp.confirm()
+		}
+		return true, nil
+	})
+}
+
 // SetModelItems replaces the item list in select-model mode (called after async fetch).
 func (cp *CommandPalette) SetModelItems(items []PaletteItem) {
 	cp.items = items
@@ -236,6 +293,10 @@ func (cp *CommandPalette) Draw(screen tcell.Screen) {
 
 	x := (sw - w) / 2
 	y := (sh - h) / 4
+
+	// Self-assign rect so GetRect() and WrapMouseHandler's InRect check reflect
+	// the actual visual bounds (Pages gives us the full-screen rect by default).
+	cp.SetRect(x, y, w, h)
 
 	bc := Theme.BorderFocus
 	ac := Theme.Accent
