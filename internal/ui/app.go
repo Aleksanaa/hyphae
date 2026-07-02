@@ -484,7 +484,7 @@ func (a *App) handleAgentEvents(sessionID string, ch <-chan agent.Event) {
 			}
 
 		case agent.EventConnecting:
-			attempt, maxAttempts, retryAfter := ev.Attempt, ev.MaxAttempts, ev.RetryAfter
+			attempt, maxAttempts, retryAfter, connErr := ev.Attempt, ev.MaxAttempts, ev.RetryAfter, ev.Err
 			if isActive {
 				a.tapp.QueueUpdateDraw(func() {
 					if attempt == 1 {
@@ -494,8 +494,16 @@ func (a *App) handleAgentEvents(sessionID string, ch <-chan agent.Event) {
 						a.stopCountdown()
 					}
 					if retryAfter > 0 {
+						// This attempt failed; surface the error immediately.
+						if connErr != nil {
+							a.layout.Status.SetError(fmt.Sprintf("error: %s", connErr.Error()))
+						}
 						a.startCountdown(attempt, maxAttempts, retryAfter)
 					} else {
+						// A new attempt is starting; clear any error shown for a previous attempt.
+						if attempt > 1 {
+							a.layout.Status.SetDefault(a.cfg.Model, session.StatusRunning)
+						}
 						sess.UpdateStatus(fmt.Sprintf(
 							"[%s]connecting to [%s]apex[-][%s] model...[-]",
 							TC.Muted, TC.ApexDim, TC.Muted))
@@ -537,6 +545,8 @@ func (a *App) handleAgentEvents(sessionID string, ch <-chan agent.Event) {
 			}
 			if isActive {
 				a.tapp.QueueUpdateDraw(func() {
+					a.stopCountdown()
+					sess.UpdateStatus("") // clear connecting/retrying message from chat
 					msgs, _ := sess.Snapshot()
 					a.layout.Chat.Render(msgs)
 					a.layout.Status.SetError(fmt.Sprintf("error: %s", errStr))

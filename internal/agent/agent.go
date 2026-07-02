@@ -175,7 +175,7 @@ func (a *Agent) loop(ctx context.Context, sess *session.Session, ch chan<- Event
 			if attempt < maxConnectAttempts {
 				delay := time.Duration(1<<attempt) * time.Second // 2s, 4s
 				select {
-				case ch <- Event{Type: EventConnecting, Attempt: attempt, MaxAttempts: maxConnectAttempts, RetryAfter: delay}:
+				case ch <- Event{Type: EventConnecting, Attempt: attempt, MaxAttempts: maxConnectAttempts, RetryAfter: delay, Err: streamErr}:
 				case <-ctx.Done():
 					return
 				}
@@ -338,6 +338,12 @@ func buildMessages(sess *session.Session) []openai.ChatCompletionMessageParamUni
 						},
 					},
 				})
+			}
+			// Skip assistant turns with neither content nor tool calls — some providers
+			// (e.g. deepseek) only populate CoT and leave content empty; sending an
+			// empty assistant message causes an "invalid request" error.
+			if m.Content == "" && len(m.ToolUses) == 0 {
+				continue
 			}
 			msgs = append(msgs, openai.ChatCompletionMessageParamUnion{OfAssistant: &p})
 
