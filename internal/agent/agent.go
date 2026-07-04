@@ -390,7 +390,73 @@ func isRetryable(err error) bool {
 func toSessionToolUses(tcs []openai.ChatCompletionMessageToolCallUnion) []session.ToolUse {
 	out := make([]session.ToolUse, len(tcs))
 	for i, tc := range tcs {
-		out[i] = session.ToolUse{ID: tc.ID, Name: tc.Function.Name, Input: tc.Function.Arguments}
+		key, params := parseToolDisplay(tc.Function.Name, tc.Function.Arguments)
+		out[i] = session.ToolUse{
+			ID: tc.ID, Name: tc.Function.Name, Input: tc.Function.Arguments,
+			DisplayKey: key, DisplayParams: params,
+		}
 	}
 	return out
+}
+
+// parseToolDisplay extracts a summary key and ordered display params from tool JSON input.
+func parseToolDisplay(name, input string) (displayKey string, params []session.ToolParam) {
+	var m map[string]json.RawMessage
+	if json.Unmarshal([]byte(input), &m) != nil {
+		return "", nil
+	}
+
+	fmtVal := func(raw json.RawMessage) string {
+		if len(raw) > 0 && raw[0] == '[' {
+			var arr []json.RawMessage
+			json.Unmarshal(raw, &arr)
+			return fmt.Sprintf("[%d items]", len(arr))
+		}
+		if len(raw) > 0 && raw[0] == '{' {
+			return "{...}"
+		}
+		var s string
+		if json.Unmarshal(raw, &s) == nil {
+			if runes := []rune(s); len(runes) > 200 {
+				return string(runes[:197]) + "…"
+			}
+			return s
+		}
+		return string(raw)
+	}
+
+	primary := "path"
+	switch name {
+	case "run_shell":
+		primary = "command"
+	case "web_fetch":
+		primary = "url"
+	case "search_files":
+		primary = "pattern"
+	}
+	if v, ok := m[primary]; ok {
+		val := fmtVal(v)
+		if runes := []rune(val); len(runes) > 50 {
+			displayKey = string(runes[:47]) + "…"
+		} else {
+			displayKey = val
+		}
+		params = append(params, session.ToolParam{Key: primary, Value: val})
+		delete(m, primary)
+	}
+	for _, k := range []string{"offset", "limit", "format", "timeout", "edits", "content"} {
+		if v, ok := m[k]; ok {
+			params = append(params, session.ToolParam{Key: k, Value: fmtVal(v)})
+			delete(m, k)
+		}
+	}
+	reasoning, hasReasoning := m["reasoning"]
+	delete(m, "reasoning")
+	for k, v := range m {
+		params = append(params, session.ToolParam{Key: k, Value: fmtVal(v)})
+	}
+	if hasReasoning {
+		params = append(params, session.ToolParam{Key: "reasoning", Value: fmtVal(reasoning)})
+	}
+	return
 }

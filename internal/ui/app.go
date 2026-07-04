@@ -346,7 +346,7 @@ func (a *App) finalizeStatus(sess *session.Session) {
 		} else {
 			label = fmt.Sprintf("[%s]apex[-][%s] thought for %ds[-]", TC.ApexDim, TC.Muted, secs)
 		}
-		sess.UpdateStatus(label)
+		sess.FinalizeThinkingStatus(label, secs)
 		a.thinkingPending = false
 	} else {
 		sess.UpdateStatus("") // no CoT — connecting status disappears with no artifact

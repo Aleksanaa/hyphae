@@ -25,13 +25,18 @@ const (
 	StatusError   Status = "error"
 )
 
+// ToolParam is a display key-value pair extracted from a tool's JSON input.
+type ToolParam struct{ Key, Value string }
+
 // ToolUse is a tool call made by the assistant.
 type ToolUse struct {
-	ID     string
-	Name   string
-	Input  string // JSON
-	Output string
-	State  string // "running" | "done" | "error"
+	ID            string
+	Name          string
+	Input         string      // JSON; sent verbatim to the model
+	Output        string
+	State         string      // "running" | "done" | "error"
+	DisplayKey    string      // primary arg value for summary labels (≤50 chars)
+	DisplayParams []ToolParam // ordered key-value pairs for the expanded param view
 }
 
 // ToolResult is the response to a tool call.
@@ -46,6 +51,7 @@ type Message struct {
 	Role              Role
 	Content           string
 	Thinking          string      // reasoning_content from CoT-capable models
+	ThinkingSecs      int         // UI: CoT duration in seconds; set once per turn on RoleStatus
 	ThinkingExpanded  bool        // UI: whether the thoughts box is expanded (RoleStatus only)
 	ToolGroupExpanded bool        // UI: whether the tool-call group is shown as expanded param boxes
 	ExpandedBox       bool        // UI: synthetic renderedMsgs entry rendered as an expanded dotted box
@@ -94,6 +100,17 @@ func (s *Session) UpdateStatus(content string) {
 	defer s.mu.Unlock()
 	if s.statusMsgIdx >= 0 && s.statusMsgIdx < len(s.msgs) {
 		s.msgs[s.statusMsgIdx].Content = content
+	}
+}
+
+// FinalizeThinkingStatus sets the status content and thinking duration together.
+// Called once per turn when CoT reasoning completes.
+func (s *Session) FinalizeThinkingStatus(content string, secs int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.statusMsgIdx >= 0 && s.statusMsgIdx < len(s.msgs) {
+		s.msgs[s.statusMsgIdx].Content = content
+		s.msgs[s.statusMsgIdx].ThinkingSecs = secs
 	}
 }
 

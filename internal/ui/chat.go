@@ -1,7 +1,6 @@
 package ui
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -613,7 +612,7 @@ func (cv *ChatView) buildText(width int) {
 				if am.Content != "" || am.Error != nil || am.Partial {
 					break
 				}
-				secs += parseThinkingSecs(sm.Content)
+				secs += sm.ThinkingSecs
 				if am.Thinking != "" {
 					hasThinking = true
 					contentParts = append(contentParts, tview.Escape(am.Thinking))
@@ -912,36 +911,6 @@ func (cv *ChatView) renderMessageBox(b *strings.Builder, msg session.Message, wi
 	return
 }
 
-// toolKeyArg extracts the primary display value from a tool call's JSON arguments.
-func toolKeyArg(name, input string) string {
-	var m map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(input), &m); err != nil {
-		return ""
-	}
-	field := "path"
-	switch name {
-	case "run_shell":
-		field = "command"
-	case "web_fetch":
-		field = "url"
-	case "search_files":
-		field = "pattern"
-	}
-	v, ok := m[field]
-	if !ok {
-		return ""
-	}
-	var s string
-	if json.Unmarshal(v, &s) != nil {
-		return ""
-	}
-	runes := []rune(s)
-	if len(runes) > 50 {
-		return string(runes[:47]) + "…"
-	}
-	return s
-}
-
 type toolCat struct{ verb, infin, noun, nouns string }
 
 var toolCats = map[string]toolCat{
@@ -1007,7 +976,7 @@ func toolGroupLabel(tools []session.ToolUse) string {
 // toolSingleLabel generates a tview-tagged summary for one tool use.
 func toolSingleLabel(tu session.ToolUse) string {
 	cat, ok := toolCats[tu.Name]
-	key := toolKeyArg(tu.Name, tu.Input)
+	key := tu.DisplayKey
 	if key == "" {
 		key = tu.Name
 	}
@@ -1023,100 +992,24 @@ func toolSingleLabel(tu session.ToolUse) string {
 	}
 }
 
-// parseThinkingSecs extracts the thinking duration in seconds from a finalized
-// status Content string (e.g. "apex thought for 5s" → 5, "a moment" → 0).
-func parseThinkingSecs(content string) int {
-	_, after, ok := strings.Cut(stripTags(content), " thought for ")
-	if !ok {
-		return 0
-	}
-	var secs int
-	fmt.Sscanf(after, "%ds", &secs)
-	return secs
-}
 
-// formatToolParams renders tool input JSON as highlighted key: value lines.
-func formatToolParams(name, input string) string {
-	if input == "" || input == "{}" {
-		return ""
-	}
-	var m map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(input), &m); err != nil {
-		return input
-	}
-
-	lc := TC.ToolColor // label color
-
+// renderToolParams formats a tool use's pre-parsed params as highlighted key: value lines.
+func renderToolParams(tu session.ToolUse) string {
 	var sb strings.Builder
-	written := 0
-
-	writeField := func(key string, raw json.RawMessage) {
-		if written > 0 {
+	for i, p := range tu.DisplayParams {
+		if i > 0 {
 			sb.WriteByte('\n')
 		}
-		fmt.Fprintf(&sb, "[%s]%s:[-] ", lc, key)
-		switch {
-		case len(raw) > 0 && raw[0] == '[':
-			var arr []json.RawMessage
-			_ = json.Unmarshal(raw, &arr)
-			fmt.Fprintf(&sb, "[%d items]", len(arr))
-		case len(raw) > 0 && raw[0] == '{':
-			sb.WriteString("{...}")
-		default:
-			var s string
-			if json.Unmarshal(raw, &s) == nil {
-				runes := []rune(s)
-				if len(runes) > 200 {
-					sb.WriteString(tview.Escape(string(runes[:197]) + "…"))
-				} else {
-					sb.WriteString(tview.Escape(s))
-				}
-			} else {
-				sb.Write(raw)
-			}
-		}
-		written++
+		fmt.Fprintf(&sb, "[%s]%s:[-] %s", TC.ToolColor, p.Key, tview.Escape(p.Value))
 	}
-
-	// Primary key first.
-	primary := "path"
-	switch name {
-	case "run_shell":
-		primary = "command"
-	case "web_fetch":
-		primary = "url"
-	case "search_files":
-		primary = "pattern"
-	}
-	if v, ok := m[primary]; ok {
-		writeField(primary, v)
-		delete(m, primary)
-	}
-
-	// Secondary fields in a stable order, reasoning always last.
-	for _, k := range []string{"offset", "limit", "format", "timeout", "edits", "content"} {
-		if v, ok := m[k]; ok {
-			writeField(k, v)
-			delete(m, k)
-		}
-	}
-	reasoning, hasReasoning := m["reasoning"]
-	delete(m, "reasoning")
-	for k, v := range m {
-		writeField(k, v)
-	}
-	if hasReasoning {
-		writeField("reasoning", reasoning)
-	}
-
 	return sb.String()
 }
 
-// formatAllToolParams formats all tool uses in a group into a single tagged string
-// with a name header and key-value params for each tool, separated by blank lines.
+// formatAllToolParams formats all tool uses in a group into a single tagged string,
+// with a name header for each tool when there are multiple.
 func formatAllToolParams(tools []session.ToolUse) string {
 	if len(tools) == 1 {
-		return formatToolParams(tools[0].Name, tools[0].Input)
+		return renderToolParams(tools[0])
 	}
 	var sb strings.Builder
 	for i, tu := range tools {
@@ -1124,7 +1017,7 @@ func formatAllToolParams(tools []session.ToolUse) string {
 			sb.WriteString("\n")
 		}
 		fmt.Fprintf(&sb, "[%s]%s[-]\n", TC.ToolColor, tview.Escape(tu.Name))
-		sb.WriteString(formatToolParams(tu.Name, tu.Input))
+		sb.WriteString(renderToolParams(tu))
 	}
 	return sb.String()
 }
