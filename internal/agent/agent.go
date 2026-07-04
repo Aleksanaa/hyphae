@@ -9,6 +9,7 @@ import (
 
 	openai "github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
+	"github.com/openai/openai-go/v3/packages/param"
 
 	"github.com/aleksanaa/hyphae/internal/session"
 )
@@ -35,6 +36,7 @@ const (
 	EventSelectPrompt   EventType = "select_prompt"   // waiting for user selection (ask_user tool)
 	EventConnecting     EventType = "connecting"      // establishing connection (may be retrying)
 	EventPreparingTool  EventType = "preparing_tool"  // tool calls received, about to execute
+	EventUsageUpdate    EventType = "usage_update"    // prompt token count updated after each LLM call
 )
 
 const maxConnectAttempts = 3
@@ -73,6 +75,8 @@ type Event struct {
 	Attempt     int           // current attempt number (1-based)
 	MaxAttempts int           // total allowed attempts
 	RetryAfter  time.Duration // >0 means waiting before the next attempt
+	// EventDone fields:
+	PromptTokens int64 // tokens in the prompt for this turn (from API)
 }
 
 // Agent orchestrates the LLM ↔ tool loop.
@@ -90,17 +94,33 @@ func New(baseURL, apiKey, model string) *Agent {
 	return &Agent{client: client, model: model}
 }
 
-// ListModels returns the model IDs available at the configured base URL.
-func (a *Agent) ListModels(ctx context.Context) ([]string, error) {
+// ModelInfo holds a model ID and its context window size (0 if unknown).
+type ModelInfo struct {
+	ID            string
+	ContextWindow int64
+}
+
+// ListModels returns models available at the configured base URL.
+// ContextWindow is populated when the provider includes "context_length" in the raw JSON.
+func (a *Agent) ListModels(ctx context.Context) ([]ModelInfo, error) {
 	page, err := a.client.Models.List(ctx)
 	if err != nil {
 		return nil, err
 	}
-	ids := make([]string, len(page.Data))
+	out := make([]ModelInfo, len(page.Data))
 	for i, m := range page.Data {
-		ids[i] = m.ID
+		out[i] = ModelInfo{ID: m.ID, ContextWindow: parseContextWindow(m.RawJSON())}
 	}
-	return ids, nil
+	return out, nil
+}
+
+// parseContextWindow extracts "context_length" from a model's raw JSON (OpenAI-compatible extension).
+func parseContextWindow(raw string) int64 {
+	var obj struct {
+		ContextLength int64 `json:"context_length"`
+	}
+	json.Unmarshal([]byte(raw), &obj) //nolint:errcheck
+	return obj.ContextLength
 }
 
 // Send starts the agent loop from the current session state.
@@ -139,9 +159,10 @@ func (a *Agent) loop(ctx context.Context, sess *session.Session, ch chan<- Event
 			}
 
 			stream := a.client.Chat.Completions.NewStreaming(ctx, openai.ChatCompletionNewParams{
-				Model:    a.model,
-				Messages: msgs,
-				Tools:    tools,
+				Model:         a.model,
+				Messages:      msgs,
+				Tools:         tools,
+				StreamOptions: openai.ChatCompletionStreamOptionsParam{IncludeUsage: param.NewOpt(true)},
 			})
 
 			acc = openai.ChatCompletionAccumulator{}
@@ -209,6 +230,15 @@ func (a *Agent) loop(ctx context.Context, sess *session.Session, ch chan<- Event
 		}
 
 		sess.FinalizeMessage(msgIdx, content, toSessionToolUses(toolCalls))
+
+		// Emit usage after every LLM call so the status bar updates during tool loops.
+		if pt := acc.Usage.PromptTokens; pt > 0 {
+			select {
+			case ch <- Event{Type: EventUsageUpdate, PromptTokens: pt}:
+			case <-ctx.Done():
+				return
+			}
+		}
 
 		if len(toolCalls) == 0 {
 			ch <- Event{Type: EventDone}

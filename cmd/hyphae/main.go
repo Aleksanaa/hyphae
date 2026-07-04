@@ -42,9 +42,13 @@ func main() {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			os.Exit(1)
 		}
-		sort.Strings(models)
-		for _, m := range models {
-			fmt.Println(m)
+		ids := make([]string, len(models))
+		for i, m := range models {
+			ids[i] = m.ID
+		}
+		sort.Strings(ids)
+		for _, id := range ids {
+			fmt.Println(id)
 		}
 		return
 	}

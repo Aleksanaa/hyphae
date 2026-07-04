@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -74,6 +75,11 @@ func New(cfg *config.Config) *App {
 	layout := NewLayout(chat, scrollbar, input, status, approval, diffView, selectView, palette)
 	a.layout = layout
 	status.SetDefault(cfg.Model, session.StatusIdle)
+	if cfg.ContextWindow > 0 {
+		status.SetContextWindow(cfg.ContextWindow)
+	} else if cfg.Model != "" {
+		go a.fetchContextWindowAsync(cfg.Model)
+	}
 
 	a.setupPalette()
 
@@ -689,6 +695,14 @@ func (a *App) handleAgentEvents(sessionID string, ch <-chan agent.Event) {
 				})
 			}
 
+		case agent.EventUsageUpdate:
+			if isActive {
+				pt := ev.PromptTokens
+				a.tapp.QueueUpdateDraw(func() {
+					a.layout.Status.SetPromptTokens(pt)
+				})
+			}
+
 		case agent.EventDone:
 			sess.SetStatus(session.StatusIdle)
 			go a.persistSessionMessages(sess)
@@ -755,9 +769,17 @@ func (a *App) setupPalette() {
 				a.layout.Status.SetMessage(fmt.Sprintf("endpoint %q removed", name))
 			}
 		},
-		// onSelectModel — value is "endpointName\x00modelName"
+		// onSelectModel — value is "endpointName\x00modelName\x00contextWindow"
 		func(val string) {
-			epName, model, _ := strings.Cut(val, "\x00")
+			parts := strings.SplitN(val, "\x00", 3)
+			if len(parts) < 2 {
+				return
+			}
+			epName, model := parts[0], parts[1]
+			var cw int64
+			if len(parts) == 3 {
+				cw, _ = strconv.ParseInt(parts[2], 10, 64)
+			}
 			a.cfg.ActiveEndpointName = epName
 			a.cfg.Model = model
 			var ep config.Endpoint
@@ -768,6 +790,14 @@ func (a *App) setupPalette() {
 				}
 			}
 			a.ag = agent.New(ep.BaseURL, ep.APIKey, model)
+			if cw > 0 {
+				// API provided context_length directly — use it immediately.
+				a.cfg.ContextWindow = cw
+				a.layout.Status.SetContextWindow(cw)
+			} else {
+				// API didn't report context window — look it up from models.dev in background.
+				go a.fetchContextWindowAsync(model)
+			}
 			if err := a.cfg.Save(); err != nil {
 				a.layout.Status.SetError("save failed: " + err.Error())
 			}
@@ -809,8 +839,8 @@ func (a *App) setupPalette() {
 			p := a.layout.Palette
 			return []PaletteItem{
 				{
-					Label: "Ctrl+P",
-					Sub:   "command palette",
+					Label:  "Ctrl+P",
+					Sub:    "command palette",
 					Action: func() { p.Close() },
 				},
 				{
@@ -863,9 +893,9 @@ func (a *App) openPalette() {
 				models, _ := ag.ListModels(a.appCtx)
 				for _, m := range models {
 					items = append(items, PaletteItem{
-						Label: m,
+						Label: m.ID,
 						Sub:   ep.Name,
-						Value: ep.Name + "\x00" + m,
+						Value: fmt.Sprintf("%s\x00%s\x00%d", ep.Name, m.ID, m.ContextWindow),
 					})
 				}
 			}
@@ -880,6 +910,20 @@ func (a *App) openPalette() {
 	p.Open() // sets visible=true, cp.items=cp.menuItems, refilters
 	a.layout.ShowPalette()
 	a.tapp.SetFocus(p)
+}
+
+// fetchContextWindowAsync looks up the context window for modelID from models.dev
+// in a background goroutine and updates config + status bar when found.
+func (a *App) fetchContextWindowAsync(modelID string) {
+	cw := agent.FetchContextWindow(a.appCtx, modelID)
+	if cw <= 0 {
+		return
+	}
+	a.tapp.QueueUpdateDraw(func() {
+		a.cfg.ContextWindow = cw
+		a.cfg.Save() //nolint:errcheck
+		a.layout.Status.SetContextWindow(cw)
+	})
 }
 
 // redrawActive refreshes the chat and status for the current session.

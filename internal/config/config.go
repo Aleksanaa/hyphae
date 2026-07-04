@@ -19,6 +19,7 @@ type Config struct {
 	Endpoints          []Endpoint `toml:"endpoint"`
 	ActiveEndpointName string     `toml:"active_endpoint"`
 	Model              string     `toml:"model"`
+	ContextWindow      int64      `toml:"context_window"`
 }
 
 // ActiveEndpoint returns the endpoint matching ActiveEndpointName, falling back to the first.
