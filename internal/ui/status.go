@@ -187,26 +187,27 @@ func (sb *StatusBar) Draw(screen tcell.Screen) {
 
 	leftW, _ := tview.Print(screen, sb.left, x, y, w, tview.AlignLeft, Theme.Text)
 
-	if sb.pctText != "" || sb.costText != "" {
-		pctW := tview.TaggedStringWidth(sb.pctText)
-		costW := tview.TaggedStringWidth(sb.costText)
-		hasBar := sb.barPct > 0 || (sb.promptTokens > 0 && sb.contextWindow > 0)
-		rightW := costW + pctW
-		if hasBar {
-			rightW += barWidth
+	paletteHint := fmt.Sprintf("[%s]Ctrl-P[-] [%s]palette[-]  ", TC.Accent, TC.Muted)
+	paletteW := tview.TaggedStringWidth(paletteHint)
+	pctW := tview.TaggedStringWidth(sb.pctText)
+	costW := tview.TaggedStringWidth(sb.costText)
+	hasBar := sb.barPct > 0 || (sb.promptTokens > 0 && sb.contextWindow > 0)
+	rightW := paletteW + costW + pctW
+	if hasBar {
+		rightW += barWidth
+	}
+	rightX := x + w - rightW
+	if rightX > x+leftW {
+		tview.Print(screen, paletteHint, rightX, y, paletteW, tview.AlignLeft, Theme.Text)
+		if costW > 0 {
+			tview.Print(screen, sb.costText, rightX+paletteW, y, costW, tview.AlignLeft, Theme.Text)
 		}
-		rightX := x + w - rightW
-		if rightX > x+leftW {
-			if costW > 0 {
-				tview.Print(screen, sb.costText, rightX, y, costW, tview.AlignLeft, Theme.Text)
-			}
-			barX := rightX + costW
-			if hasBar {
-				sb.drawBar(screen, barX, y, barWidth)
-				tview.Print(screen, sb.pctText, barX+barWidth, y, pctW, tview.AlignLeft, Theme.Text)
-			} else if pctW > 0 {
-				tview.Print(screen, sb.pctText, barX, y, pctW, tview.AlignLeft, Theme.Text)
-			}
+		barX := rightX + paletteW + costW
+		if hasBar {
+			sb.drawBar(screen, barX, y, barWidth)
+			tview.Print(screen, sb.pctText, barX+barWidth, y, pctW, tview.AlignLeft, Theme.Text)
+		} else if pctW > 0 {
+			tview.Print(screen, sb.pctText, barX, y, pctW, tview.AlignLeft, Theme.Text)
 		}
 	}
 }
