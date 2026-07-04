@@ -32,6 +32,7 @@ const (
 	EventDone           EventType = "done"            // turn complete
 	EventError          EventType = "error"           // unrecoverable error
 	EventToolApproval   EventType = "tool_approval"   // waiting for user approval
+	EventSelectPrompt   EventType = "select_prompt"   // waiting for user selection (ask_user tool)
 	EventConnecting     EventType = "connecting"      // establishing connection (may be retrying)
 	EventPreparingTool  EventType = "preparing_tool"  // tool calls received, about to execute
 )
@@ -55,15 +56,19 @@ type ToolEvent struct {
 	// Set for write_file and edit_file before approval.
 	FilePath  string // relative path of file being changed
 	DiffPatch string // unified diff of the pending change
+	// Set for ask_user before EventSelectPrompt.
+	SelectQuestion string
+	SelectOptions  []string
 }
 
 // Event is one item from the agent event stream.
 type Event struct {
-	Type   EventType
-	Text   string // EventTextDelta
-	Tool   *ToolEvent
-	Err    error               // EventError
-	RespCh chan ApprovalResult // EventToolApproval only; send exactly once
+	Type         EventType
+	Text         string // EventTextDelta
+	Tool         *ToolEvent
+	Err          error               // EventError
+	RespCh       chan ApprovalResult // EventToolApproval only; send exactly once
+	SelectRespCh chan string         // EventSelectPrompt only; send exactly once
 	// EventConnecting fields:
 	Attempt     int           // current attempt number (1-based)
 	MaxAttempts int           // total allowed attempts
@@ -222,6 +227,42 @@ func (a *Agent) loop(ctx context.Context, sess *session.Session, ch chan<- Event
 			}
 
 			te := &ToolEvent{CallID: tc.ID, Name: tc.Function.Name, Input: tc.Function.Arguments}
+
+			// ask_user blocks waiting for user selection before continuing.
+			if tc.Function.Name == "ask_user" {
+				var args struct {
+					Question string   `json:"question"`
+					Options  []string `json:"options"`
+				}
+				json.Unmarshal([]byte(tc.Function.Arguments), &args)
+				te.SelectQuestion = args.Question
+				te.SelectOptions = args.Options
+
+				sess.SetToolState(msgIdx, tc.ID, "pending")
+				respCh := make(chan string, 1)
+				select {
+				case ch <- Event{Type: EventSelectPrompt, Tool: te, SelectRespCh: respCh}:
+				case <-ctx.Done():
+					return
+				}
+				var answer string
+				select {
+				case answer = <-respCh:
+				case <-ctx.Done():
+					return
+				}
+				te.Output = answer
+				sess.AddMessage(session.Message{
+					Role:       session.RoleTool,
+					ToolResult: &session.ToolResult{ID: tc.ID, Content: answer},
+				})
+				sess.SetToolResult(msgIdx, tc.ID, answer, false)
+				select {
+				case ch <- Event{Type: EventToolDone, Tool: te}:
+				case <-ctx.Done():
+				}
+				continue
+			}
 
 			if requiresApproval(tc.Function.Name) {
 				te.Reasoning, te.Input = extractReasoning(tc.Function.Arguments)
@@ -434,6 +475,8 @@ func parseToolDisplay(name, input string) (displayKey string, params []session.T
 		primary = "url"
 	case "search_files":
 		primary = "pattern"
+	case "ask_user":
+		primary = "question"
 	}
 	if v, ok := m[primary]; ok {
 		val := fmtVal(v)

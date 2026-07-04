@@ -6,27 +6,29 @@ import (
 
 // Layout assembles the top-level flex container.
 type Layout struct {
-	Root      *tview.Pages
-	Chat      *ChatView
-	Scrollbar *Scrollbar
-	Input     *InputView
-	Status    *StatusBar
-	Approval  *ApprovalView
-	DiffView  *DiffView
-	Palette   *CommandPalette
-	body      *tview.Flex // retained for ResizeItem calls
+	Root       *tview.Pages
+	Chat       *ChatView
+	Scrollbar  *Scrollbar
+	Input      *InputView
+	Status     *StatusBar
+	Approval   *ApprovalView
+	DiffView   *DiffView
+	SelectView *SelectView
+	Palette    *CommandPalette
+	body       *tview.Flex // retained for ResizeItem calls
 }
 
 // NewLayout builds and returns the assembled layout.
-func NewLayout(chat *ChatView, scrollbar *Scrollbar, input *InputView, status *StatusBar, approval *ApprovalView, diffView *DiffView, palette *CommandPalette) *Layout {
+func NewLayout(chat *ChatView, scrollbar *Scrollbar, input *InputView, status *StatusBar, approval *ApprovalView, diffView *DiffView, selectView *SelectView, palette *CommandPalette) *Layout {
 	chatRow := tview.NewFlex().SetDirection(tview.FlexColumn).
 		AddItem(chat, 0, 1, false).
 		AddItem(scrollbar, 1, 0, false)
 
 	body := tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(chatRow, 0, 1, false).
-		AddItem(approval, 0, 0, false). // hidden initially
-		AddItem(diffView, 0, 0, false). // hidden initially
+		AddItem(approval, 0, 0, false).   // hidden initially
+		AddItem(diffView, 0, 0, false).   // hidden initially
+		AddItem(selectView, 0, 0, false). // hidden initially
 		AddItem(input, 6, 0, true)
 
 	mainFlex := tview.NewFlex().SetDirection(tview.FlexRow).
@@ -38,15 +40,16 @@ func NewLayout(chat *ChatView, scrollbar *Scrollbar, input *InputView, status *S
 	pages.AddPage("palette", palette, true, false) // overlay, hidden initially
 
 	return &Layout{
-		Root:      pages,
-		Chat:      chat,
-		Scrollbar: scrollbar,
-		Input:     input,
-		Status:    status,
-		Approval:  approval,
-		DiffView:  diffView,
-		Palette:   palette,
-		body:      body,
+		Root:       pages,
+		Chat:       chat,
+		Scrollbar:  scrollbar,
+		Input:      input,
+		Status:     status,
+		Approval:   approval,
+		DiffView:   diffView,
+		SelectView: selectView,
+		Palette:    palette,
+		body:       body,
 	}
 }
 
@@ -70,6 +73,17 @@ func (l *Layout) ShowDiffView() {
 func (l *Layout) HideDiffView() {
 	l.DiffView.visible = false
 	l.body.ResizeItem(l.DiffView, 0, 0)
+}
+
+// ShowSelect makes the select view visible at the required height.
+func (l *Layout) ShowSelect(height int) {
+	l.body.ResizeItem(l.SelectView, height, 0)
+}
+
+// HideSelect collapses the select view.
+func (l *Layout) HideSelect() {
+	l.SelectView.visible = false
+	l.body.ResizeItem(l.SelectView, 0, 0)
 }
 
 // ShowPalette makes the palette page visible.

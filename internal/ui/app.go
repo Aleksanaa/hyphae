@@ -64,8 +64,9 @@ func New(cfg *config.Config) *App {
 	input := NewInputView(a.sendMessage)
 	approval := NewApprovalView()
 	diffView := NewDiffView()
+	selectView := NewSelectView()
 	palette := NewCommandPalette()
-	layout := NewLayout(chat, scrollbar, input, status, approval, diffView, palette)
+	layout := NewLayout(chat, scrollbar, input, status, approval, diffView, selectView, palette)
 	a.layout = layout
 	status.SetDefault(cfg.Model, session.StatusIdle)
 
@@ -125,6 +126,17 @@ func (a *App) Stop() {
 
 // handleGlobalKey intercepts application-level shortcuts.
 func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
+	// When the select view is active, intercept Escape (cancel) and Tab (prevent focus steal).
+	if a.layout.SelectView.IsVisible() {
+		switch event.Key() {
+		case tcell.KeyEscape:
+			a.layout.SelectView.Cancel()
+			return nil
+		case tcell.KeyTab, tcell.KeyBacktab:
+			return nil
+		}
+	}
+
 	// When the approval bar is active, Tab/Left/Right cycle Allow/Deny and Esc denies.
 	// SetFocus re-triggers Focus() delegation so denyField gets real focus when deny is active.
 	if a.layout.Approval.IsVisible() {
@@ -238,6 +250,9 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 			}
 			if a.layout.DiffView.IsVisible() {
 				a.layout.HideDiffView()
+			}
+			if a.layout.SelectView.IsVisible() {
+				a.layout.HideSelect()
 			}
 			a.tapp.SetFocus(a.layout.Input.TextArea)
 			if sess, ok := a.manager.Active(); ok {
@@ -392,6 +407,24 @@ func (a *App) handleAgentEvents(sessionID string, ch <-chan agent.Event) {
 		}
 
 		switch ev.Type {
+		case agent.EventSelectPrompt:
+			respCh := ev.SelectRespCh
+			tool := ev.Tool
+			a.tapp.QueueUpdateDraw(func() {
+				msgs, status := sess.Snapshot()
+				a.layout.Chat.Render(msgs)
+				a.layout.Status.SetDefault(a.cfg.Model, status)
+
+				a.layout.SelectView.Show(tool.SelectQuestion, tool.SelectOptions)
+				a.layout.ShowSelect(SelectViewHeight(len(tool.SelectOptions)))
+				a.tapp.SetFocus(a.layout.SelectView)
+				a.layout.SelectView.SetCallback(func(answer string) {
+					a.layout.HideSelect()
+					a.tapp.SetFocus(a.layout.Input.TextArea)
+					respCh <- answer
+				})
+			})
+
 		case agent.EventToolApproval:
 			respCh := ev.RespCh
 			tool := ev.Tool

@@ -280,6 +280,30 @@ var builtinTools = []toolDef{
 			return string(out), nil
 		},
 	},
+	{
+		schema: openai.ChatCompletionFunctionTool(openai.FunctionDefinitionParam{
+			Name:        "ask_user",
+			Description: openai.String("Ask the user to pick from a list of options. Use this when you need a clear choice before proceeding. The question should be brief; send a normal message first if more context is needed."),
+			Parameters: openai.FunctionParameters{
+				"type": "object",
+				"properties": map[string]any{
+					"question": map[string]any{"type": "string", "description": "A brief question to present to the user"},
+					"options": map[string]any{
+						"type":        "array",
+						"items":       map[string]any{"type": "string"},
+						"description": "2–6 choices to present. The user may also type a custom reply.",
+						"minItems":    2,
+						"maxItems":    6,
+					},
+				},
+				"required": []string{"question", "options"},
+			},
+		}),
+		// Handled specially in the agent loop; never reaches executeTool.
+		execute: func(_ context.Context, _ map[string]any, _ string) (string, error) {
+			return "", fmt.Errorf("ask_user must be handled by the agent loop")
+		},
+	},
 }
 
 func schemas() []openai.ChatCompletionToolUnionParam {

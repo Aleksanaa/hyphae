@@ -893,6 +893,7 @@ var toolCats = map[string]toolCat{
 	"run_shell":      {"ran", "run", "command", "commands"},
 	"web_fetch":      {"fetched", "fetch", "URL", "URLs"},
 	"search_files":   {"searched for", "search for", "pattern", "patterns"},
+	"ask_user":       {"asked", "ask", "question", "questions"},
 }
 
 // toolGroupDesc returns the plain-text action description for a set of tool uses,
