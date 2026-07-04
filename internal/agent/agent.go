@@ -432,7 +432,7 @@ func isRetryable(err error) bool {
 func toSessionToolUses(tcs []openai.ChatCompletionMessageToolCallUnion) []session.ToolUse {
 	out := make([]session.ToolUse, len(tcs))
 	for i, tc := range tcs {
-		key, params := parseToolDisplay(tc.Function.Name, tc.Function.Arguments)
+		key, params := ParseToolDisplay(tc.Function.Name, tc.Function.Arguments)
 		out[i] = session.ToolUse{
 			ID: tc.ID, Name: tc.Function.Name, Input: tc.Function.Arguments,
 			DisplayKey: key, DisplayParams: params,
@@ -441,8 +441,8 @@ func toSessionToolUses(tcs []openai.ChatCompletionMessageToolCallUnion) []sessio
 	return out
 }
 
-// parseToolDisplay extracts a summary key and ordered display params from tool JSON input.
-func parseToolDisplay(name, input string) (displayKey string, params []session.ToolParam) {
+// ParseToolDisplay extracts a summary key and ordered display params from tool JSON input.
+func ParseToolDisplay(name, input string) (displayKey string, params []session.ToolParam) {
 	var m map[string]json.RawMessage
 	if json.Unmarshal([]byte(input), &m) != nil {
 		return "", nil

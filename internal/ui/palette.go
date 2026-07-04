@@ -2,6 +2,7 @@ package ui
 
 import (
 	"strings"
+	"time"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
@@ -11,10 +12,11 @@ import (
 type paletteMode int
 
 const (
-	paletteModeMenu        paletteMode = iota // top-level command list
-	paletteModeAddEndpoint                    // form: name + base_url + api_key
-	paletteModeDelEndpoint                    // list of endpoints to delete
-	paletteModeSelectModel                    // list of models to pick
+	paletteModeMenu          paletteMode = iota // top-level command list
+	paletteModeAddEndpoint                      // form: name + base_url + api_key
+	paletteModeDelEndpoint                      // list of endpoints to delete
+	paletteModeSelectModel                      // list of models to pick
+	paletteModeResumeSession                    // list of past sessions to resume
 )
 
 // PaletteItem is one selectable row in the palette list.
@@ -28,6 +30,12 @@ type PaletteItem struct {
 type paletteEndpointInfo struct {
 	Name    string
 	BaseURL string
+}
+
+type paletteSessionInfo struct {
+	ID        string
+	Title     string
+	UpdatedAt int64
 }
 
 // CommandPalette is a VS-Code-style Ctrl+P overlay drawn as a centered box.
@@ -52,11 +60,13 @@ type CommandPalette struct {
 	sel       int
 
 	// callbacks wired by App
-	onClose       func()
-	onAddEndpoint func(name, baseURL, apiKey string)
-	onDelEndpoint func(name string)
-	onSelectModel func(model string)
-	getEndpoints  func() []paletteEndpointInfo
+	onClose         func()
+	onAddEndpoint   func(name, baseURL, apiKey string)
+	onDelEndpoint   func(name string)
+	onSelectModel   func(model string)
+	onResumeSession func(id string)
+	getEndpoints    func() []paletteEndpointInfo
+	getSessions     func() []paletteSessionInfo
 }
 
 func NewCommandPalette() *CommandPalette {
@@ -140,13 +150,17 @@ func (cp *CommandPalette) SetCallbacks(
 	onAddEndpoint func(name, baseURL, apiKey string),
 	onDelEndpoint func(name string),
 	onSelectModel func(model string),
+	onResumeSession func(id string),
 	getEndpoints func() []paletteEndpointInfo,
+	getSessions func() []paletteSessionInfo,
 ) {
 	cp.onClose = onClose
 	cp.onAddEndpoint = onAddEndpoint
 	cp.onDelEndpoint = onDelEndpoint
 	cp.onSelectModel = onSelectModel
+	cp.onResumeSession = onResumeSession
 	cp.getEndpoints = getEndpoints
+	cp.getSessions = getSessions
 }
 
 func (cp *CommandPalette) NavigateUp() {
@@ -456,6 +470,25 @@ func (cp *CommandPalette) switchMode(m paletteMode) {
 
 	case paletteModeSelectModel:
 		cp.items = []PaletteItem{{Label: "fetching models…"}}
+
+	case paletteModeResumeSession:
+		sessions := cp.getSessions()
+		if len(sessions) == 0 {
+			cp.items = []PaletteItem{{Label: "no saved sessions"}}
+		} else {
+			cp.items = make([]PaletteItem, len(sessions))
+			for i, s := range sessions {
+				title := s.Title
+				if title == "" {
+					title = "(untitled)"
+				}
+				cp.items[i] = PaletteItem{
+					Label: title,
+					Sub:   formatSessionTime(s.UpdatedAt),
+					Value: s.ID,
+				}
+			}
+		}
 	}
 	cp.refilter()
 }
@@ -502,6 +535,19 @@ func (cp *CommandPalette) confirm() {
 			cp.onSelectModel(item.Value)
 		}
 		cp.Close()
+
+	case paletteModeResumeSession:
+		if len(cp.filtered) == 0 {
+			return
+		}
+		item := cp.items[cp.filtered[cp.sel]]
+		if item.Value == "" {
+			return // "no saved sessions" placeholder
+		}
+		if cp.onResumeSession != nil {
+			cp.onResumeSession(item.Value)
+		}
+		cp.Close()
 	}
 }
 
@@ -520,6 +566,7 @@ func (cp *CommandPalette) refilter() {
 
 func topLevelItems() []PaletteItem {
 	return []PaletteItem{
+		{Label: "Resume session", Sub: "continue a previous conversation"},
 		{Label: "Add endpoint", Sub: "register a new API endpoint"},
 		{Label: "Delete endpoint", Sub: "remove a saved endpoint"},
 		{Label: "Select model", Sub: "choose model from an endpoint"},
@@ -534,7 +581,21 @@ func (cp *CommandPalette) modeTitle() string {
 		return "delete endpoint"
 	case paletteModeSelectModel:
 		return "select model"
+	case paletteModeResumeSession:
+		return "resume session"
 	default:
 		return "command palette"
 	}
+}
+
+func formatSessionTime(ms int64) string {
+	t := time.UnixMilli(ms)
+	now := time.Now()
+	if t.Year() == now.Year() && t.YearDay() == now.YearDay() {
+		return t.Format("15:04")
+	}
+	if t.Year() == now.Year() {
+		return t.Format("Jan 2")
+	}
+	return t.Format("Jan 2 2006")
 }

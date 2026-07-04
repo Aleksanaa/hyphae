@@ -1,10 +1,18 @@
 package session
 
 import (
+	"crypto/rand"
 	"fmt"
 	"sync"
-	"sync/atomic"
 )
+
+func newID() string {
+	b := make([]byte, 8)
+	if _, err := rand.Read(b); err != nil {
+		panic(fmt.Sprintf("session: rand.Read: %v", err))
+	}
+	return fmt.Sprintf("%x", b)
+}
 
 // Role is the speaker of a message.
 type Role string
@@ -32,7 +40,7 @@ type ToolParam struct{ Key, Value string }
 type ToolUse struct {
 	ID            string
 	Name          string
-	Input         string      // JSON; sent verbatim to the model
+	Input         string // JSON; sent verbatim to the model
 	Output        string
 	State         string      // "running" | "done" | "error"
 	DisplayKey    string      // primary arg value for summary labels (≤50 chars)
@@ -228,6 +236,16 @@ func (s *Session) SetStatus(st Status) {
 	s.Status = st
 }
 
+// BulkLoad replaces the message history with loaded records (e.g. from DB).
+// Unlike AddMessage it does not derive the title or track status messages.
+func (s *Session) BulkLoad(msgs []Message) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.msgs = make([]Message, len(msgs))
+	copy(s.msgs, msgs)
+	s.statusMsgIdx = -1
+}
+
 // Snapshot returns a copy of messages and current status for rendering.
 func (s *Session) Snapshot() ([]Message, Status) {
 	s.mu.RLock()
@@ -243,7 +261,6 @@ type Manager struct {
 	sessions map[string]*Session
 	order    []string
 	activeID string
-	counter  atomic.Int64
 	workDir  string
 }
 
@@ -257,8 +274,7 @@ func NewManager(workDir string) *Manager {
 
 // New creates a fresh session and adds it to the front.
 func (m *Manager) New() *Session {
-	n := m.counter.Add(1)
-	id := fmt.Sprintf("session-%d", n)
+	id := newID()
 	s := NewSession(id, m.workDir)
 
 	m.mu.Lock()
@@ -298,6 +314,18 @@ func (m *Manager) Active() (*Session, bool) {
 		return nil, false
 	}
 	return m.Get(id)
+}
+
+// AddExisting registers a pre-built session (e.g. loaded from DB).
+// No-ops if the id is already present.
+func (m *Manager) AddExisting(s *Session) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.sessions[s.ID]; ok {
+		return
+	}
+	m.sessions[s.ID] = s
+	m.order = append([]string{s.ID}, m.order...)
 }
 
 // All returns sessions in display order.

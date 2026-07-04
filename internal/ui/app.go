@@ -14,6 +14,7 @@ import (
 	"github.com/aleksanaa/hyphae/internal/agent"
 	"github.com/aleksanaa/hyphae/internal/config"
 	"github.com/aleksanaa/hyphae/internal/session"
+	"github.com/aleksanaa/hyphae/internal/store"
 )
 
 // App is the root application coordinator.
@@ -23,6 +24,7 @@ type App struct {
 	ag         *agent.Agent
 	manager    *session.Manager
 	cfg        *config.Config
+	store      *store.Store
 	appCtx     context.Context
 	appCancel  context.CancelFunc
 	sendCancel context.CancelFunc
@@ -42,6 +44,8 @@ func New(cfg *config.Config) *App {
 	workDir, _ := os.Getwd()
 	manager := session.NewManager(workDir)
 
+	st, _ := store.Open(store.DefaultPath()) // non-fatal: store may be nil
+
 	ctx, cancel := context.WithCancel(context.Background())
 
 	a := &App{
@@ -49,6 +53,7 @@ func New(cfg *config.Config) *App {
 		ag:        ag,
 		manager:   manager,
 		cfg:       cfg,
+		store:     st,
 		appCtx:    ctx,
 		appCancel: cancel,
 	}
@@ -122,6 +127,146 @@ func (a *App) Run() error {
 func (a *App) Stop() {
 	a.appCancel()
 	a.tapp.Stop()
+	if a.store != nil {
+		a.store.Close()
+	}
+}
+
+// persistSessionMessages writes all non-status, non-partial messages for sess
+// to the store. Runs in a goroutine; store errors are silently ignored.
+func (a *App) persistSessionMessages(sess *session.Session) {
+	if a.store == nil {
+		return
+	}
+	msgs, _ := sess.Snapshot()
+	var lastThinkingSecs int
+	for seq, msg := range msgs {
+		if msg.Role == session.RoleStatus {
+			lastThinkingSecs = msg.ThinkingSecs
+			continue
+		}
+		if msg.Partial {
+			continue
+		}
+		content := msg.Content
+		callID := ""
+		isError := false
+		thinkingSecs := 0
+		if msg.Role == session.RoleAssistant {
+			thinkingSecs = lastThinkingSecs
+		}
+		lastThinkingSecs = 0
+		if msg.Role == session.RoleTool && msg.ToolResult != nil {
+			content = msg.ToolResult.Content
+			callID = msg.ToolResult.ID
+			isError = msg.ToolResult.IsError
+		}
+		msgID, err := a.store.InsertMessage(sess.ID, seq, string(msg.Role), content, msg.Thinking, thinkingSecs, callID, isError)
+		if err != nil {
+			continue
+		}
+		if msgID == 0 {
+			// Row already existed; retrieve its id to write any missing tool_calls.
+			msgID, err = a.store.MessageID(sess.ID, seq)
+			if err != nil {
+				continue
+			}
+		}
+		for _, tu := range msg.ToolUses {
+			a.store.InsertToolCall(msgID, tu.ID, tu.Name, tu.DisplayKey, tu.Input) //nolint:errcheck
+			if tu.State != "running" && tu.State != "pending" {
+				a.store.FinalizeToolCall(tu.ID, tu.Output, tu.State, tu.State == "error") //nolint:errcheck
+			}
+		}
+	}
+	if sess.Title != "" {
+		a.store.UpdateSessionTitle(sess.ID, sess.Title) //nolint:errcheck
+	}
+}
+
+// resumeSession loads a persisted session by id and makes it active.
+func (a *App) resumeSession(id string) {
+	// If already in memory, just activate.
+	if _, ok := a.manager.Get(id); ok {
+		a.manager.SetActive(id)
+		a.redrawActive()
+		return
+	}
+	if a.store == nil {
+		return
+	}
+	loaded, err := a.store.LoadSessionMessages(id)
+	if err != nil {
+		return
+	}
+	workDir, _ := os.Getwd()
+	sess := session.NewSession(id, workDir)
+
+	msgs := make([]session.Message, 0, len(loaded))
+	for _, lm := range loaded {
+		// Synthesize a RoleStatus before assistant messages that have thinking
+		// so the chat renderer shows the CoT indicator.
+		if lm.Role == string(session.RoleAssistant) && lm.Thinking != "" {
+			var label string
+			if lm.ThinkingSecs < 1 {
+				label = fmt.Sprintf("[%s]apex[-][%s] thought for a moment[-]", TC.ApexDim, TC.Muted)
+			} else {
+				label = fmt.Sprintf("[%s]apex[-][%s] thought for %ds[-]", TC.ApexDim, TC.Muted, lm.ThinkingSecs)
+			}
+			msgs = append(msgs, session.Message{
+				Role:          session.RoleStatus,
+				Content:       label,
+				ContentTagged: true,
+				ThinkingSecs:  lm.ThinkingSecs,
+			})
+		}
+		msg := session.Message{
+			Role:     session.Role(lm.Role),
+			Content:  lm.Content,
+			Thinking: lm.Thinking,
+		}
+		if lm.Role == string(session.RoleTool) {
+			msg.ToolResult = &session.ToolResult{
+				ID:      lm.CallID,
+				Content: lm.Content,
+				IsError: lm.IsError,
+			}
+			msg.Content = ""
+		}
+		if len(lm.ToolCalls) > 0 {
+			msg.ToolUses = make([]session.ToolUse, len(lm.ToolCalls))
+			for i, tc := range lm.ToolCalls {
+				_, params := agent.ParseToolDisplay(tc.Name, tc.Args)
+				msg.ToolUses[i] = session.ToolUse{
+					ID:            tc.CallID,
+					Name:          tc.Name,
+					DisplayKey:    tc.DisplayKey,
+					Input:         tc.Args,
+					Output:        tc.Result,
+					State:         tc.Status,
+					DisplayParams: params,
+				}
+			}
+		}
+		msgs = append(msgs, msg)
+	}
+	sess.BulkLoad(msgs)
+
+	// Derive title from first user message if any.
+	for _, m := range msgs {
+		if m.Role == session.RoleUser && m.Content != "" {
+			t := m.Content
+			if len(t) > 40 {
+				t = t[:37] + "…"
+			}
+			sess.Title = t
+			break
+		}
+	}
+
+	a.manager.AddExisting(sess)
+	a.manager.SetActive(id)
+	a.redrawActive()
 }
 
 // handleGlobalKey intercepts application-level shortcuts.
@@ -379,6 +524,10 @@ func (a *App) sendMessage(text string) {
 	if !ok {
 		sess = a.manager.New()
 		a.manager.SetActive(sess.ID)
+		if a.store != nil {
+			workDir, _ := os.Getwd()
+			a.store.CreateSession(sess.ID, workDir) //nolint:errcheck
+		}
 	}
 
 	a.resetTurnState()
@@ -542,6 +691,7 @@ func (a *App) handleAgentEvents(sessionID string, ch <-chan agent.Event) {
 
 		case agent.EventDone:
 			sess.SetStatus(session.StatusIdle)
+			go a.persistSessionMessages(sess)
 			if isActive {
 				a.tapp.QueueUpdateDraw(func() {
 					a.finalizeStatus(sess)
@@ -623,12 +773,34 @@ func (a *App) setupPalette() {
 			}
 			a.layout.Status.SetDefault(model, session.StatusIdle)
 		},
+		// onResumeSession
+		func(id string) {
+			a.layout.HidePalette()
+			a.tapp.SetFocus(a.layout.Input.TextArea)
+			a.resumeSession(id)
+		},
 		// getEndpoints
 		func() []paletteEndpointInfo {
 			eps := a.cfg.Endpoints
 			out := make([]paletteEndpointInfo, len(eps))
 			for i, ep := range eps {
 				out[i] = paletteEndpointInfo{Name: ep.Name, BaseURL: ep.BaseURL}
+			}
+			return out
+		},
+		// getSessions
+		func() []paletteSessionInfo {
+			if a.store == nil {
+				return nil
+			}
+			workDir, _ := os.Getwd()
+			rows, err := a.store.ListSessions(workDir)
+			if err != nil {
+				return nil
+			}
+			out := make([]paletteSessionInfo, len(rows))
+			for i, r := range rows {
+				out[i] = paletteSessionInfo{ID: r.ID, Title: r.Title, UpdatedAt: r.UpdatedAt}
 			}
 			return out
 		},
@@ -640,9 +812,10 @@ func (a *App) openPalette() {
 	p := a.layout.Palette
 	// Wire actions onto menuItems, then Open() picks them up via cp.items = cp.menuItems.
 	p.menuItems = topLevelItems()
-	p.menuItems[0].Action = func() { p.switchMode(paletteModeAddEndpoint) }
-	p.menuItems[1].Action = func() { p.switchMode(paletteModeDelEndpoint) }
-	p.menuItems[2].Action = func() {
+	p.menuItems[0].Action = func() { p.switchMode(paletteModeResumeSession) }
+	p.menuItems[1].Action = func() { p.switchMode(paletteModeAddEndpoint) }
+	p.menuItems[2].Action = func() { p.switchMode(paletteModeDelEndpoint) }
+	p.menuItems[3].Action = func() {
 		p.switchMode(paletteModeSelectModel)
 		go func() {
 			var items []PaletteItem
