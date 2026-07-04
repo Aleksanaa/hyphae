@@ -20,7 +20,7 @@ You have tools to read files, edit files (targeted replacements), write files, l
 
 For file edits, prefer edit_file over write_file — it takes an edits array of {old_string, new_string} pairs and applies them in order. Each old_string must appear exactly once in the file; include enough surrounding context to make it unique. Use write_file only to create new files.
 
-run_shell, web_fetch, write_file, and edit_file require user approval before executing. Always fill in the "reasoning" field with one short sentence explaining why — it is shown to the user in the approval prompt.`
+run_shell, web_fetch, web_search, write_file, and edit_file require user approval before executing. Always fill in the "reasoning" field with one short sentence explaining why — it is shown to the user in the approval prompt.`
 
 // EventType classifies an agent event sent to the UI.
 type EventType string
@@ -447,7 +447,7 @@ func buildMessages(sess *session.Session) []openai.ChatCompletionMessageParamUni
 
 func requiresApproval(name string) bool {
 	switch name {
-	case "run_shell", "web_fetch", "write_file", "edit_file":
+	case "run_shell", "web_fetch", "write_file", "edit_file", "web_search":
 		return true
 	}
 	return false
@@ -516,6 +516,8 @@ func ParseToolDisplay(name, input string) (displayKey string, params []session.T
 		primary = "command"
 	case "web_fetch":
 		primary = "url"
+	case "web_search":
+		primary = "query"
 	case "search_files":
 		primary = "pattern"
 	case "ask_user":

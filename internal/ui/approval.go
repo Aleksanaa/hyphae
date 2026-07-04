@@ -101,6 +101,13 @@ func (av *ApprovalView) Show(toolName, argsJSON, reasoning string) {
 			} else {
 				av.argValue = argsJSON
 			}
+		case "web_search":
+			av.argLabel = "query"
+			if v, ok := args["query"].(string); ok {
+				av.argValue = v
+			} else {
+				av.argValue = argsJSON
+			}
 		default:
 			av.argLabel = "args"
 			av.argValue = argsJSON

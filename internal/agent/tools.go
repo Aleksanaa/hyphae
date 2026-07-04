@@ -282,6 +282,50 @@ var builtinTools = []toolDef{
 	},
 	{
 		schema: openai.ChatCompletionFunctionTool(openai.FunctionDefinitionParam{
+			Name:        "web_search",
+			Description: openai.String("Search the web using DuckDuckGo. This is a fallback search tool — prefer any web search tool provided by MCP servers when available. Returns titles, URLs, and snippets for the top results."),
+			Parameters: openai.FunctionParameters{
+				"type": "object",
+				"properties": map[string]any{
+					"query":       map[string]any{"type": "string", "description": "Search query"},
+					"max_results": map[string]any{"type": "number", "description": "Maximum number of results to return (default 10, max 10)"},
+					"reasoning":   map[string]any{"type": "string", "description": "One short sentence explaining why this search is being performed"},
+				},
+				"required": []string{"query", "reasoning"},
+			},
+		}),
+		execute: func(ctx context.Context, args map[string]any, _ string) (string, error) {
+			query := str(args, "query")
+			if query == "" {
+				return "", fmt.Errorf("query is required")
+			}
+			max := ddgMaxResults
+			if m, ok := args["max_results"].(float64); ok && m > 0 {
+				max = int(m)
+				if max > ddgMaxResults {
+					max = ddgMaxResults
+				}
+			}
+			results, err := duckduckgoSearch(ctx, query, max)
+			if err != nil {
+				return "", err
+			}
+			if len(results) == 0 {
+				return "(no results)", nil
+			}
+			var sb strings.Builder
+			for i, r := range results {
+				fmt.Fprintf(&sb, "%d. %s\n   %s\n", i+1, r.Title, r.URL)
+				if r.Snippet != "" {
+					fmt.Fprintf(&sb, "   %s\n", r.Snippet)
+				}
+				sb.WriteByte('\n')
+			}
+			return strings.TrimRight(sb.String(), "\n"), nil
+		},
+	},
+	{
+		schema: openai.ChatCompletionFunctionTool(openai.FunctionDefinitionParam{
 			Name:        "ask_user",
 			Description: openai.String("Ask the user to pick from a list of options. Use this when you need a clear choice before proceeding. The question should be brief; send a normal message first if more context is needed."),
 			Parameters: openai.FunctionParameters{
