@@ -52,12 +52,12 @@ func stripTags(s string) string {
 // ChatView displays the conversation as individually bordered message boxes.
 type ChatView struct {
 	*tview.TextView
-	messages        []session.Message
-	lastWidth       int
-	TotalLines      int // read by Scrollbar
-	hoverIdx        int // index into renderedMsgs; -1 = none
-	selectedIdx     int // box highlighted by last click; -1 = none
-	lastSelectedIdx int // selectedIdx at last buildText call; -2 = never built
+	messages           []session.Message
+	lastWidth          int
+	TotalLines         int // read by Scrollbar
+	hoverIdx           int // index into renderedMsgs; -1 = none
+	selectedIdx        int // box highlighted by last click; -1 = none
+	lastSelectedIdx    int // selectedIdx at last buildText call; -2 = never built
 	renderedMsgs       []session.Message
 	renderedMsgSessIdx []int // session-message index for each renderedMsg entry
 	renderedMsgToolIdx []int // tool-use index within the session message (-1 if not a tool item)
@@ -560,92 +560,135 @@ func (cv *ChatView) buildText(width int) {
 		boxRight = append(boxRight, lp+bw)
 		lineCount += lines
 	}
-	for i, msg := range cv.messages {
+	msgs := cv.messages
+	mn := len(msgs)
+
+	sep := func() {
+		if !first {
+			b.WriteString("\n")
+			lineCount++
+		}
+		first = false
+	}
+	writeFlatLine := func(line string, sessIdx, toolIdx int) {
+		b.WriteString("  ")
+		b.WriteString(line)
+		b.WriteString("\n")
+		addEntry(session.Message{Role: session.RoleStatus, Content: line}, sessIdx, toolIdx, 2, tview.TaggedStringWidth(line), 1)
+	}
+	renderBox := func(entry session.Message, sessIdx, toolIdx int) {
+		prev := b.Len()
+		eIdx := len(renderedMsgs)
+		lp, bw := cv.renderMessageBox(&b, entry, width, maxW, eIdx == cv.selectedIdx)
+		addEntry(entry, sessIdx, toolIdx, lp, bw, strings.Count(b.String()[prev:], "\n"))
+	}
+
+	for mi := 0; mi < mn; mi++ {
+		msg := msgs[mi]
 		if msg.Role == session.RoleTool {
 			continue
 		}
 		if msg.Role == session.RoleStatus {
+			var secs int
+			var contentParts []string
+			var allTools []session.ToolUse
+			var hasThinking bool
+			j := mi
+			for j < mn {
+				for j < mn && msgs[j].Role == session.RoleTool {
+					j++
+				}
+				if j >= mn || msgs[j].Role != session.RoleStatus {
+					break
+				}
+				sm := msgs[j]
+				j++
+				for j < mn && msgs[j].Role == session.RoleTool {
+					j++
+				}
+				if j >= mn || msgs[j].Role != session.RoleAssistant {
+					break
+				}
+				am := msgs[j]
+				if am.Content != "" || am.Error != nil || am.Partial {
+					break
+				}
+				secs += parseThinkingSecs(sm.Content)
+				if am.Thinking != "" {
+					hasThinking = true
+					contentParts = append(contentParts, tview.Escape(am.Thinking))
+				}
+				if len(am.ToolUses) > 0 {
+					contentParts = append(contentParts, formatAllToolParams(am.ToolUses))
+					allTools = append(allTools, am.ToolUses...)
+				}
+				j++
+			}
+
+			if hasThinking {
+				sep()
+				desc := "thought for a moment"
+				if secs > 0 {
+					desc = fmt.Sprintf("thought for %ds", secs)
+				}
+				if len(allTools) > 0 {
+					desc += ", " + toolGroupDesc(allTools)
+				}
+				if msgs[mi].ThinkingExpanded {
+					title := fmt.Sprintf("[%s]apex[-][%s] (thoughts)[-]", TC.ApexColor, TC.Muted)
+					if secs > 0 {
+						title = fmt.Sprintf("[%s]apex[-][%s] (thoughts, %ds)[-]", TC.ApexColor, TC.Muted, secs)
+					}
+					renderBox(session.Message{
+						Role: session.RoleAssistant, ExpandedBox: true,
+						BoxTitle: title, Content: strings.Join(contentParts, "\n\n"), ContentTagged: true,
+					}, mi, -1)
+				} else {
+					writeFlatLine(apexLabel(desc), mi, -1)
+				}
+				mi = j - 1
+				continue
+			}
+
 			if msg.Content == "" {
 				continue
 			}
-			if !first {
-				b.WriteString("\n")
-				lineCount++
-			}
-			first = false
-			prevLen := b.Len()
+			sep()
 			if msg.ThinkingExpanded {
 				thinking, partial := "", false
-				for j := i + 1; j < len(cv.messages); j++ {
-					if cv.messages[j].Role == session.RoleAssistant {
-						thinking = cv.messages[j].Thinking
-						partial = cv.messages[j].Partial
+				for jj := mi + 1; jj < mn; jj++ {
+					if msgs[jj].Role == session.RoleAssistant {
+						thinking, partial = msgs[jj].Thinking, msgs[jj].Partial
 						break
 					}
 				}
-				entry := session.Message{
-					Role:        session.RoleAssistant,
-					Content:     thinking,
-					Partial:     partial,
-					ExpandedBox: true,
-					BoxTitle:    fmt.Sprintf("[%s]apex[-][%s] (thoughts)[-]", TC.ApexColor, TC.Muted),
-				}
-				eIdx := len(renderedMsgs) // index before append
-				lp, bw := cv.renderMessageBox(&b, entry, width, maxW, eIdx == cv.selectedIdx)
-				addEntry(entry, i, -1, lp, bw, strings.Count(b.String()[prevLen:], "\n"))
+				renderBox(session.Message{
+					Role: session.RoleAssistant, Content: thinking, Partial: partial,
+					ExpandedBox: true, BoxTitle: fmt.Sprintf("[%s]apex[-][%s] (thoughts)[-]", TC.ApexColor, TC.Muted),
+				}, mi, -1)
 			} else {
-				b.WriteString("  ")
-				b.WriteString(msg.Content)
-				b.WriteString("\n")
-				addEntry(msg, i, -1, 2, tview.TaggedStringWidth(msg.Content), strings.Count(b.String()[prevLen:], "\n"))
+				writeFlatLine(msg.Content, mi, -1)
 			}
 			continue
 		}
-		// Skip the assistant message box when there is no content yet.
-		skipBox := msg.Role == session.RoleAssistant && msg.Content == "" && msg.Error == nil
-		if !skipBox {
-			if !first {
-				b.WriteString("\n")
-				lineCount++
-			}
-			first = false
-			prevLen := b.Len()
-			eIdx := len(renderedMsgs)
-			lp, bw := cv.renderMessageBox(&b, msg, width, maxW, eIdx == cv.selectedIdx)
-			addEntry(msg, i, -1, lp, bw, strings.Count(b.String()[prevLen:], "\n"))
+
+		if msg.Role != session.RoleAssistant || msg.Content != "" || msg.Error != nil {
+			sep()
+			renderBox(msg, mi, -1)
 		}
 
-		// Tool calls: one summary line (collapsed) or one expanded box (expanded).
 		if msg.Role == session.RoleAssistant && len(msg.ToolUses) > 0 {
-			if !first {
-				b.WriteString("\n")
-				lineCount++
-			}
-			first = false
-			prevLen := b.Len()
+			sep()
 			if msg.ToolGroupExpanded {
-				// Single expanded box containing all tool params.
-				var boxTitle string
-				if len(msg.ToolUses) == 1 {
-					boxTitle = toolSingleLabel(msg.ToolUses[0])
-				} else {
-					boxTitle = toolGroupLabel(msg.ToolUses)
-				}
-				entry := session.Message{
+				renderBox(session.Message{
 					Role:          session.RoleAssistant,
 					ExpandedBox:   true,
-					BoxTitle:      boxTitle,
+					BoxTitle:      toolGroupLabel(msg.ToolUses),
 					Content:       formatAllToolParams(msg.ToolUses),
 					ContentTagged: true,
-				}
-				eIdx2 := len(renderedMsgs)
-				lp2, bw2 := cv.renderMessageBox(&b, entry, width, maxW, eIdx2 == cv.selectedIdx)
-				addEntry(entry, i, -2, lp2, bw2, strings.Count(b.String()[prevLen:], "\n"))
+				}, mi, -2)
 			} else {
-				// Pending and denied (error) tools are shown individually;
-				// the rest are collapsed into one aggregate summary.
-				var collapsible []session.ToolUse
-				var individual []session.ToolUse
+				var collapsible, individual []session.ToolUse
 				for _, tu := range msg.ToolUses {
 					if tu.State == "pending" || tu.State == "error" {
 						individual = append(individual, tu)
@@ -654,22 +697,10 @@ func (cv *ChatView) buildText(width int) {
 					}
 				}
 				if len(collapsible) > 0 {
-					lp := b.Len()
-					line := toolGroupLabel(collapsible)
-					entry := session.Message{Role: session.RoleStatus, Content: line}
-					b.WriteString("  ")
-					b.WriteString(line)
-					b.WriteString("\n")
-					addEntry(entry, i, -2, 2, tview.TaggedStringWidth(line), strings.Count(b.String()[lp:], "\n"))
+					writeFlatLine(toolGroupLabel(collapsible), mi, -2)
 				}
 				for _, tu := range individual {
-					lp := b.Len()
-					line := toolSingleLabel(tu)
-					entry := session.Message{Role: session.RoleStatus, Content: line}
-					b.WriteString("  ")
-					b.WriteString(line)
-					b.WriteString("\n")
-					addEntry(entry, i, -2, 2, tview.TaggedStringWidth(line), strings.Count(b.String()[lp:], "\n"))
+					writeFlatLine(toolSingleLabel(tu), mi, -2)
 				}
 			}
 		}
@@ -1036,8 +1067,46 @@ var toolCats = map[string]toolCat{
 	"search_files":   {"searched for", "search for", "pattern", "patterns"},
 }
 
-// toolGroupLabel generates a natural-language tview-tagged summary for a set of tool uses.
-// Single tool delegates to toolSingleLabel; multiple tools produce an aggregate count line.
+// toolGroupDesc returns the plain-text action description for a set of tool uses,
+// without any "apex" prefix or tview tags.
+func toolGroupDesc(tools []session.ToolUse) string {
+	counts := map[string]int{}
+	var names []string
+	for _, tu := range tools {
+		if counts[tu.Name] == 0 {
+			names = append(names, tu.Name)
+		}
+		counts[tu.Name]++
+	}
+	parts := make([]string, len(names))
+	for i, name := range names {
+		cat, ok := toolCats[name]
+		if !ok {
+			cat = toolCat{verb: "called", noun: "tool", nouns: "tools"}
+		}
+		n := counts[name]
+		if n == 1 {
+			parts[i] = cat.verb + " 1 " + cat.noun
+		} else {
+			parts[i] = fmt.Sprintf("%s %d %s", cat.verb, n, cat.nouns)
+		}
+	}
+	switch len(parts) {
+	case 1:
+		return parts[0]
+	case 2:
+		return parts[0] + " and " + parts[1]
+	default:
+		return strings.Join(parts[:len(parts)-1], ", ") + ", and " + parts[len(parts)-1]
+	}
+}
+
+// apexLabel wraps desc in the dim "apex" prefix with muted text color.
+func apexLabel(desc string) string {
+	return fmt.Sprintf("[%s]apex[-][%s] %s[-]", TC.ApexDim, TC.Muted, desc)
+}
+
+// toolGroupLabel generates a tview-tagged summary for a set of tool uses.
 func toolGroupLabel(tools []session.ToolUse) string {
 	if len(tools) == 0 {
 		return ""
@@ -1045,68 +1114,40 @@ func toolGroupLabel(tools []session.ToolUse) string {
 	if len(tools) == 1 {
 		return toolSingleLabel(tools[0])
 	}
-	ac, mc := TC.ApexDim, TC.Muted
-	apex := fmt.Sprintf("[%s]apex[-][%s] ", ac, mc)
-
-	type group struct {
-		cat   toolCat
-		count int
-	}
-	var groups []group
-	seen := map[string]int{}
-	for _, tu := range tools {
-		cat, ok := toolCats[tu.Name]
-		if !ok {
-			cat = toolCat{"called", "call", "tool", "tools"}
-		}
-		if idx, exists := seen[tu.Name]; exists {
-			groups[idx].count++
-		} else {
-			seen[tu.Name] = len(groups)
-			groups = append(groups, group{cat: cat, count: 1})
-		}
-	}
-	parts := make([]string, len(groups))
-	for i, g := range groups {
-		if g.count == 1 {
-			parts[i] = fmt.Sprintf("%s 1 %s", g.cat.verb, g.cat.noun)
-		} else {
-			parts[i] = fmt.Sprintf("%s %d %s", g.cat.verb, g.count, g.cat.nouns)
-		}
-	}
-	var desc string
-	switch len(parts) {
-	case 1:
-		desc = parts[0]
-	case 2:
-		desc = parts[0] + " and " + parts[1]
-	default:
-		desc = strings.Join(parts[:len(parts)-1], ", ") + ", and " + parts[len(parts)-1]
-	}
-	return fmt.Sprintf("%s%s[-]", apex, desc)
+	return apexLabel(toolGroupDesc(tools))
 }
 
-// toolSingleLabel generates a natural-language tview-tagged summary for one tool use.
+// toolSingleLabel generates a tview-tagged summary for one tool use.
 func toolSingleLabel(tu session.ToolUse) string {
-	ac, mc := TC.ApexDim, TC.Muted
-	apex := fmt.Sprintf("[%s]apex[-][%s] ", ac, mc)
 	cat, ok := toolCats[tu.Name]
 	key := toolKeyArg(tu.Name, tu.Input)
 	if key == "" {
 		key = tu.Name
 	}
-	var desc string
 	switch {
 	case !ok:
-		desc = "used " + tu.Name
+		return apexLabel("used " + tu.Name)
 	case tu.State == "pending":
-		desc = fmt.Sprintf("wants to %s %s", cat.infin, key)
+		return apexLabel(fmt.Sprintf("wants to %s %s", cat.infin, key))
 	case tu.State == "error":
-		desc = fmt.Sprintf("failed to %s %s", cat.infin, key)
+		return apexLabel(fmt.Sprintf("failed to %s %s", cat.infin, key))
 	default:
-		desc = fmt.Sprintf("%s %s", cat.verb, key)
+		return apexLabel(fmt.Sprintf("%s %s", cat.verb, key))
 	}
-	return fmt.Sprintf("%s%s[-]", apex, desc)
+}
+
+// parseThinkingSecs extracts the thinking duration in seconds from a finalized
+// status Content string (e.g. "apex thought for 5s" → 5, "a moment" → 0).
+func parseThinkingSecs(content string) int {
+	plain := stripTags(content)
+	const marker = " thought for "
+	i := strings.Index(plain, marker)
+	if i < 0 {
+		return 0
+	}
+	var secs int
+	fmt.Sscanf(plain[i+len(marker):], "%ds", &secs)
+	return secs
 }
 
 // formatToolParams renders tool input JSON as highlighted key: value lines.
