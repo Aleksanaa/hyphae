@@ -16,7 +16,7 @@ var barEmptyBg = tcell.NewRGBColor(40, 44, 60)
 
 // bar fill colors — darker than the theme equivalents to avoid visual glare on solid blocks.
 var (
-	barFillGreen = tcell.NewRGBColor(35, 110, 60)
+	barFillBlue  = tcell.NewRGBColor(40, 70, 160)
 	barFillAmber = tcell.NewRGBColor(120, 90, 20)
 	barFillRed   = tcell.NewRGBColor(130, 38, 38)
 )
@@ -122,8 +122,8 @@ func (sb *StatusBar) render() {
 		}
 		sb.barPct = pct
 
-		fillColor := barFillGreen
-		cssColor := TC.SuccessColor
+		fillColor := barFillBlue
+		cssColor := TC.Accent
 		switch {
 		case pct >= 0.9:
 			fillColor = barFillRed
