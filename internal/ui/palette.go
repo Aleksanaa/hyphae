@@ -17,6 +17,7 @@ const (
 	paletteModeDelEndpoint                      // list of endpoints to delete
 	paletteModeSelectModel                      // list of models to pick
 	paletteModeResumeSession                    // list of past sessions to resume
+	paletteModeHotkeys                          // list of keyboard shortcuts
 )
 
 // PaletteItem is one selectable row in the palette list.
@@ -67,6 +68,7 @@ type CommandPalette struct {
 	onResumeSession func(id string)
 	getEndpoints    func() []paletteEndpointInfo
 	getSessions     func() []paletteSessionInfo
+	getHotkeyItems  func() []PaletteItem
 }
 
 func NewCommandPalette() *CommandPalette {
@@ -153,6 +155,7 @@ func (cp *CommandPalette) SetCallbacks(
 	onResumeSession func(id string),
 	getEndpoints func() []paletteEndpointInfo,
 	getSessions func() []paletteSessionInfo,
+	getHotkeyItems func() []PaletteItem,
 ) {
 	cp.onClose = onClose
 	cp.onAddEndpoint = onAddEndpoint
@@ -161,6 +164,7 @@ func (cp *CommandPalette) SetCallbacks(
 	cp.onResumeSession = onResumeSession
 	cp.getEndpoints = getEndpoints
 	cp.getSessions = getSessions
+	cp.getHotkeyItems = getHotkeyItems
 }
 
 func (cp *CommandPalette) NavigateUp() {
@@ -489,13 +493,16 @@ func (cp *CommandPalette) switchMode(m paletteMode) {
 				}
 			}
 		}
+
+	case paletteModeHotkeys:
+		cp.items = cp.getHotkeyItems()
 	}
 	cp.refilter()
 }
 
 func (cp *CommandPalette) confirm() {
 	switch cp.mode {
-	case paletteModeMenu:
+	case paletteModeMenu, paletteModeHotkeys:
 		if len(cp.filtered) == 0 {
 			return
 		}
@@ -570,6 +577,7 @@ func topLevelItems() []PaletteItem {
 		{Label: "Add endpoint", Sub: "register a new API endpoint"},
 		{Label: "Delete endpoint", Sub: "remove a saved endpoint"},
 		{Label: "Select model", Sub: "choose model from an endpoint"},
+		{Label: "Hotkeys", Sub: "view and trigger keyboard shortcuts"},
 	}
 }
 
@@ -583,6 +591,8 @@ func (cp *CommandPalette) modeTitle() string {
 		return "select model"
 	case paletteModeResumeSession:
 		return "resume session"
+	case paletteModeHotkeys:
+		return "hotkeys"
 	default:
 		return "command palette"
 	}

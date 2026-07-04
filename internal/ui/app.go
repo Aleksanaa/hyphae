@@ -804,6 +804,44 @@ func (a *App) setupPalette() {
 			}
 			return out
 		},
+		// getHotkeyItems
+		func() []PaletteItem {
+			p := a.layout.Palette
+			return []PaletteItem{
+				{
+					Label: "Ctrl+P",
+					Sub:   "command palette",
+					Action: func() { p.Close() },
+				},
+				{
+					Label: "Tab",
+					Sub:   "toggle focus: input ↔ chat",
+					Action: func() {
+						p.Close()
+						if a.tapp.GetFocus() == a.layout.Input.TextArea {
+							a.tapp.SetFocus(a.layout.Chat.TextView)
+						} else {
+							a.tapp.SetFocus(a.layout.Input.TextArea)
+						}
+					},
+				},
+				{
+					Label:  "Escape",
+					Sub:    "focus input",
+					Action: func() { p.Close() },
+				},
+				{
+					Label:  "Ctrl+C",
+					Sub:    "copy message (idle) / interrupt agent (running)",
+					Action: func() { p.Close() },
+				},
+				{
+					Label:  "Ctrl+D",
+					Sub:    "quit",
+					Action: func() { p.Close(); a.Stop() },
+				},
+			}
+		},
 	)
 
 }
@@ -815,6 +853,7 @@ func (a *App) openPalette() {
 	p.menuItems[0].Action = func() { p.switchMode(paletteModeResumeSession) }
 	p.menuItems[1].Action = func() { p.switchMode(paletteModeAddEndpoint) }
 	p.menuItems[2].Action = func() { p.switchMode(paletteModeDelEndpoint) }
+	p.menuItems[4].Action = func() { p.switchMode(paletteModeHotkeys) }
 	p.menuItems[3].Action = func() {
 		p.switchMode(paletteModeSelectModel)
 		go func() {

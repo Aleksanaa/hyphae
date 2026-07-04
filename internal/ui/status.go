@@ -60,22 +60,10 @@ func (sb *StatusBar) render() {
 		statusStr = fmt.Sprintf("[%s]○ idle[-]  ", TC.Muted)
 	}
 
-	ctrlC := "interrupt"
-	if sb.selActive {
-		ctrlC = "copy"
-	}
-
-	ac := TC.Accent
-	hints := fmt.Sprintf(
-		"[%s]Ctrl+S[-]:send  [%s]Ctrl+C[-]:%s  [%s]Ctrl+P[-]:palette  [%s]Tab[-]:focus  [%s]Ctrl+D[-]:quit",
-		ac, ac, ctrlC, ac, ac, ac,
-	)
-
-	sb.SetText(fmt.Sprintf(" %s[%s]%s[-]  %s",
+	sb.SetText(fmt.Sprintf(" %s[%s]%s[-]",
 		statusStr,
 		TC.Muted,
 		tview.Escape(modelStr),
-		hints,
 	))
 }
 
