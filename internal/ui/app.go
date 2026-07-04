@@ -38,7 +38,8 @@ type App struct {
 	thinkingFrozen  bool               // true once "thought for Xs" has been set for this turn
 
 	// billing
-	sessionCosts map[string]float64 // cumulative cost per session ID (in-memory only)
+	sessionCosts     map[string]float64 // cumulative cost per session ID (in-memory only)
+	lastPromptTokens map[string]int64   // last known prompt token count per session ID
 }
 
 // New wires up and returns a ready-to-run App.
@@ -53,14 +54,15 @@ func New(cfg *config.Config) *App {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	a := &App{
-		tapp:         tview.NewApplication(),
-		ag:           ag,
-		manager:      manager,
-		cfg:          cfg,
-		store:        st,
-		appCtx:       ctx,
-		appCancel:    cancel,
-		sessionCosts: make(map[string]float64),
+		tapp:             tview.NewApplication(),
+		ag:               ag,
+		manager:          manager,
+		cfg:              cfg,
+		store:            st,
+		appCtx:           ctx,
+		appCancel:        cancel,
+		sessionCosts:     make(map[string]float64),
+		lastPromptTokens: make(map[string]int64),
 	}
 
 	chat := NewChatView()
@@ -277,6 +279,24 @@ func (a *App) resumeSession(id string) {
 
 	a.manager.AddExisting(sess)
 	a.manager.SetActive(id)
+
+	// Restore cost and pricing from DB.
+	if a.store != nil {
+		if row, err := a.store.GetSession(id); err == nil {
+			if row.TotalCost > 0 {
+				a.sessionCosts[id] = row.TotalCost
+				a.layout.Status.SetSessionCost(row.TotalCost)
+			}
+			if row.ContextWindow > 0 && a.cfg.ContextWindow == 0 {
+				a.layout.Status.SetContextWindow(row.ContextWindow)
+			}
+			if row.LastPromptTokens > 0 {
+				a.lastPromptTokens[id] = row.LastPromptTokens
+				a.layout.Status.SetPromptTokens(row.LastPromptTokens)
+			}
+		}
+	}
+
 	a.redrawActive()
 }
 
@@ -704,25 +724,32 @@ func (a *App) handleAgentEvents(sessionID string, ch <-chan agent.Event) {
 			pt := ev.PromptTokens
 			callCost := ev.CallCost
 			ct := ev.CompletionTokens
-			if isActive {
-				a.tapp.QueueUpdateDraw(func() {
+			a.tapp.QueueUpdateDraw(func() {
+				if isActive {
 					a.layout.Status.SetPromptTokens(pt)
-					cost := callCost
-					if cost == 0 {
-						// Provider didn't report cost — calculate from token counts and prices.
-						cost = float64(pt)*a.cfg.InputPrice/1_000_000 +
-							float64(ct)*a.cfg.OutputPrice/1_000_000
-					}
-					if cost > 0 {
-						a.sessionCosts[sessionID] += cost
+				}
+				cost := callCost
+				if cost == 0 {
+					cost = float64(pt)*a.cfg.InputPrice/1_000_000 +
+						float64(ct)*a.cfg.OutputPrice/1_000_000
+				}
+				if cost > 0 {
+					a.sessionCosts[sessionID] += cost
+					if isActive {
 						a.layout.Status.SetSessionCost(a.sessionCosts[sessionID])
 					}
-				})
-			}
+				}
+				a.lastPromptTokens[sessionID] = pt
+			})
 
 		case agent.EventDone:
 			sess.SetStatus(session.StatusIdle)
 			go a.persistSessionMessages(sess)
+			if a.store != nil {
+				cost := a.sessionCosts[sessionID]
+				pt := a.lastPromptTokens[sessionID]
+				go a.store.UpdateSessionUsage(sessionID, cost, pt) //nolint:errcheck
+			}
 			if isActive {
 				a.tapp.QueueUpdateDraw(func() {
 					a.finalizeStatus(sess)
@@ -819,6 +846,11 @@ func (a *App) setupPalette() {
 			go a.fetchModelDevInfoAsync(model)
 			if err := a.cfg.Save(); err != nil {
 				a.layout.Status.SetError("save failed: " + err.Error())
+			}
+			if a.store != nil {
+				if sess, ok := a.manager.Active(); ok {
+					go a.store.UpdateSessionPricing(sess.ID, a.cfg.ContextWindow, a.cfg.InputPrice, a.cfg.OutputPrice) //nolint:errcheck
+				}
 			}
 			a.layout.Status.SetDefault(model, session.StatusIdle)
 		},
@@ -955,6 +987,11 @@ func (a *App) fetchModelDevInfoAsync(modelID string) {
 		}
 		if changed {
 			a.cfg.Save() //nolint:errcheck
+			if a.store != nil {
+				if sess, ok := a.manager.Active(); ok {
+					go a.store.UpdateSessionPricing(sess.ID, a.cfg.ContextWindow, a.cfg.InputPrice, a.cfg.OutputPrice) //nolint:errcheck
+				}
+			}
 		}
 	})
 }

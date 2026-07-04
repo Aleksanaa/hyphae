@@ -50,11 +50,16 @@ func DefaultPath() string {
 
 const sqlInitial = `
 CREATE TABLE sessions (
-    id         TEXT    PRIMARY KEY,
-    work_dir   TEXT    NOT NULL,
-    title      TEXT,
-    created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL
+    id             TEXT    PRIMARY KEY,
+    work_dir       TEXT    NOT NULL,
+    title          TEXT,
+    total_cost        REAL    NOT NULL DEFAULT 0,
+    context_window    INTEGER NOT NULL DEFAULT 0,
+    input_price       REAL    NOT NULL DEFAULT 0,
+    output_price      REAL    NOT NULL DEFAULT 0,
+    last_prompt_tokens INTEGER NOT NULL DEFAULT 0,
+    created_at     INTEGER NOT NULL,
+    updated_at     INTEGER NOT NULL
 );
 
 CREATE TABLE messages (
@@ -134,11 +139,16 @@ func (s *Store) migrate() error {
 
 // SessionRow is a lightweight session record for listing.
 type SessionRow struct {
-	ID        string
-	WorkDir   string
-	Title     string
-	CreatedAt int64
-	UpdatedAt int64
+	ID               string
+	WorkDir          string
+	Title            string
+	TotalCost        float64
+	ContextWindow    int64
+	InputPrice       float64
+	OutputPrice      float64
+	LastPromptTokens int64
+	CreatedAt        int64
+	UpdatedAt        int64
 }
 
 // CreateSession inserts a new session row. No-ops if the id already exists.
@@ -163,7 +173,7 @@ func (s *Store) UpdateSessionTitle(id, title string) error {
 // ListSessions returns sessions for workDir ordered newest first.
 func (s *Store) ListSessions(workDir string) ([]SessionRow, error) {
 	rows, err := s.db.Query(
-		`SELECT id, work_dir, title, created_at, updated_at
+		`SELECT id, work_dir, title, total_cost, context_window, input_price, output_price, last_prompt_tokens, created_at, updated_at
 		   FROM sessions WHERE work_dir = ? ORDER BY updated_at DESC`,
 		workDir,
 	)
@@ -175,13 +185,43 @@ func (s *Store) ListSessions(workDir string) ([]SessionRow, error) {
 	for rows.Next() {
 		var r SessionRow
 		var title sql.NullString
-		if err := rows.Scan(&r.ID, &r.WorkDir, &title, &r.CreatedAt, &r.UpdatedAt); err != nil {
+		if err := rows.Scan(&r.ID, &r.WorkDir, &title, &r.TotalCost, &r.ContextWindow, &r.InputPrice, &r.OutputPrice, &r.LastPromptTokens, &r.CreatedAt, &r.UpdatedAt); err != nil {
 			return nil, err
 		}
 		r.Title = title.String
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// GetSession returns a single session row by ID.
+func (s *Store) GetSession(id string) (SessionRow, error) {
+	var r SessionRow
+	var title sql.NullString
+	err := s.db.QueryRow(
+		`SELECT id, work_dir, title, total_cost, context_window, input_price, output_price, last_prompt_tokens, created_at, updated_at
+		   FROM sessions WHERE id = ?`, id,
+	).Scan(&r.ID, &r.WorkDir, &title, &r.TotalCost, &r.ContextWindow, &r.InputPrice, &r.OutputPrice, &r.LastPromptTokens, &r.CreatedAt, &r.UpdatedAt)
+	r.Title = title.String
+	return r, err
+}
+
+// UpdateSessionUsage persists the cumulative cost and last prompt token count for a session.
+func (s *Store) UpdateSessionUsage(id string, totalCost float64, lastPromptTokens int64) error {
+	_, err := s.db.Exec(
+		`UPDATE sessions SET total_cost = ?, last_prompt_tokens = ?, updated_at = ? WHERE id = ?`,
+		totalCost, lastPromptTokens, now(), id,
+	)
+	return err
+}
+
+// UpdateSessionPricing stores the model pricing and context window for a session.
+func (s *Store) UpdateSessionPricing(id string, contextWindow int64, inputPrice, outputPrice float64) error {
+	_, err := s.db.Exec(
+		`UPDATE sessions SET context_window = ?, input_price = ?, output_price = ?, updated_at = ? WHERE id = ?`,
+		contextWindow, inputPrice, outputPrice, now(), id,
+	)
+	return err
 }
 
 // ── Messages ──────────────────────────────────────────────────────────────────
