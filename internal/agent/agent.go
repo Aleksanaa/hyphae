@@ -265,6 +265,7 @@ func (a *Agent) loop(ctx context.Context, sess *session.Session, ch chan<- Event
 						ToolResult: &session.ToolResult{ID: tc.ID, Content: denied, IsError: true},
 					})
 					sess.SetToolResult(msgIdx, tc.ID, denied, true)
+					sess.SetToolState(msgIdx, tc.ID, "refused")
 					te.Output = denied
 					te.IsError = true
 					select {

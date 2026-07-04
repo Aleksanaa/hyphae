@@ -568,6 +568,7 @@ func (cv *ChatView) buildText(width int) {
 				if j >= mn || msgs[j].Role != session.RoleStatus {
 					break
 				}
+				roundStart := j
 				sm := msgs[j]
 				j++
 				for j < mn && msgs[j].Role == session.RoleTool {
@@ -578,6 +579,19 @@ func (cv *ChatView) buildText(width int) {
 				}
 				am := msgs[j]
 				if am.Content != "" || am.Error != nil || am.Partial {
+					break
+				}
+				// Rounds with pending/error tools render separately so the correct
+				// per-state verb is used ("wants to run" vs "ran") and they stay visible.
+				hasPendingOrError := false
+				for _, tu := range am.ToolUses {
+					if tu.State == "pending" || tu.State == "refused" || tu.State == "error" {
+						hasPendingOrError = true
+						break
+					}
+				}
+				if hasPendingOrError {
+					j = roundStart
 					break
 				}
 				secs += sm.ThinkingSecs
@@ -657,7 +671,7 @@ func (cv *ChatView) buildText(width int) {
 			} else {
 				var collapsible, individual []session.ToolUse
 				for _, tu := range msg.ToolUses {
-					if tu.State == "pending" || tu.State == "error" {
+					if tu.State == "pending" || tu.State == "refused" || tu.State == "error" {
 						individual = append(individual, tu)
 					} else {
 						collapsible = append(collapsible, tu)
@@ -943,6 +957,8 @@ func toolSingleLabel(tu session.ToolUse) string {
 		return apexLabel("used " + tu.Name)
 	case tu.State == "pending":
 		return apexLabel(fmt.Sprintf("wants to %s %s", cat.infin, key))
+	case tu.State == "refused":
+		return apexLabel(fmt.Sprintf("wanted to %s %s but was rejected", cat.infin, key))
 	case tu.State == "error":
 		return apexLabel(fmt.Sprintf("failed to %s %s", cat.infin, key))
 	default:
