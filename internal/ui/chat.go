@@ -713,95 +713,46 @@ func (cv *ChatView) buildText(width int) {
 	cv.boxLeft = boxLeft
 	cv.boxRight = boxRight
 
-	// Build per-column copy mask and soft-wrap map for all message content lines.
-	// Absent key = fully copyable. Present key: false columns are non-copyable
-	// (format/border chars OR trailing blank padding inside the box).
 	cv.copyColMask = make(map[int][]bool)
 	cv.softWrapLine = make(map[int]bool)
-	cw := maxW - 4 // maxContentW shared across all messages
+	cw := maxW - 4
+
+	// maskWordWrap builds copy masks and soft-wrap markers for word-wrapped content.
+	// content must already be tview-escaped. minCW is the minimum box content width.
+	maskWordWrap := func(start, minCW int, content string) {
+		lines := tview.WordWrap(content, cw)
+		boxCW := max(minCW, maxTaggedWidth(lines))
+		for j, l := range lines {
+			if vlen := tview.TaggedStringWidth(l); vlen < boxCW {
+				cv.copyColMask[start+1+j] = allCopyMask(vlen)
+			}
+		}
+		offset := 0
+		for _, para := range strings.Split(content, "\n") {
+			wrapped := tview.WordWrap(para, cw)
+			for k := 0; k < len(wrapped)-1; k++ {
+				cv.softWrapLine[start+1+offset+k] = true
+			}
+			offset += len(wrapped)
+		}
+	}
 
 	for i, msg := range renderedMsgs {
 		start := msgStartLine[i]
 		switch msg.Role {
-
 		case session.RoleUser:
-			lines := tview.WordWrap(tview.Escape(msg.Content), cw)
-			actualW := 0
-			for _, l := range lines {
-				if n := tview.TaggedStringWidth(l); n > actualW {
-					actualW = n
-				}
-			}
-			boxCW := max(4, actualW) // boxW min 8 → contentW min 4
-			for j, l := range lines {
-				vlen := tview.TaggedStringWidth(l)
-				if vlen < boxCW {
-					cv.copyColMask[start+1+j] = allCopyMask(vlen)
-				}
-			}
-			// Soft-wrap tracking: lines within the same \n-paragraph are wrapped,
-			// lines at a \n boundary are hard breaks.
-			offset := 0
-			for _, para := range strings.Split(msg.Content, "\n") {
-				wrapped := tview.WordWrap(tview.Escape(para), cw)
-				for k := 0; k < len(wrapped)-1; k++ {
-					cv.softWrapLine[start+1+offset+k] = true
-				}
-				offset += len(wrapped)
-			}
-
+			maskWordWrap(start, 4, tview.Escape(msg.Content))
 		case session.RoleAssistant:
-			if msg.ExpandedBox {
-				// Plain-text or pre-tagged content (reasoning or tool params).
-				escapedContent := msg.Content
+			switch {
+			case msg.ExpandedBox:
+				content := msg.Content
 				if !msg.ContentTagged {
-					escapedContent = tview.Escape(msg.Content)
+					content = tview.Escape(content)
 				}
-				lines := tview.WordWrap(escapedContent, cw)
-				actualW := 0
-				for _, l := range lines {
-					if n := tview.TaggedStringWidth(l); n > actualW {
-						actualW = n
-					}
-				}
-				boxCW := max(1, actualW)
-				for j, l := range lines {
-					if vlen := tview.TaggedStringWidth(l); vlen < boxCW {
-						cv.copyColMask[start+1+j] = allCopyMask(vlen)
-					}
-				}
-				offset := 0
-				for _, para := range strings.Split(escapedContent, "\n") {
-					wrapped := tview.WordWrap(para, cw)
-					for k := 0; k < len(wrapped)-1; k++ {
-						cv.softWrapLine[start+1+offset+k] = true
-					}
-					offset += len(wrapped)
-				}
-			} else if msg.Error != nil {
-				lines := tview.WordWrap(tview.Escape(msg.Error.Error()), cw)
-				actualW := 0
-				for _, l := range lines {
-					if n := tview.TaggedStringWidth(l); n > actualW {
-						actualW = n
-					}
-				}
-				boxCW := max(6, actualW) // boxW min 10 → contentW min 6
-				for j, l := range lines {
-					vlen := tview.TaggedStringWidth(l)
-					if vlen < boxCW {
-						cv.copyColMask[start+1+j] = allCopyMask(vlen)
-					}
-				}
-				offset := 0
-				for _, para := range strings.Split(msg.Error.Error(), "\n") {
-					wrapped := tview.WordWrap(tview.Escape(para), cw)
-					for k := 0; k < len(wrapped)-1; k++ {
-						cv.softWrapLine[start+1+offset+k] = true
-					}
-					offset += len(wrapped)
-				}
-			} else if msg.Content != "" {
+				maskWordWrap(start, 1, content)
+			case msg.Error != nil:
+				maskWordWrap(start, 6, tview.Escape(msg.Error.Error()))
+			case msg.Content != "":
 				blocks := cv.mdCache[msg.Content]
 				if blocks == nil {
 					break
@@ -843,126 +794,76 @@ func (cv *ChatView) buildText(width int) {
 	cv.TextView.SetText(text)
 }
 
-// renderMessageBox writes a single bordered message box into b.
-//
-// The box width is compact: sized to the actual content, capped at maxW.
-// User boxes are flush to the right edge; assistant boxes are flush to the left.
-//
-// Box anatomy:
-//
-//	┌─ label ──────────┐
-//	│ content line     │
-//	└──────────────────┘
-//
-// renderMessageBox writes a bordered message box into b and returns the box's
-// leftPad and boxW so the caller can record geometry without a separate pass.
-// It uses cv.mdCache so that resize re-wraps without re-parsing markdown.
-func (cv *ChatView) renderMessageBox(b *strings.Builder, msg session.Message, width, maxW int, isHovered bool) (leftPad, boxW int) {
-	borderColor := Theme.Border
-	if isHovered {
-		borderColor = Theme.BorderFocus
+// maxTaggedWidth returns the maximum visual width across tview-tagged lines.
+func maxTaggedWidth(lines []string) int {
+	w := 0
+	for _, l := range lines {
+		if n := tview.TaggedStringWidth(l); n > w {
+			w = n
+		}
 	}
-	bc := borderColor.CSS()
+	return w
+}
 
-	dash := func(n int) string {
+// renderMessageBox writes a compact bordered box into b and returns leftPad and boxW.
+// Box anatomy:  ┌─ label ───┐ / │ content │ / └───────────┘
+// ExpandedBox uses dotted borders (╌/╎) and BoxTitle; normal uses solid and "apex".
+func (cv *ChatView) renderMessageBox(b *strings.Builder, msg session.Message, width, maxW int, isHovered bool) (leftPad, boxW int) {
+	bc := Theme.Border.CSS()
+	if isHovered {
+		bc = Theme.BorderFocus.CSS()
+	}
+
+	hChar, vChar := "─", "│"
+	if msg.ExpandedBox {
+		hChar, vChar = "╌", "╎"
+	}
+	fill := func(n int) string {
 		if n < 0 {
 			n = 0
 		}
-		return strings.Repeat("─", n)
+		return strings.Repeat(hChar, n)
 	}
-
-	// boxLine renders one content row padded to fill contentW columns.
-	// [-:-:-] before the padding resets any style from the inner content so
-	// the trailing space and border character are unaffected.
-	mkBoxLine := func(contentW int) func(inner string, vlen int) string {
+	// mkLine pads inner to contentW; [-:-:-] resets style before padding so
+	// trailing spaces and the border char are not colored by inner tags.
+	mkLine := func(contentW int) func(string, int) string {
 		return func(inner string, vlen int) string {
 			pad := contentW - vlen
 			if pad < 0 {
 				pad = 0
 			}
-			return fmt.Sprintf("[%s]│[-] %s[-:-:-]%s [%s]│[-]", bc, inner, strings.Repeat(" ", pad), bc)
+			return fmt.Sprintf("[%s]%s[-] %s[-:-:-]%s [%s]%s[-]", bc, vChar, inner, strings.Repeat(" ", pad), bc, vChar)
 		}
 	}
 
+	maxContentW := maxW - 4
+
 	switch msg.Role {
 	case session.RoleUser:
-		// label overhead: ┌─ you ┐ = 8 visible cols minimum
-		maxContentW := maxW - 4
 		lines := tview.WordWrap(tview.Escape(msg.Content), maxContentW)
-		actualW := 0
-		for _, l := range lines {
-			if n := tview.TaggedStringWidth(l); n > actualW {
-				actualW = n
-			}
-		}
-		boxW = max(8, actualW+4)
-		contentW := boxW - 4
-		leftPad = width - boxW
-		if leftPad < 0 {
-			leftPad = 0
-		}
+		boxW = max(8, maxTaggedWidth(lines)+4)
+		leftPad = max(0, width-boxW)
 		p := strings.Repeat(" ", leftPad)
-		uc := TC.UserColor
-		boxLine := mkBoxLine(contentW)
-
-		// ┌─ you ──...──┐  "─ you " = 6 visible cols
-		b.WriteString(p + fmt.Sprintf("[%s]┌─ [%s]you [%s]%s┐[-]", bc, uc, bc, dash(boxW-8)) + "\n")
+		boxLine := mkLine(boxW - 4)
+		fmt.Fprintf(b, "%s[%s]┌─ [%s]you [%s]%s┐[-]\n", p, bc, TC.UserColor, bc, fill(boxW-8))
 		for _, line := range lines {
-			b.WriteString(p + boxLine(line, tview.TaggedStringWidth(line)) + "\n")
+			fmt.Fprintf(b, "%s%s\n", p, boxLine(line, tview.TaggedStringWidth(line)))
 		}
-		b.WriteString(p + fmt.Sprintf("[%s]└%s┘[-]", bc, dash(boxW-2)) + "\n")
+		fmt.Fprintf(b, "%s[%s]└%s┘[-]\n", p, bc, fill(boxW-2))
 
 	case session.RoleAssistant:
-		ac := TC.ApexColor
-		mc := TC.Muted
-
 		if msg.Error != nil {
-			ec := TC.ErrorColor
-			maxContentW := maxW - 4
 			lines := tview.WordWrap(tview.Escape(msg.Error.Error()), maxContentW)
-			actualW := 0
-			for _, l := range lines {
-				if n := tview.TaggedStringWidth(l); n > actualW {
-					actualW = n
-				}
-			}
-			// ┌─ error ┐ = 10 visible cols minimum
-			boxW = max(10, actualW+4)
-			contentW := boxW - 4
-			boxLine := mkBoxLine(contentW)
-
-			b.WriteString(fmt.Sprintf("[%s]┌─ [%s]error [%s]%s┐[-]", bc, ec, bc, dash(boxW-10)) + "\n")
+			boxW = max(10, maxTaggedWidth(lines)+4)
+			boxLine := mkLine(boxW - 4)
+			fmt.Fprintf(b, "[%s]┌─ [%s]error [%s]%s┐[-]\n", bc, TC.ErrorColor, bc, fill(boxW-10))
 			for _, line := range lines {
-				inner := fmt.Sprintf("[%s]%s[-]", ec, line)
-				b.WriteString(boxLine(inner, tview.TaggedStringWidth(line)) + "\n")
+				fmt.Fprintf(b, "%s\n", boxLine(fmt.Sprintf("[%s]%s[-]", TC.ErrorColor, line), tview.TaggedStringWidth(line)))
 			}
-			b.WriteString(fmt.Sprintf("[%s]└%s┘[-]", bc, dash(boxW-2)) + "\n")
+			fmt.Fprintf(b, "[%s]└%s┘[-]\n", bc, fill(boxW-2))
 			return
 		}
 
-		// ExpandedBox: dotted borders, BoxTitle label, plain-text content.
-		// Normal: solid borders, "apex" label, markdown content.
-		hChar, vChar := "─", "│"
-		if msg.ExpandedBox {
-			hChar, vChar = "╌", "╎"
-		}
-		fill := func(n int) string {
-			if n < 0 {
-				n = 0
-			}
-			return strings.Repeat(hChar, n)
-		}
-		mkBoxLineV := func(contentW int) func(inner string, vlen int) string {
-			return func(inner string, vlen int) string {
-				pad := contentW - vlen
-				if pad < 0 {
-					pad = 0
-				}
-				return fmt.Sprintf("[%s]%s[-] %s[-:-:-]%s [%s]%s[-]", bc, vChar, inner, strings.Repeat(" ", pad), bc, vChar)
-			}
-		}
-
-		maxContentW := maxW - 4
 		var lines []string
 		if msg.ExpandedBox {
 			content := msg.Content
@@ -978,47 +879,33 @@ func (cv *ChatView) renderMessageBox(b *strings.Builder, msg session.Message, wi
 			}
 			lines = renderBlocks(blocks, maxContentW)
 		}
-		actualW := 0
-		for _, l := range lines {
-			if n := tview.TaggedStringWidth(l); n > actualW {
-				actualW = n
-			}
-		}
 
-		partialFrag := ""
-		extraW := 0
+		partialFrag, extraW := "", 0
 		if msg.Partial {
-			partialFrag = fmt.Sprintf("[%s]… [-]", mc)
+			partialFrag = fmt.Sprintf("[%s]… [-]", TC.Muted)
 			extraW = 2
 		}
-
-		// ExpandedBox: "┌╌ {BoxTitle} ┐" — fixed = titleW + 5 ("┌╌ " + " " + "┐")
-		// Normal:      "┌─ apex ┐"     — fixed = 9; with partial: 11
-		var minBoxW int
+		minBoxW := 9
 		if msg.ExpandedBox {
 			minBoxW = tview.TaggedStringWidth(msg.BoxTitle) + 5
 		} else if msg.Partial {
 			minBoxW = 11
-		} else {
-			minBoxW = 9
 		}
-		boxW = max(minBoxW+extraW, actualW+4)
-		contentW := boxW - 4
-		boxLine := mkBoxLineV(contentW)
+		boxW = max(minBoxW+extraW, maxTaggedWidth(lines)+4)
+		boxLine := mkLine(boxW - 4)
 
 		if msg.ExpandedBox {
-			titleW := tview.TaggedStringWidth(msg.BoxTitle)
 			fmt.Fprintf(b, "[%s]┌╌ %s %s[%s]%s┐[-]\n",
-				bc, msg.BoxTitle, partialFrag, bc, fill(boxW-titleW-5-extraW))
+				bc, msg.BoxTitle, partialFrag, bc, fill(boxW-tview.TaggedStringWidth(msg.BoxTitle)-5-extraW))
 			if len(lines) == 0 {
-				b.WriteString(boxLine("", 0) + "\n")
+				fmt.Fprintf(b, "%s\n", boxLine("", 0))
 			}
 		} else {
 			fmt.Fprintf(b, "[%s]┌─ [%s]apex [%s]%s[%s]%s┐[-]\n",
-				bc, ac, bc, partialFrag, bc, fill(boxW-9-extraW))
+				bc, TC.ApexColor, bc, partialFrag, bc, fill(boxW-9-extraW))
 		}
 		for _, line := range lines {
-			b.WriteString(boxLine(line, tview.TaggedStringWidth(line)) + "\n")
+			fmt.Fprintf(b, "%s\n", boxLine(line, tview.TaggedStringWidth(line)))
 		}
 		fmt.Fprintf(b, "[%s]└%s┘[-]\n", bc, fill(boxW-2))
 	}
@@ -1139,14 +1026,12 @@ func toolSingleLabel(tu session.ToolUse) string {
 // parseThinkingSecs extracts the thinking duration in seconds from a finalized
 // status Content string (e.g. "apex thought for 5s" → 5, "a moment" → 0).
 func parseThinkingSecs(content string) int {
-	plain := stripTags(content)
-	const marker = " thought for "
-	i := strings.Index(plain, marker)
-	if i < 0 {
+	_, after, ok := strings.Cut(stripTags(content), " thought for ")
+	if !ok {
 		return 0
 	}
 	var secs int
-	fmt.Sscanf(plain[i+len(marker):], "%ds", &secs)
+	fmt.Sscanf(after, "%ds", &secs)
 	return secs
 }
 
