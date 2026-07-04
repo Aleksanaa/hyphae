@@ -36,6 +36,9 @@ type App struct {
 	thinkingPending bool               // true once reasoning_content has started streaming
 	thinkingStart   time.Time          // when first reasoning chunk arrived
 	thinkingFrozen  bool               // true once "thought for Xs" has been set for this turn
+
+	// billing
+	sessionCosts map[string]float64 // cumulative cost per session ID (in-memory only)
 }
 
 // New wires up and returns a ready-to-run App.
@@ -50,13 +53,14 @@ func New(cfg *config.Config) *App {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	a := &App{
-		tapp:      tview.NewApplication(),
-		ag:        ag,
-		manager:   manager,
-		cfg:       cfg,
-		store:     st,
-		appCtx:    ctx,
-		appCancel: cancel,
+		tapp:         tview.NewApplication(),
+		ag:           ag,
+		manager:      manager,
+		cfg:          cfg,
+		store:        st,
+		appCtx:       ctx,
+		appCancel:    cancel,
+		sessionCosts: make(map[string]float64),
 	}
 
 	chat := NewChatView()
@@ -77,8 +81,9 @@ func New(cfg *config.Config) *App {
 	status.SetDefault(cfg.Model, session.StatusIdle)
 	if cfg.ContextWindow > 0 {
 		status.SetContextWindow(cfg.ContextWindow)
-	} else if cfg.Model != "" {
-		go a.fetchContextWindowAsync(cfg.Model)
+	}
+	if cfg.Model != "" && (cfg.ContextWindow == 0 || cfg.InputPrice == 0) {
+		go a.fetchModelDevInfoAsync(cfg.Model)
 	}
 
 	a.setupPalette()
@@ -696,10 +701,22 @@ func (a *App) handleAgentEvents(sessionID string, ch <-chan agent.Event) {
 			}
 
 		case agent.EventUsageUpdate:
+			pt := ev.PromptTokens
+			callCost := ev.CallCost
+			ct := ev.CompletionTokens
 			if isActive {
-				pt := ev.PromptTokens
 				a.tapp.QueueUpdateDraw(func() {
 					a.layout.Status.SetPromptTokens(pt)
+					cost := callCost
+					if cost == 0 {
+						// Provider didn't report cost — calculate from token counts and prices.
+						cost = float64(pt)*a.cfg.InputPrice/1_000_000 +
+							float64(ct)*a.cfg.OutputPrice/1_000_000
+					}
+					if cost > 0 {
+						a.sessionCosts[sessionID] += cost
+						a.layout.Status.SetSessionCost(a.sessionCosts[sessionID])
+					}
 				})
 			}
 
@@ -790,14 +807,16 @@ func (a *App) setupPalette() {
 				}
 			}
 			a.ag = agent.New(ep.BaseURL, ep.APIKey, model)
+			// Reset stored prices when switching models.
+			a.cfg.ContextWindow = 0
+			a.cfg.InputPrice = 0
+			a.cfg.OutputPrice = 0
 			if cw > 0 {
-				// API provided context_length directly — use it immediately.
 				a.cfg.ContextWindow = cw
 				a.layout.Status.SetContextWindow(cw)
-			} else {
-				// API didn't report context window — look it up from models.dev in background.
-				go a.fetchContextWindowAsync(model)
 			}
+			// Always fetch models.dev in background to fill in prices (and context if missing).
+			go a.fetchModelDevInfoAsync(model)
 			if err := a.cfg.Save(); err != nil {
 				a.layout.Status.SetError("save failed: " + err.Error())
 			}
@@ -912,17 +931,31 @@ func (a *App) openPalette() {
 	a.tapp.SetFocus(p)
 }
 
-// fetchContextWindowAsync looks up the context window for modelID from models.dev
+// fetchModelDevInfoAsync fetches context window and pricing for modelID from models.dev
 // in a background goroutine and updates config + status bar when found.
-func (a *App) fetchContextWindowAsync(modelID string) {
-	cw := agent.FetchContextWindow(a.appCtx, modelID)
-	if cw <= 0 {
+func (a *App) fetchModelDevInfoAsync(modelID string) {
+	info := agent.FetchModelDevInfo(a.appCtx, modelID)
+	if info.ContextWindow <= 0 && info.InputPrice == 0 && info.OutputPrice == 0 {
 		return
 	}
 	a.tapp.QueueUpdateDraw(func() {
-		a.cfg.ContextWindow = cw
-		a.cfg.Save() //nolint:errcheck
-		a.layout.Status.SetContextWindow(cw)
+		changed := false
+		if info.ContextWindow > 0 && a.cfg.ContextWindow != info.ContextWindow {
+			a.cfg.ContextWindow = info.ContextWindow
+			a.layout.Status.SetContextWindow(info.ContextWindow)
+			changed = true
+		}
+		if info.InputPrice > 0 && a.cfg.InputPrice != info.InputPrice {
+			a.cfg.InputPrice = info.InputPrice
+			changed = true
+		}
+		if info.OutputPrice > 0 && a.cfg.OutputPrice != info.OutputPrice {
+			a.cfg.OutputPrice = info.OutputPrice
+			changed = true
+		}
+		if changed {
+			a.cfg.Save() //nolint:errcheck
+		}
 	})
 }
 

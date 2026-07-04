@@ -24,6 +24,15 @@ var (
 // subBlockRunes maps eighths (1–7) to the corresponding Unicode block element.
 var subBlockRunes = []rune{'▏', '▎', '▍', '▌', '▋', '▊', '▉'}
 
+func formatCost(usd float64) string {
+	switch {
+	case usd < 0.01:
+		return fmt.Sprintf("$%.4f", usd)
+	default:
+		return fmt.Sprintf("$%.2f", usd)
+	}
+}
+
 // StatusBar renders one-line context at the bottom of the screen.
 // Left side: status indicator + model name.
 // Right side: token usage progress bar (when context window is known).
@@ -35,11 +44,14 @@ type StatusBar struct {
 	promptTokens  int64
 	contextWindow int64
 
+	sessionCost float64
+
 	// rendered cache
-	left    string      // tview-tagged left content
-	pctText string      // tview-tagged right text (percentage or tok count)
-	barPct  float64     // 0..1, used in drawBar; 0 when no context window
-	barFill tcell.Color // fill color for the bar; default when no bar
+	left     string      // tview-tagged left content
+	costText string      // tview-tagged cost label, left of bar
+	pctText  string      // tview-tagged right text (percentage or tok count)
+	barPct   float64     // 0..1, used in drawBar; 0 when no context window
+	barFill  tcell.Color // fill color for the bar; default when no bar
 }
 
 // NewStatusBar creates a styled status bar primitive.
@@ -75,6 +87,11 @@ func (sb *StatusBar) SetContextWindow(cw int64) {
 	sb.render()
 }
 
+func (sb *StatusBar) SetSessionCost(usd float64) {
+	sb.sessionCost = usd
+	sb.render()
+}
+
 func (sb *StatusBar) render() {
 	modelStr := sb.model
 	if modelStr == "" {
@@ -90,6 +107,12 @@ func (sb *StatusBar) render() {
 		statusStr = fmt.Sprintf("[%s]○ idle[-]  ", TC.Muted)
 	}
 	sb.left = fmt.Sprintf(" %s[%s]%s[-]", statusStr, TC.Muted, tview.Escape(modelStr))
+
+	if sb.sessionCost > 0 {
+		sb.costText = fmt.Sprintf("[%s]%s[-] ", TC.Muted, formatCost(sb.sessionCost))
+	} else {
+		sb.costText = ""
+	}
 
 	switch {
 	case sb.promptTokens > 0 && sb.contextWindow > 0:
@@ -164,20 +187,25 @@ func (sb *StatusBar) Draw(screen tcell.Screen) {
 
 	leftW, _ := tview.Print(screen, sb.left, x, y, w, tview.AlignLeft, Theme.Text)
 
-	if sb.pctText != "" {
+	if sb.pctText != "" || sb.costText != "" {
 		pctW := tview.TaggedStringWidth(sb.pctText)
-		rightW := pctW
+		costW := tview.TaggedStringWidth(sb.costText)
 		hasBar := sb.barPct > 0 || (sb.promptTokens > 0 && sb.contextWindow > 0)
+		rightW := costW + pctW
 		if hasBar {
 			rightW += barWidth
 		}
 		rightX := x + w - rightW
 		if rightX > x+leftW {
+			if costW > 0 {
+				tview.Print(screen, sb.costText, rightX, y, costW, tview.AlignLeft, Theme.Text)
+			}
+			barX := rightX + costW
 			if hasBar {
-				sb.drawBar(screen, rightX, y, barWidth)
-				tview.Print(screen, sb.pctText, rightX+barWidth, y, pctW, tview.AlignLeft, Theme.Text)
-			} else {
-				tview.Print(screen, sb.pctText, rightX, y, pctW, tview.AlignLeft, Theme.Text)
+				sb.drawBar(screen, barX, y, barWidth)
+				tview.Print(screen, sb.pctText, barX+barWidth, y, pctW, tview.AlignLeft, Theme.Text)
+			} else if pctW > 0 {
+				tview.Print(screen, sb.pctText, barX, y, pctW, tview.AlignLeft, Theme.Text)
 			}
 		}
 	}

@@ -20,6 +20,8 @@ type Config struct {
 	ActiveEndpointName string     `toml:"active_endpoint"`
 	Model              string     `toml:"model"`
 	ContextWindow      int64      `toml:"context_window"`
+	InputPrice         float64    `toml:"input_price"`  // USD per million input tokens
+	OutputPrice        float64    `toml:"output_price"` // USD per million output tokens
 }
 
 // ActiveEndpoint returns the endpoint matching ActiveEndpointName, falling back to the first.
