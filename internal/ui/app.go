@@ -416,7 +416,8 @@ func (a *App) handleAgentEvents(sessionID string, ch <-chan agent.Event) {
 				a.layout.Status.SetDefault(a.cfg.Model, status)
 
 				a.layout.SelectView.Show(tool.SelectQuestion, tool.SelectOptions)
-				a.layout.ShowSelect(SelectViewHeight(len(tool.SelectOptions)))
+				_, _, chatW, _ := a.layout.Chat.GetInnerRect()
+				a.layout.ShowSelect(a.layout.SelectView.Height(chatW + 1))
 				a.tapp.SetFocus(a.layout.SelectView)
 				a.layout.SelectView.SetCallback(func(answer string) {
 					a.layout.HideSelect()

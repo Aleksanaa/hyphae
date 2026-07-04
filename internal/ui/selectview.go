@@ -43,9 +43,16 @@ func NewSelectView() *SelectView {
 
 func (sv *SelectView) IsVisible() bool { return sv.visible }
 
-// SelectViewHeight returns the row count for n model-provided options
-// (the custom-text row is always present and is not included in n).
-func SelectViewHeight(n int) int { return n + 5 }
+// Height returns the row count needed to render the view at availWidth columns.
+// Call after Show so the question is set.
+func (sv *SelectView) Height(availWidth int) int {
+	innerW := max(1, availWidth-4)
+	qLines := len(tview.WordWrap(tview.Escape(sv.question), innerW))
+	if qLines == 0 {
+		qLines = 1
+	}
+	return 2 + qLines + 1 + len(sv.options) + 1 // borders + question + blank + options + custom
+}
 
 func (sv *SelectView) Show(question string, options []string) {
 	sv.question = question
@@ -103,13 +110,20 @@ func (sv *SelectView) Draw(screen tcell.Screen) {
 	mutedSt := tcell.StyleDefault.Foreground(Theme.Muted).Background(bg)
 	textSt := tcell.StyleDefault.Foreground(Theme.Text).Background(bg)
 
-	// Row 1: question text.
-	drawText(screen, truncateStr(sv.question, innerW), inner, y+1, innerW, textSt)
+	// Row 1+: question, word-wrapped (escape so [ chars don't confuse WordWrap).
+	qLines := tview.WordWrap(tview.Escape(sv.question), innerW)
+	if len(qLines) == 0 {
+		qLines = []string{""}
+	}
+	for j, line := range qLines {
+		drawText(screen, tview.Unescape(line), inner, y+1+j, innerW, textSt)
+	}
 
-	// Row 3+: option rows (y+2 is blank padding).
+	// Rows after question + 1 blank line: option rows.
+	optStart := y + 1 + len(qLines) + 1
 	total := len(sv.options) + 1 // includes custom-text row
-	for i := 0; i < total && y+3+i < y+h-1; i++ {
-		row := y + 3 + i
+	for i := 0; i < total && optStart+i < y+h-1; i++ {
+		row := optStart + i
 		isSelected := i == sv.cursor
 
 		var st tcell.Style
