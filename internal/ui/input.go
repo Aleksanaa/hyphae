@@ -38,8 +38,12 @@ func NewInputView(onSend func(string)) *InputView {
 	)
 
 	ta.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-		if event.Key() == tcell.KeyCtrlS {
+		switch event.Key() {
+		case tcell.KeyCtrlS:
 			iv.send()
+			return nil
+		case tcell.KeyCtrlA:
+			ta.Select(0, ta.GetTextLength())
 			return nil
 		}
 		return event
