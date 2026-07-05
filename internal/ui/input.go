@@ -3,6 +3,7 @@ package ui
 import (
 	"strings"
 
+	"github.com/atotto/clipboard"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 )
@@ -30,6 +31,11 @@ func NewInputView(onSend func(string)) *InputView {
 		Background(Theme.Surface))
 
 	iv := &InputView{TextArea: ta, onSend: onSend}
+
+	ta.SetClipboard(
+		func(text string) { clipboard.WriteAll(text) }, //nolint:errcheck
+		func() string { text, _ := clipboard.ReadAll(); return text },
+	)
 
 	ta.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
 		if event.Key() == tcell.KeyCtrlS {

@@ -408,12 +408,17 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 
 	case event.Key() == tcell.KeyCtrlC:
 		if a.layout.Chat.HasSelection() {
-			// Active drag selection — copy it.
+			// Active drag selection in chat — copy it.
 			text := a.layout.Chat.SelectedText()
 			if text != "" {
 				if err := clipboard.WriteAll(text); err != nil {
 					a.layout.Status.SetError(err.Error())
 				}
+			}
+		} else if sel, _, _ := a.layout.Input.GetSelection(); sel != "" {
+			// Selection in input box — copy it.
+			if err := clipboard.WriteAll(sel); err != nil {
+				a.layout.Status.SetError(err.Error())
 			}
 		} else if a.sendCancel != nil {
 			// Agent is running — interrupt it.
