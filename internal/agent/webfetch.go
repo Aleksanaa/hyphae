@@ -321,8 +321,15 @@ func (c *mdConverter) walk(n *html.Node) {
 		case "li":
 			c.nl()
 			depth := len(c.listStack)
+			if depth == 0 {
+				// <li> outside any <ul>/<ol> — malformed HTML; treat as unordered.
+				c.b.WriteString("- ")
+				c.walkChildren(n)
+				c.nl()
+				break
+			}
 			indent := strings.Repeat("  ", depth-1)
-			if depth > 0 && c.listStack[depth-1] {
+			if c.listStack[depth-1] {
 				c.listCount[depth-1]++
 				c.b.WriteString(fmt.Sprintf("%s%d. ", indent, c.listCount[depth-1]))
 			} else {
