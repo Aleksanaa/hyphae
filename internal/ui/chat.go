@@ -518,6 +518,165 @@ func (cv *ChatView) renderWelcome(b *strings.Builder, width int) {
 	fmt.Fprintf(b, "[%s]%s%s[-]\n", TC.Muted, strings.Repeat(" ", max(0, (width-len(subtitle))/2)), subtitle)
 }
 
+// ─── message grouping ────────────────────────────────────────────────────────
+
+// collRound holds the raw data from one completed tool-only agent round.
+type collRound struct {
+	thinking string
+	tools    []session.ToolUse
+}
+
+type renderItemKind int
+
+const (
+	riCompactDivider  renderItemKind = iota // compact separator line or summary box
+	riCollapsedRounds                       // ≥1 tool-only rounds with CoT collapsed into one apex entry
+	riLiveStatus                            // streaming status (live progress text)
+	riAssistant                             // assistant message with content or error
+	riToolGroup                             // tool-use summary for an assistant message
+)
+
+// renderItem is one logical unit to be rendered in the conversation.
+type renderItem struct {
+	kind renderItemKind
+
+	divIdx int // riCompactDivider: index into compactSeqs
+
+	// riCollapsedRounds
+	firstStatusIdx int
+	thinkSecs      int
+	rounds         []collRound
+
+	// riLiveStatus
+	liveMsg      session.Message
+	liveMsgIdx   int
+	liveThinking string // adjacent assistant's Thinking (for expanded view)
+	livePartial  bool
+
+	// riAssistant / riToolGroup
+	msg    session.Message
+	msgIdx int
+}
+
+// groupMessages converts a flat message slice into ordered render items,
+// interleaving compact dividers and collapsing consecutive completed tool-only
+// rounds that include CoT reasoning into single entries.
+func groupMessages(msgs []session.Message, compactSeqs []int) []renderItem {
+	var items []renderItem
+	mn := len(msgs)
+	nextDivider := 0
+
+	flushDividers := func(before int) {
+		for nextDivider < len(compactSeqs) && before > compactSeqs[nextDivider] {
+			items = append(items, renderItem{kind: riCompactDivider, divIdx: nextDivider})
+			nextDivider++
+		}
+	}
+
+	for mi := 0; mi < mn; mi++ {
+		flushDividers(mi)
+		msg := msgs[mi]
+		if msg.Role == session.RoleTool {
+			continue
+		}
+
+		if msg.Role == session.RoleStatus {
+			// Forward-scan consecutive completed tool-only rounds. Stops when any
+			// round has content, an error, a partial response, or pending/refused/error tools.
+			var rounds []collRound
+			var thinkSecs int
+			j := mi
+			for j < mn {
+				for j < mn && msgs[j].Role == session.RoleTool {
+					j++
+				}
+				if j >= mn || msgs[j].Role != session.RoleStatus {
+					break
+				}
+				roundStart := j
+				sm := msgs[j]
+				j++
+				for j < mn && msgs[j].Role == session.RoleTool {
+					j++
+				}
+				if j >= mn || msgs[j].Role != session.RoleAssistant {
+					break
+				}
+				am := msgs[j]
+				if am.Content != "" || am.Error != nil || am.Partial {
+					break
+				}
+				hasPendingOrError := false
+				for _, tu := range am.ToolUses {
+					if tu.State == "pending" || tu.State == "refused" || tu.State == "error" {
+						hasPendingOrError = true
+						break
+					}
+				}
+				if hasPendingOrError {
+					j = roundStart
+					break
+				}
+				thinkSecs += sm.ThinkingSecs
+				rounds = append(rounds, collRound{thinking: am.Thinking, tools: am.ToolUses})
+				j++
+			}
+
+			hasThinking := false
+			for _, r := range rounds {
+				if r.thinking != "" {
+					hasThinking = true
+					break
+				}
+			}
+			if hasThinking {
+				items = append(items, renderItem{
+					kind:           riCollapsedRounds,
+					firstStatusIdx: mi,
+					thinkSecs:      thinkSecs,
+					rounds:         rounds,
+				})
+				mi = j - 1
+				continue
+			}
+
+			if msg.Content == "" {
+				continue
+			}
+			liveThinking, livePartial := "", false
+			for jj := mi + 1; jj < mn; jj++ {
+				if msgs[jj].Role == session.RoleAssistant {
+					liveThinking = msgs[jj].Thinking
+					livePartial = msgs[jj].Partial
+					break
+				}
+			}
+			items = append(items, renderItem{
+				kind:         riLiveStatus,
+				liveMsg:      msg,
+				liveMsgIdx:   mi,
+				liveThinking: liveThinking,
+				livePartial:  livePartial,
+			})
+			continue
+		}
+
+		if msg.Role != session.RoleAssistant || msg.Content != "" || msg.Error != nil {
+			items = append(items, renderItem{kind: riAssistant, msg: msg, msgIdx: mi})
+		}
+		if msg.Role == session.RoleAssistant && len(msg.ToolUses) > 0 {
+			items = append(items, renderItem{kind: riToolGroup, msg: msg, msgIdx: mi})
+		}
+	}
+
+	// Flush any remaining dividers (e.g. compact just happened with no new messages yet).
+	for nextDivider < len(compactSeqs) {
+		items = append(items, renderItem{kind: riCompactDivider, divIdx: nextDivider})
+		nextDivider++
+	}
+	return items
+}
+
 func (cv *ChatView) buildText(width int) {
 	// Doc lines shift whenever text is rebuilt, so any live selection is invalid.
 	cv.selActive = false
@@ -561,7 +720,6 @@ func (cv *ChatView) buildText(width int) {
 		lineCount += lines
 	}
 	msgs := cv.messages
-	mn := len(msgs)
 
 	sep := func() {
 		if !first {
@@ -583,155 +741,88 @@ func (cv *ChatView) buildText(width int) {
 	}
 
 	lastDivider := len(cv.compactSeqs) - 1
-	renderCompactDividerAt := func(divIdx int) {
+	for _, item := range groupMessages(msgs, cv.compactSeqs) {
 		sep()
-		if divIdx == lastDivider && cv.compactExpanded[divIdx] && cv.compactSummary != "" {
-			renderBox(session.Message{
-				Role:      session.RoleAssistant,
-				BoxTitle:  fmt.Sprintf("[%s]compacted conversation[-]", TC.Muted),
-				Content:   cv.compactSummary,
-				FullWidth: true,
-			}, divIdx, toolIdxCompact)
-		} else {
-			label := "compacted conversation"
-			labelW := len(label)            // ASCII only
-			dashTotal := width - labelW - 2 // spaces around label
-			leftN := max(1, dashTotal/2)
-			rightN := max(1, dashTotal-leftN)
-			line := fmt.Sprintf("[%s]%s %s %s[-]", TC.Muted,
-				strings.Repeat("─", leftN), label, strings.Repeat("─", rightN))
-			b.WriteString(line)
-			b.WriteString("\n")
-			addEntry(session.Message{Role: session.RoleStatus}, divIdx, toolIdxCompact, 0, width, 1)
-		}
-	}
+		switch item.kind {
+		case riCompactDivider:
+			divIdx := item.divIdx
+			if divIdx == lastDivider && cv.compactExpanded[divIdx] && cv.compactSummary != "" {
+				renderBox(session.Message{
+					Role:      session.RoleAssistant,
+					BoxTitle:  fmt.Sprintf("[%s]compacted conversation[-]", TC.Muted),
+					Content:   cv.compactSummary,
+					FullWidth: true,
+				}, divIdx, toolIdxCompact)
+			} else {
+				label := "compacted conversation"
+				labelW := len(label)            // ASCII only
+				dashTotal := width - labelW - 2 // spaces around label
+				leftN := max(1, dashTotal/2)
+				rightN := max(1, dashTotal-leftN)
+				line := fmt.Sprintf("[%s]%s %s %s[-]", TC.Muted,
+					strings.Repeat("─", leftN), label, strings.Repeat("─", rightN))
+				b.WriteString(line)
+				b.WriteString("\n")
+				addEntry(session.Message{Role: session.RoleStatus}, divIdx, toolIdxCompact, 0, width, 1)
+			}
 
-	nextDivider := 0
-	for mi := 0; mi < mn; mi++ {
-		for nextDivider < len(cv.compactSeqs) && mi > cv.compactSeqs[nextDivider] {
-			renderCompactDividerAt(nextDivider)
-			nextDivider++
-		}
-		msg := msgs[mi]
-		if msg.Role == session.RoleTool {
-			continue
-		}
-		if msg.Role == session.RoleStatus {
-			var secs int
-			var contentParts []string
+		case riCollapsedRounds:
 			var allTools []session.ToolUse
-			var hasThinking bool
-			j := mi
-			for j < mn {
-				for j < mn && msgs[j].Role == session.RoleTool {
-					j++
+			var contentParts []string
+			for _, r := range item.rounds {
+				if r.thinking != "" {
+					contentParts = append(contentParts, tview.Escape(r.thinking))
 				}
-				if j >= mn || msgs[j].Role != session.RoleStatus {
-					break
+				if len(r.tools) > 0 {
+					contentParts = append(contentParts, formatAllToolParams(r.tools))
+					allTools = append(allTools, r.tools...)
 				}
-				roundStart := j
-				sm := msgs[j]
-				j++
-				for j < mn && msgs[j].Role == session.RoleTool {
-					j++
-				}
-				if j >= mn || msgs[j].Role != session.RoleAssistant {
-					break
-				}
-				am := msgs[j]
-				if am.Content != "" || am.Error != nil || am.Partial {
-					break
-				}
-				// Rounds with pending/error tools render separately so the correct
-				// per-state verb is used ("wants to run" vs "ran") and they stay visible.
-				hasPendingOrError := false
-				for _, tu := range am.ToolUses {
-					if tu.State == "pending" || tu.State == "refused" || tu.State == "error" {
-						hasPendingOrError = true
-						break
-					}
-				}
-				if hasPendingOrError {
-					j = roundStart
-					break
-				}
-				secs += sm.ThinkingSecs
-				if am.Thinking != "" {
-					hasThinking = true
-					contentParts = append(contentParts, tview.Escape(am.Thinking))
-				}
-				if len(am.ToolUses) > 0 {
-					contentParts = append(contentParts, formatAllToolParams(am.ToolUses))
-					allTools = append(allTools, am.ToolUses...)
-				}
-				j++
 			}
-
-			if hasThinking {
-				sep()
-				desc := "thought for a moment"
-				if secs > 0 {
-					desc = fmt.Sprintf("thought for %ds", secs)
-				}
-				if len(allTools) > 0 {
-					desc += ", " + toolGroupDesc(allTools)
-				}
-				if msgs[mi].ThinkingExpanded {
-					title := fmt.Sprintf("[%s]apex[-][%s] (thoughts)[-]", TC.ApexColor, TC.Muted)
-					if secs > 0 {
-						title = fmt.Sprintf("[%s]apex[-][%s] (thoughts, %ds)[-]", TC.ApexColor, TC.Muted, secs)
-					}
-					renderBox(session.Message{
-						Role: session.RoleAssistant, ExpandedBox: true,
-						BoxTitle: title, Content: strings.Join(contentParts, "\n\n"), ContentTagged: true,
-					}, mi, -1)
-				} else {
-					writeFlatLine(apexLabel(desc), mi, -1)
-				}
-				mi = j - 1
-				continue
+			desc := "thought for a moment"
+			if item.thinkSecs > 0 {
+				desc = fmt.Sprintf("thought for %ds", item.thinkSecs)
 			}
-
-			if msg.Content == "" {
-				continue
+			if len(allTools) > 0 {
+				desc += ", " + toolGroupDesc(allTools)
 			}
-			sep()
-			if msg.ThinkingExpanded {
-				thinking, partial := "", false
-				for jj := mi + 1; jj < mn; jj++ {
-					if msgs[jj].Role == session.RoleAssistant {
-						thinking, partial = msgs[jj].Thinking, msgs[jj].Partial
-						break
-					}
+			if msgs[item.firstStatusIdx].ThinkingExpanded {
+				title := fmt.Sprintf("[%s]apex[-][%s] (thoughts)[-]", TC.ApexColor, TC.Muted)
+				if item.thinkSecs > 0 {
+					title = fmt.Sprintf("[%s]apex[-][%s] (thoughts, %ds)[-]", TC.ApexColor, TC.Muted, item.thinkSecs)
 				}
 				renderBox(session.Message{
-					Role: session.RoleAssistant, Content: thinking, Partial: partial,
-					ExpandedBox: true, BoxTitle: fmt.Sprintf("[%s]apex[-][%s] (thoughts)[-]", TC.ApexColor, TC.Muted),
-				}, mi, -1)
+					Role: session.RoleAssistant, ExpandedBox: true,
+					BoxTitle: title, Content: strings.Join(contentParts, "\n\n"), ContentTagged: true,
+				}, item.firstStatusIdx, -1)
 			} else {
-				writeFlatLine(msg.Content, mi, -1)
+				writeFlatLine(apexLabel(desc), item.firstStatusIdx, -1)
 			}
-			continue
-		}
 
-		if msg.Role != session.RoleAssistant || msg.Content != "" || msg.Error != nil {
-			sep()
-			renderBox(msg, mi, -1)
-		}
+		case riLiveStatus:
+			if item.liveMsg.ThinkingExpanded {
+				renderBox(session.Message{
+					Role: session.RoleAssistant, Content: item.liveThinking, Partial: item.livePartial,
+					ExpandedBox: true, BoxTitle: fmt.Sprintf("[%s]apex[-][%s] (thoughts)[-]", TC.ApexColor, TC.Muted),
+				}, item.liveMsgIdx, -1)
+			} else {
+				writeFlatLine(item.liveMsg.Content, item.liveMsgIdx, -1)
+			}
 
-		if msg.Role == session.RoleAssistant && len(msg.ToolUses) > 0 {
-			sep()
-			if msg.ToolGroupExpanded {
+		case riAssistant:
+			renderBox(item.msg, item.msgIdx, -1)
+
+		case riToolGroup:
+			if item.msg.ToolGroupExpanded {
 				renderBox(session.Message{
 					Role:          session.RoleAssistant,
 					ExpandedBox:   true,
-					BoxTitle:      toolGroupLabel(msg.ToolUses),
-					Content:       formatAllToolParams(msg.ToolUses),
+					BoxTitle:      toolGroupLabel(item.msg.ToolUses),
+					Content:       formatAllToolParams(item.msg.ToolUses),
 					ContentTagged: true,
-				}, mi, -2)
+				}, item.msgIdx, -2)
 			} else {
 				var collapsible, individual []session.ToolUse
-				for _, tu := range msg.ToolUses {
+				for _, tu := range item.msg.ToolUses {
 					if tu.State == "pending" || tu.State == "refused" || tu.State == "error" {
 						individual = append(individual, tu)
 					} else {
@@ -739,19 +830,13 @@ func (cv *ChatView) buildText(width int) {
 					}
 				}
 				if len(collapsible) > 0 {
-					writeFlatLine(toolGroupLabel(collapsible), mi, -2)
+					writeFlatLine(toolGroupLabel(collapsible), item.msgIdx, -2)
 				}
 				for _, tu := range individual {
-					writeFlatLine(toolSingleLabel(tu), mi, -2)
+					writeFlatLine(toolSingleLabel(tu), item.msgIdx, -2)
 				}
 			}
 		}
-	}
-
-	// Flush any remaining dividers (e.g. compact just happened with no new messages yet).
-	for nextDivider < len(cv.compactSeqs) {
-		renderCompactDividerAt(nextDivider)
-		nextDivider++
 	}
 
 	cv.entries = entries
