@@ -99,8 +99,14 @@ func (sb *StatusBar) render() {
 	}
 	statusStr := ""
 	switch sb.status {
+	case session.StatusConnecting:
+		statusStr = fmt.Sprintf("[%s]○ connecting[-]  ", TC.Accent)
 	case session.StatusRunning:
 		statusStr = fmt.Sprintf("[%s]● running[-]  ", TC.SuccessColor)
+	case session.StatusWaiting:
+		statusStr = fmt.Sprintf("[%s]● waiting[-]  ", TC.PendingColor)
+	case session.StatusCompacting:
+		statusStr = fmt.Sprintf("[%s]● compacting[-]  ", TC.Accent)
 	case session.StatusError:
 		statusStr = fmt.Sprintf("[%s]✗ error[-]  ", TC.ErrorColor)
 	default:

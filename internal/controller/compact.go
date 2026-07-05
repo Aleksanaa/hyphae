@@ -20,7 +20,7 @@ func (c *Controller) Compact() error {
 	}
 
 	msgs, status := sess.Snapshot()
-	if status == session.StatusRunning {
+	if status.IsActive() {
 		return fmt.Errorf("agent or compact is already running")
 	}
 
@@ -52,7 +52,7 @@ func (c *Controller) Compact() error {
 	c.sendCancel = cancel
 	c.mu.Unlock()
 
-	sess.SetStatus(session.StatusRunning)
+	sess.SetStatus(session.StatusCompacting)
 	c.emit(Event{Kind: EvStatusMsg, SessionID: sess.ID, Text: "compacting conversation..."})
 	c.emit(Event{Kind: EvRedraw, SessionID: sess.ID})
 

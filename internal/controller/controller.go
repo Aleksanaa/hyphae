@@ -196,11 +196,11 @@ func (c *Controller) ActiveSession() (*session.Session, bool) { return c.mgr.Act
 // ActiveID returns the active session ID.
 func (c *Controller) ActiveID() string { return c.mgr.ActiveID() }
 
-// IsRunning reports whether the active session's agent is currently running.
+// IsRunning reports whether the active session has any in-progress operation.
 func (c *Controller) IsRunning() bool {
 	if sess, ok := c.mgr.Active(); ok {
 		_, st := sess.Snapshot()
-		return st == session.StatusRunning
+		return st.IsActive()
 	}
 	return false
 }

@@ -432,7 +432,6 @@ func (a *App) sendMessage(text string) {
 	// Immediate re-render from within the event loop; EvRedraw from the agent
 	// goroutine will handle subsequent updates.
 	a.redrawActive()
-	a.layout.Status.SetDefault(a.cfg.Model, session.StatusRunning)
 }
 
 // compactConversation runs the compact workflow via the controller.

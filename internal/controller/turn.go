@@ -111,7 +111,7 @@ func (c *Controller) SendMessage(text string) {
 		Content:   text,
 		SentLabel: agent.FormatSentLabel(time.Now()),
 	})
-	sess.SetStatus(session.StatusRunning)
+	sess.SetStatus(session.StatusConnecting)
 
 	ctx, cancel := context.WithCancel(c.ctx)
 	c.mu.Lock()
@@ -138,6 +138,7 @@ func (c *Controller) processAgentEvents(sessionID string, agCh <-chan agent.Even
 
 		switch agEv.Type {
 		case agent.EventSelectPrompt:
+			sess.SetStatus(session.StatusWaiting)
 			c.emit(Event{
 				Kind:         EvSelectPrompt,
 				SessionID:    sessionID,
@@ -146,6 +147,7 @@ func (c *Controller) processAgentEvents(sessionID string, agCh <-chan agent.Even
 			})
 
 		case agent.EventToolApproval:
+			sess.SetStatus(session.StatusWaiting)
 			c.emit(Event{
 				Kind:      EvToolApproval,
 				SessionID: sessionID,
@@ -154,6 +156,7 @@ func (c *Controller) processAgentEvents(sessionID string, agCh <-chan agent.Even
 			})
 
 		case agent.EventReasoningDelta:
+			sess.SetStatus(session.StatusRunning)
 			if !isActive {
 				break
 			}
@@ -168,12 +171,14 @@ func (c *Controller) processAgentEvents(sessionID string, agCh <-chan agent.Even
 			}
 
 		case agent.EventTextDelta:
+			sess.SetStatus(session.StatusRunning)
 			if isActive {
 				c.finalizeStatus(sessionID, ts)
 				c.emit(Event{Kind: EvRedraw, SessionID: sessionID})
 			}
 
 		case agent.EventConnecting:
+			sess.SetStatus(session.StatusConnecting)
 			attempt, maxAttempts, retryAfter, connErr := agEv.Attempt, agEv.MaxAttempts, agEv.RetryAfter, agEv.Err
 			if attempt == 1 && retryAfter == 0 {
 				ts.reset()
@@ -192,12 +197,14 @@ func (c *Controller) processAgentEvents(sessionID string, agCh <-chan agent.Even
 			}
 
 		case agent.EventPreparingTool:
+			sess.SetStatus(session.StatusRunning)
 			if isActive {
 				c.finalizeStatus(sessionID, ts)
 				c.emit(Event{Kind: EvRedraw, SessionID: sessionID})
 			}
 
 		case agent.EventToolStart, agent.EventToolDone:
+			sess.SetStatus(session.StatusRunning)
 			if isActive {
 				c.emit(Event{Kind: EvRedraw, SessionID: sessionID})
 			}

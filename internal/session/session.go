@@ -28,10 +28,22 @@ const (
 type Status string
 
 const (
-	StatusIdle    Status = "idle"
-	StatusRunning Status = "running"
-	StatusError   Status = "error"
+	StatusIdle       Status = "idle"
+	StatusConnecting Status = "connecting"
+	StatusRunning    Status = "running"
+	StatusWaiting    Status = "waiting" // waiting for user input (tool approval)
+	StatusCompacting Status = "compacting"
+	StatusError      Status = "error"
 )
+
+// IsActive reports whether the status represents an in-progress operation.
+func (s Status) IsActive() bool {
+	switch s {
+	case StatusConnecting, StatusRunning, StatusWaiting, StatusCompacting:
+		return true
+	}
+	return false
+}
 
 // ToolParam is a display key-value pair extracted from a tool's JSON input.
 type ToolParam struct{ Key, Value string }
