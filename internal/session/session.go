@@ -4,7 +4,6 @@ import (
 	"crypto/rand"
 	"fmt"
 	"sync"
-	"time"
 )
 
 func newID() string {
@@ -59,7 +58,7 @@ type ToolResult struct {
 type Message struct {
 	Role              Role
 	Content           string
-	SentAt            time.Time // when the message was created; zero for synthetic UI messages
+	SentLabel         string      // frozen "[Sent: ...]" suffix for user messages; empty for all other roles
 	Thinking          string      // reasoning_content from CoT-capable models
 	ThinkingSecs      int         // UI: CoT duration in seconds; set once per turn on RoleStatus
 	ThinkingExpanded  bool        // UI: whether the thoughts box is expanded (RoleStatus only)
@@ -138,9 +137,6 @@ func NewSession(id, workDir string) *Session {
 func (s *Session) AddMessage(m Message) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if m.SentAt.IsZero() {
-		m.SentAt = time.Now()
-	}
 	idx := len(s.msgs)
 	s.msgs = append(s.msgs, m)
 	if m.Role == RoleStatus {

@@ -407,8 +407,8 @@ func buildMessages(sess *session.Session) []openai.ChatCompletionMessageParamUni
 
 		case session.RoleUser:
 			content := m.Content
-			if !m.SentAt.IsZero() {
-				content += "\n\n[Sent: " + m.SentAt.UTC().Format("2006-01-02 15:04 UTC") + "]"
+			if m.SentLabel != "" {
+				content += "\n\n" + m.SentLabel
 			}
 			msgs = append(msgs, openai.UserMessage(content))
 
@@ -466,6 +466,23 @@ func extractReasoning(argsJSON string) (reasoning, input string) {
 		json.Unmarshal(r, &reasoning)
 	}
 	return reasoning, argsJSON
+}
+
+// FormatSentLabel returns the frozen "[Sent: ...]" suffix for a user message,
+// using the local timezone offset at the time of the call.
+func FormatSentLabel(t time.Time) string {
+	_, secs := t.Local().Zone()
+	h, mins := secs/3600, secs%3600/60
+	if mins < 0 {
+		mins = -mins
+	}
+	var tz string
+	if mins != 0 {
+		tz = fmt.Sprintf("UTC%+d:%02d", h, mins)
+	} else {
+		tz = fmt.Sprintf("UTC%+d", h)
+	}
+	return "[Sent: " + t.Local().Format("2006-01-02 15:04") + " " + tz + "]"
 }
 
 // isRetryable returns true for transient errors that warrant a retry.

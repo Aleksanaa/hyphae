@@ -174,7 +174,7 @@ func (a *App) persistSessionMessages(sess *session.Session) {
 			callID = msg.ToolResult.ID
 			isError = msg.ToolResult.IsError
 		}
-		msgID, err := a.store.InsertMessage(sess.ID, seq, string(msg.Role), content, msg.Thinking, thinkingSecs, callID, isError)
+		msgID, err := a.store.InsertMessage(sess.ID, seq, string(msg.Role), content, msg.Thinking, thinkingSecs, callID, isError, msg.SentLabel)
 		if err != nil {
 			continue
 		}
@@ -236,10 +236,10 @@ func (a *App) resumeSession(id string) {
 			})
 		}
 		msg := session.Message{
-			Role:     session.Role(lm.Role),
-			Content:  lm.Content,
-			Thinking: lm.Thinking,
-			SentAt:   time.UnixMilli(lm.CreatedAt),
+			Role:      session.Role(lm.Role),
+			Content:   lm.Content,
+			Thinking:  lm.Thinking,
+			SentLabel: lm.SentLabel,
 		}
 		if lm.Role == string(session.RoleTool) {
 			msg.ToolResult = &session.ToolResult{
@@ -566,7 +566,7 @@ func (a *App) sendMessage(text string) {
 	}
 
 	a.resetTurnState()
-	sess.AddMessage(session.Message{Role: session.RoleUser, Content: text})
+	sess.AddMessage(session.Message{Role: session.RoleUser, Content: text, SentLabel: agent.FormatSentLabel(time.Now())})
 	msgs, _ := sess.Snapshot()
 	a.layout.Chat.Render(msgs)
 
