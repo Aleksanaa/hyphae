@@ -218,6 +218,12 @@ func (sb *StatusBar) Draw(screen tcell.Screen) {
 	}
 }
 
+// Reset restores the standard model/status display, clearing any temporary
+// SetMessage or SetError override.
+func (sb *StatusBar) Reset() {
+	sb.render()
+}
+
 func (sb *StatusBar) SetMessage(msg string) {
 	sb.left = fmt.Sprintf(" [%s]%s[-]", TC.Accent, tview.Escape(msg))
 }

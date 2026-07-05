@@ -75,6 +75,7 @@ func New(cfg *config.Config) *App {
 	chat.TextView.SetBlurFunc(func() { chat.SetFocused(false) })
 	input.TextArea.SetFocusFunc(func() { input.SetFocused(true) })
 	input.TextArea.SetBlurFunc(func() { input.SetFocused(false) })
+	input.TextArea.SetChangedFunc(func() { a.layout.Status.Reset() })
 
 	a.tapp.EnableMouse(true)
 	a.tapp.SetMouseCapture(func(event *tcell.EventMouse, action tview.MouseAction) (*tcell.EventMouse, tview.MouseAction) {
