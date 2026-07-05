@@ -1,68 +1,36 @@
 package ui
 
 import (
-	"context"
 	"fmt"
-	"os"
-	"strconv"
 	"strings"
-	"time"
 
 	"github.com/atotto/clipboard"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 
-	"github.com/aleksanaa/hyphae/internal/agent"
 	"github.com/aleksanaa/hyphae/internal/config"
+	"github.com/aleksanaa/hyphae/internal/controller"
 	"github.com/aleksanaa/hyphae/internal/session"
-	"github.com/aleksanaa/hyphae/internal/store"
 )
 
 // App is the root application coordinator.
 type App struct {
-	tapp       *tview.Application
-	layout     *Layout
-	ag         *agent.Agent
-	manager    *session.Manager
-	cfg        *config.Config
-	store      *store.Store
-	appCtx     context.Context
-	appCancel  context.CancelFunc
-	sendCancel context.CancelFunc
-
-	// status indicators
-	statusCancel    context.CancelFunc // cancels the active connecting timer goroutine
-	connectStart    time.Time          // when the current connect attempt began
-	thinkingPending bool               // true once reasoning_content has started streaming
-	thinkingStart   time.Time          // when first reasoning chunk arrived
-	thinkingFrozen  bool               // true once "thought for Xs" has been set for this turn
-
-	// billing
-	sessionCosts     map[string]float64 // cumulative cost per session ID (in-memory only)
-	lastPromptTokens map[string]int64   // last known prompt token count per session ID
+	tapp     *tview.Application
+	layout   *Layout
+	ctrl     *controller.Controller
+	cfg      *config.Config
+	shutdown func() // cancels the controller context and closes the store
 }
 
 // New wires up and returns a ready-to-run App.
 func New(cfg *config.Config) *App {
-	ep := cfg.ActiveEndpoint()
-	ag := agent.New(ep.BaseURL, ep.APIKey, cfg.Model)
-	workDir, _ := os.Getwd()
-	manager := session.NewManager(workDir)
-
-	st, _ := store.Open(store.DefaultPath()) // non-fatal: store may be nil
-
-	ctx, cancel := context.WithCancel(context.Background())
+	ctrl, shutdown := controller.NewFromConfig(cfg)
 
 	a := &App{
-		tapp:             tview.NewApplication(),
-		ag:               ag,
-		manager:          manager,
-		cfg:              cfg,
-		store:            st,
-		appCtx:           ctx,
-		appCancel:        cancel,
-		sessionCosts:     make(map[string]float64),
-		lastPromptTokens: make(map[string]int64),
+		tapp:     tview.NewApplication(),
+		cfg:      cfg,
+		ctrl:     ctrl,
+		shutdown: shutdown,
 	}
 
 	chat := NewChatView()
@@ -85,19 +53,19 @@ func New(cfg *config.Config) *App {
 		status.SetContextWindow(cfg.ContextWindow)
 	}
 	if cfg.Model != "" && (cfg.ContextWindow == 0 || cfg.InputPrice == 0) {
-		go a.fetchModelDevInfoAsync(cfg.Model)
+		go ctrl.FetchModelDevInfoAsync(ctrl.Context(), cfg.Model)
 	}
 
 	a.setupPalette()
 
 	chat.SetStatusExpandCallback(func(sessionIdx int) {
-		if sess, ok := a.manager.Active(); ok {
+		if sess, ok := ctrl.ActiveSession(); ok {
 			sess.ToggleThinkingExpanded(sessionIdx)
 			a.redrawActive()
 		}
 	})
 	chat.SetToolGroupExpandCallback(func(sessionIdx int) {
-		if sess, ok := a.manager.Active(); ok {
+		if sess, ok := ctrl.ActiveSession(); ok {
 			sess.ToggleToolGroupExpanded(sessionIdx)
 			a.redrawActive()
 		}
@@ -121,6 +89,13 @@ func New(cfg *config.Config) *App {
 	a.tapp.SetInputCapture(a.handleGlobalKey)
 	a.tapp.SetRoot(layout.Root, true).SetFocus(input.TextArea)
 
+	go func() {
+		for ev := range ctrl.Events() {
+			ev := ev
+			a.tapp.QueueUpdateDraw(func() { a.handleControllerEvent(ev) })
+		}
+	}()
+
 	return a
 }
 
@@ -132,198 +107,174 @@ func (a *App) Run() error {
 		a.layout.Status.SetError("no model selected — press Ctrl+P to select one")
 	}
 
-	defer a.appCancel()
+	defer a.shutdown()
 	return a.tapp.Run()
 }
 
 // Stop shuts down the application.
 func (a *App) Stop() {
-	a.appCancel()
+	a.shutdown()
 	a.tapp.Stop()
-	if a.store != nil {
-		a.store.Close()
-	}
 }
 
-// persistSessionMessages writes all non-status, non-partial messages for sess
-// to the store. Runs in a goroutine; store errors are silently ignored.
-func (a *App) persistSessionMessages(sess *session.Session) {
-	if a.store == nil {
-		return
-	}
-	msgs, _ := sess.Snapshot()
-	var lastThinkingSecs int
-	for seq, msg := range msgs {
-		if msg.Role == session.RoleStatus {
-			lastThinkingSecs = msg.ThinkingSecs
-			continue
-		}
-		if msg.Partial {
-			continue
-		}
-		content := msg.Content
-		callID := ""
-		isError := false
-		thinkingSecs := 0
-		if msg.Role == session.RoleAssistant {
-			thinkingSecs = lastThinkingSecs
-		}
-		lastThinkingSecs = 0
-		if msg.Role == session.RoleTool && msg.ToolResult != nil {
-			content = msg.ToolResult.Content
-			callID = msg.ToolResult.ID
-			isError = msg.ToolResult.IsError
-		}
-		msgID, err := a.store.InsertMessage(sess.ID, seq, string(msg.Role), content, msg.Thinking, thinkingSecs, callID, isError, msg.SentLabel)
-		if err != nil {
-			continue
-		}
-		if msgID == 0 {
-			// Row already existed; retrieve its id to write any missing tool_calls.
-			msgID, err = a.store.MessageID(sess.ID, seq)
-			if err != nil {
-				continue
-			}
-		}
-		for _, tu := range msg.ToolUses {
-			a.store.InsertToolCall(msgID, tu.ID, tu.Name, tu.DisplayKey, tu.Input) //nolint:errcheck
-			if tu.State != "running" && tu.State != "pending" {
-				a.store.FinalizeToolCall(tu.ID, tu.Output, tu.State, tu.State == "error") //nolint:errcheck
-			}
-		}
-	}
-	if sess.Title != "" {
-		a.store.UpdateSessionTitle(sess.ID, sess.Title) //nolint:errcheck
-	}
-}
+// handleControllerEvent dispatches a controller event to the appropriate UI update.
+// Always called from within QueueUpdateDraw, i.e. on the tview event loop.
+func (a *App) handleControllerEvent(ev controller.Event) {
+	isActive := a.ctrl.ActiveID() == ev.SessionID
+	sess, hasSess := a.ctrl.Manager().Get(ev.SessionID)
 
-// resumeSession loads a persisted session by id and makes it active.
-func (a *App) resumeSession(id string) {
-	// If already in memory, just activate and restore per-session status.
-	if _, ok := a.manager.Get(id); ok {
-		a.manager.SetActive(id)
-		a.layout.Status.SetSessionCost(a.sessionCosts[id])
-		a.layout.Status.SetPromptTokens(a.lastPromptTokens[id])
-		a.redrawActive()
-		return
-	}
-	if a.store == nil {
-		return
-	}
-	loaded, err := a.store.LoadSessionMessages(id)
-	if err != nil {
-		return
-	}
-	workDir, _ := os.Getwd()
-	sess := session.NewSession(id, workDir)
+	switch ev.Kind {
+	case controller.EvRedraw:
+		if isActive {
+			a.redrawActive()
+		}
 
-	// seqToMemIdx maps DB seq → post-reload in-memory slice index.
-	// DB seq equals the original in-memory index (including RoleStatus gaps), but
-	// on reload RoleStatus rows are absent and synthetic ones may be inserted for
-	// thinking assistants, shifting subsequent indices.
-	seqToMemIdx := make(map[int]int, len(loaded))
-	msgs := make([]session.Message, 0, len(loaded))
-	for _, lm := range loaded {
-		// Synthesize a RoleStatus before assistant messages that have thinking
-		// so the chat renderer shows the CoT indicator.
-		if lm.Role == string(session.RoleAssistant) && lm.Thinking != "" {
-			var label string
-			if lm.ThinkingSecs < 1 {
-				label = fmt.Sprintf("[%s]apex[-][%s] thought for a moment[-]", TC.ApexDim, TC.Muted)
-			} else {
-				label = fmt.Sprintf("[%s]apex[-][%s] thought for %ds[-]", TC.ApexDim, TC.Muted, lm.ThinkingSecs)
-			}
-			msgs = append(msgs, session.Message{
-				Role:          session.RoleStatus,
-				Content:       label,
-				ContentTagged: true,
-				ThinkingSecs:  lm.ThinkingSecs,
-			})
+	case controller.EvStatusMsg:
+		if isActive {
+			a.layout.Status.SetMessage(ev.Text)
 		}
-		seqToMemIdx[lm.Seq] = len(msgs)
-		msg := session.Message{
-			Role:      session.Role(lm.Role),
-			Content:   lm.Content,
-			Thinking:  lm.Thinking,
-			SentLabel: lm.SentLabel,
-		}
-		if lm.Role == string(session.RoleTool) {
-			msg.ToolResult = &session.ToolResult{
-				ID:      lm.CallID,
-				Content: lm.Content,
-				IsError: lm.IsError,
-			}
-			msg.Content = ""
-		}
-		if len(lm.ToolCalls) > 0 {
-			msg.ToolUses = make([]session.ToolUse, len(lm.ToolCalls))
-			for i, tc := range lm.ToolCalls {
-				_, params := agent.ParseToolDisplay(tc.Name, tc.Args)
-				msg.ToolUses[i] = session.ToolUse{
-					ID:            tc.CallID,
-					Name:          tc.Name,
-					DisplayKey:    tc.DisplayKey,
-					Input:         tc.Args,
-					Output:        tc.Result,
-					State:         tc.Status,
-					DisplayParams: params,
-				}
-			}
-		}
-		msgs = append(msgs, msg)
-	}
-	sess.BulkLoad(msgs)
 
-	// Derive title from first user message if any.
-	for _, m := range msgs {
-		if m.Role == session.RoleUser && m.Content != "" {
-			t := m.Content
-			if len(t) > 40 {
-				t = t[:37] + "…"
-			}
-			sess.Title = t
+	case controller.EvStatusErr:
+		if isActive {
+			a.layout.Status.SetError("error: " + ev.Text)
+		}
+
+	case controller.EvTokensUpdate:
+		if isActive {
+			a.layout.Status.SetPromptTokens(ev.PromptTokens)
+			a.layout.Status.SetSessionCost(ev.SessionCost)
+		}
+
+	case controller.EvContextWindow:
+		if isActive {
+			a.layout.Status.SetContextWindow(ev.ContextWindow)
+		}
+
+	case controller.EvConnecting:
+		if !isActive || !hasSess {
 			break
 		}
-	}
-
-	a.manager.AddExisting(sess)
-	a.manager.SetActive(id)
-
-	// Restore cost, pricing, and compact state from DB.
-	if a.store != nil {
-		if row, err := a.store.GetSession(id); err == nil {
-			a.sessionCosts[id] = row.TotalCost
-			a.layout.Status.SetSessionCost(row.TotalCost)
-			if row.ContextWindow > 0 && a.cfg.ContextWindow == 0 {
-				a.layout.Status.SetContextWindow(row.ContextWindow)
-			}
-			a.lastPromptTokens[id] = row.LastPromptTokens
-			a.layout.Status.SetPromptTokens(row.LastPromptTokens)
-			if row.CompactedSummary != "" {
-				// Parse all compact DB seqs; fall back to compact_at_seq for old rows.
-				dbSeqs := parseCompactSeqs(row.CompactSeqs)
-				if len(dbSeqs) == 0 && row.CompactAtSeq >= 0 {
-					dbSeqs = []int{int(row.CompactAtSeq)}
-				}
-				memSeqs := make([]int, len(dbSeqs))
-				for j, dbS := range dbSeqs {
-					idx, ok := seqToMemIdx[dbS]
-					if !ok {
-						idx = len(msgs) - 1
-					}
-					memSeqs[j] = idx
-				}
-				sess.LoadCompact(row.CompactedSummary, memSeqs)
-			}
+		var text string
+		if ev.RetryAttempt > 0 {
+			text = fmt.Sprintf(
+				"[%s]connecting to [%s]apex[-][%s] model... (%ds, retrying %d/%d in %ds)[-]",
+				TC.Muted, TC.ApexDim, TC.Muted, ev.Elapsed, ev.RetryAttempt+1, ev.MaxAttempts, ev.RetryRemaining)
+		} else {
+			text = fmt.Sprintf(
+				"[%s]connecting to [%s]apex[-][%s] model... (%ds)[-]",
+				TC.Muted, TC.ApexDim, TC.Muted, ev.Elapsed)
 		}
-	}
+		sess.UpdateStatus(text)
+		a.redrawActive()
 
-	a.redrawActive()
+	case controller.EvThinkingUpdate:
+		if !isActive || !hasSess {
+			break
+		}
+		secs := ev.ThinkingSecs
+		sess.UpdateStatus(fmt.Sprintf(
+			"[%s]apex[-][%s] is thinking... (%ds)[-]", TC.ApexDim, TC.Muted, secs))
+		a.redrawActive()
+
+	case controller.EvThinkingDone:
+		if !hasSess {
+			break
+		}
+		if ev.ThinkingSecs < 0 {
+			sess.UpdateStatus("")
+		} else {
+			secs := ev.ThinkingSecs
+			var label string
+			if secs < 1 {
+				label = fmt.Sprintf("[%s]apex[-][%s] thought for a moment[-]", TC.ApexDim, TC.Muted)
+			} else {
+				label = fmt.Sprintf("[%s]apex[-][%s] thought for %ds[-]", TC.ApexDim, TC.Muted, secs)
+			}
+			sess.FinalizeThinkingStatus(label, secs)
+		}
+		if isActive {
+			a.redrawActive()
+		}
+
+	case controller.EvDone:
+		if isActive {
+			a.redrawActive()
+		}
+
+	case controller.EvError:
+		if !isActive {
+			break
+		}
+		msgs, _ := sess.Snapshot()
+		a.layout.Chat.Render(msgs)
+		a.layout.Status.SetError(ev.Text)
+
+	case controller.EvToolApproval:
+		tool := ev.Tool
+		respCh := ev.RespCh
+		msgs, status := sess.Snapshot()
+		a.layout.Chat.Render(msgs)
+		a.layout.Status.SetDefault(a.cfg.Model, status)
+
+		if tool.DiffPatch != "" {
+			files := []DiffFileChange{{
+				Path:  tool.FilePath,
+				Lines: ParseUnifiedDiff(tool.DiffPatch),
+			}}
+			a.layout.DiffView.Show(tool.Name, tool.Reasoning, files)
+			a.layout.ShowDiffView()
+			a.tapp.SetFocus(a.layout.DiffView)
+			a.layout.DiffView.SetCallbacks(
+				func() {
+					a.layout.HideDiffView()
+					a.tapp.SetFocus(a.layout.Input.TextArea)
+					respCh <- controller.ApprovalResult{Allowed: true}
+				},
+				func(reason string) {
+					a.layout.HideDiffView()
+					a.tapp.SetFocus(a.layout.Input.TextArea)
+					respCh <- controller.ApprovalResult{Allowed: false, DenyReason: reason}
+				},
+			)
+		} else {
+			a.layout.Approval.Show(tool.Name, tool.Input, tool.Reasoning)
+			a.layout.ShowApproval()
+			a.tapp.SetFocus(a.layout.Approval)
+			a.layout.Approval.SetCallbacks(
+				func() {
+					a.layout.HideApproval()
+					a.tapp.SetFocus(a.layout.Input.TextArea)
+					respCh <- controller.ApprovalResult{Allowed: true}
+				},
+				func(reason string) {
+					a.layout.HideApproval()
+					a.tapp.SetFocus(a.layout.Input.TextArea)
+					respCh <- controller.ApprovalResult{Allowed: false, DenyReason: reason}
+				},
+			)
+		}
+
+	case controller.EvSelectPrompt:
+		tool := ev.Tool
+		respCh := ev.SelectRespCh
+		msgs, status := sess.Snapshot()
+		a.layout.Chat.Render(msgs)
+		a.layout.Status.SetDefault(a.cfg.Model, status)
+
+		a.layout.SelectView.Show(tool.SelectQuestion, tool.SelectOptions)
+		_, _, chatW, _ := a.layout.Chat.GetInnerRect()
+		a.layout.ShowSelect(a.layout.SelectView.Height(chatW + 1))
+		a.tapp.SetFocus(a.layout.SelectView)
+		a.layout.SelectView.SetCallback(func(answer string) {
+			a.layout.HideSelect()
+			a.tapp.SetFocus(a.layout.Input.TextArea)
+			respCh <- answer
+		})
+	}
 }
 
 // handleGlobalKey intercepts application-level shortcuts.
 func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
-	// When the select view is active, intercept Escape (cancel) and Tab (prevent focus steal).
 	if a.layout.SelectView.IsVisible() {
 		switch event.Key() {
 		case tcell.KeyEscape:
@@ -334,8 +285,6 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 		}
 	}
 
-	// When the approval bar is active, Tab/Left/Right cycle Allow/Deny and Esc denies.
-	// SetFocus re-triggers Focus() delegation so denyField gets real focus when deny is active.
 	if a.layout.Approval.IsVisible() {
 		switch event.Key() {
 		case tcell.KeyTab, tcell.KeyBacktab:
@@ -352,7 +301,6 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 		}
 	}
 
-	// When the diff view is active, Tab/Left/Right cycle Allow/Deny and Esc denies.
 	if a.layout.DiffView.IsVisible() {
 		switch event.Key() {
 		case tcell.KeyTab, tcell.KeyBacktab:
@@ -369,8 +317,6 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 		}
 	}
 
-	// When palette is open, intercept navigation keys; text input falls through
-	// to the focused InputField (queryField or active form field).
 	if a.layout.Palette.IsVisible() {
 		p := a.layout.Palette
 		switch event.Key() {
@@ -431,7 +377,6 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 
 	case event.Key() == tcell.KeyCtrlC:
 		if a.layout.Chat.HasSelection() {
-			// Active drag selection in chat — copy it.
 			text := a.layout.Chat.SelectedText()
 			if text != "" {
 				if err := clipboard.WriteAll(text); err != nil {
@@ -439,49 +384,23 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 				}
 			}
 		} else if sel, _, _ := a.layout.Input.GetSelection(); sel != "" {
-			// Selection in input box — copy it.
 			if err := clipboard.WriteAll(sel); err != nil {
 				a.layout.Status.SetError(err.Error())
 			}
-		} else if a.sendCancel != nil {
-			// sendCancel may be stale after a completed turn; check session status
-			// as the authoritative signal (SetStatus(Idle) is called synchronously
-			// in EventDone before any QueueUpdateDraw).
-			isRunning := false
-			if sess, ok := a.manager.Active(); ok {
-				_, st := sess.Snapshot()
-				isRunning = st == session.StatusRunning
+		} else if a.ctrl.IsRunning() {
+			a.ctrl.Cancel()
+			if a.layout.Approval.IsVisible() {
+				a.layout.HideApproval()
 			}
-			if isRunning {
-				// Agent is actually running — interrupt it.
-				a.sendCancel()
-				a.sendCancel = nil
-				if a.layout.Approval.IsVisible() {
-					a.layout.HideApproval()
-				}
-				if a.layout.DiffView.IsVisible() {
-					a.layout.HideDiffView()
-				}
-				if a.layout.SelectView.IsVisible() {
-					a.layout.HideSelect()
-				}
-				a.tapp.SetFocus(a.layout.Input.TextArea)
-				if sess, ok := a.manager.Active(); ok {
-					sess.SetStatus(session.StatusIdle)
-					a.redrawActive()
-				}
-			} else {
-				// Stale cancel — clear it and fall through to hover copy.
-				a.sendCancel = nil
-				text := a.layout.Chat.HoveredContent()
-				if text != "" {
-					if err := clipboard.WriteAll(text); err != nil {
-						a.layout.Status.SetError(err.Error())
-					}
-				}
+			if a.layout.DiffView.IsVisible() {
+				a.layout.HideDiffView()
 			}
+			if a.layout.SelectView.IsVisible() {
+				a.layout.HideSelect()
+			}
+			a.tapp.SetFocus(a.layout.Input.TextArea)
+			a.redrawActive()
 		} else {
-			// Agent is idle, no selection — copy hovered message.
 			text := a.layout.Chat.HoveredContent()
 			if text != "" {
 				if err := clipboard.WriteAll(text); err != nil {
@@ -492,7 +411,6 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 		return nil
 
 	case event.Key() == tcell.KeyTab:
-		// Toggle focus between input and chat.
 		if a.tapp.GetFocus() == a.layout.Input.TextArea {
 			a.tapp.SetFocus(a.layout.Chat.TextView)
 		} else {
@@ -507,431 +425,38 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 	return event
 }
 
-// stopCountdown cancels any running retry countdown goroutine.
-func (a *App) stopCountdown() {
-	if a.statusCancel != nil {
-		a.statusCancel()
-		a.statusCancel = nil
-	}
-}
-
-// resetTurnState clears per-turn thinking/connecting state.
-// Called at the start of each new agent turn.
-func (a *App) resetTurnState() {
-	a.stopCountdown()
-	a.connectStart = time.Time{}
-	a.thinkingPending = false
-	a.thinkingFrozen = false
-}
-
-// startConnectingTimer ticks the session status every second until cancelled.
-// retryAttempt > 0 means a retry countdown is active; the status then reads
-// "connecting to apex model... (Xs, retrying N/M in Ys)".
-func (a *App) startConnectingTimer(sess *session.Session, retryAttempt, maxAttempts int, retryDelay time.Duration) {
-	a.stopCountdown()
-	ctx, cancel := context.WithCancel(a.appCtx)
-	a.statusCancel = cancel
-	start := a.connectStart
-	go func() {
-		retryRemaining := int(retryDelay.Seconds())
-		for {
-			elapsed := int(time.Since(start).Seconds())
-			var text string
-			if retryAttempt > 0 {
-				text = fmt.Sprintf(
-					"[%s]connecting to [%s]apex[-][%s] model... (%ds, retrying %d/%d in %ds)[-]",
-					TC.Muted, TC.ApexDim, TC.Muted, elapsed, retryAttempt+1, maxAttempts, retryRemaining)
-			} else {
-				text = fmt.Sprintf(
-					"[%s]connecting to [%s]apex[-][%s] model... (%ds)[-]",
-					TC.Muted, TC.ApexDim, TC.Muted, elapsed)
-			}
-			a.tapp.QueueUpdateDraw(func() {
-				if ctx.Err() != nil {
-					return
-				}
-				sess.UpdateStatus(text)
-				a.redrawActive()
-			})
-			select {
-			case <-time.After(time.Second):
-			case <-ctx.Done():
-				return
-			}
-			if retryAttempt > 0 && retryRemaining > 0 {
-				retryRemaining--
-			}
-		}
-	}()
-}
-
-// finalizeStatus sets the status message for the current turn to its final value.
-// If CoT was active, shows "apex thought for Xs". Otherwise clears it (hidden).
-// No-op after the first call per turn.
-func (a *App) finalizeStatus(sess *session.Session) {
-	if a.thinkingFrozen {
-		return
-	}
-	a.thinkingFrozen = true
-	a.stopCountdown()
-	if a.thinkingPending {
-		secs := int(time.Since(a.thinkingStart).Seconds())
-		var label string
-		if secs < 1 {
-			label = fmt.Sprintf("[%s]apex[-][%s] thought for a moment[-]", TC.ApexDim, TC.Muted)
-		} else {
-			label = fmt.Sprintf("[%s]apex[-][%s] thought for %ds[-]", TC.ApexDim, TC.Muted, secs)
-		}
-		sess.FinalizeThinkingStatus(label, secs)
-		a.thinkingPending = false
-	} else {
-		sess.UpdateStatus("") // no CoT — connecting status disappears with no artifact
-	}
-}
-
 // sendMessage sends user text to the active (or a new) session.
-// Called from the TextArea input capture → we are in the event loop, call directly.
+// Called from the TextArea input capture; runs on the tview event loop.
 func (a *App) sendMessage(text string) {
-	if a.sendCancel != nil {
-		a.sendCancel()
-	}
-
-	sess, ok := a.manager.Active()
-	if !ok {
-		sess = a.manager.New()
-		a.manager.SetActive(sess.ID)
-		if a.store != nil {
-			workDir, _ := os.Getwd()
-			a.store.CreateSession(sess.ID, workDir) //nolint:errcheck
-		}
-	}
-
-	a.resetTurnState()
-	sess.AddMessage(session.Message{Role: session.RoleUser, Content: text, SentLabel: agent.FormatSentLabel(time.Now())})
-	msgs, _ := sess.Snapshot()
-	a.layout.Chat.Render(msgs)
-
-	ctx, cancel := context.WithCancel(a.appCtx)
-	a.sendCancel = cancel
-
-	sess.SetStatus(session.StatusRunning)
+	a.ctrl.SendMessage(text)
+	// Immediate re-render from within the event loop; EvRedraw from the agent
+	// goroutine will handle subsequent updates.
+	a.redrawActive()
 	a.layout.Status.SetDefault(a.cfg.Model, session.StatusRunning)
-
-	ch := a.ag.Send(ctx, sess)
-	go a.handleAgentEvents(sess.ID, ch)
 }
 
-// compactConversation sends the full session history to the model with the compact
-// prompt and stores the resulting summary. Future agent calls see the summary instead
-// of the full history.
+// compactConversation runs the compact workflow via the controller.
 func (a *App) compactConversation() {
-	sess, ok := a.manager.Active()
-	if !ok {
+	if err := a.ctrl.Compact(); err != nil {
+		a.layout.Status.SetError(err.Error())
 		return
 	}
-
-	// Use session status rather than sendCancel: sendCancel is never cleared by
-	// handleAgentEvents on normal completion, so it would always appear set.
-	msgs, status := sess.Snapshot()
-	if status == session.StatusRunning {
-		a.layout.Status.SetError("agent or compact is already running")
-		return
-	}
-
-	// Require at least one complete round after the current compact point.
-	// For a first compact this means any round; for re-compact it must be a
-	// round that occurred since the last compact (no redundant re-compaction).
-	_, compactSeqs := sess.GetCompact()
-	compactAtSeq := -1
-	if len(compactSeqs) > 0 {
-		compactAtSeq = compactSeqs[len(compactSeqs)-1]
-	}
-	var hasUser, hasAssistant bool
-	for i, m := range msgs {
-		if i <= compactAtSeq {
-			continue // skip already-compacted messages
-		}
-		if m.Role == session.RoleUser {
-			hasUser = true
-		} else if m.Role == session.RoleAssistant && !m.Partial && m.Error == nil && m.Content != "" {
-			hasAssistant = true
-		}
-		if hasUser && hasAssistant {
-			break
-		}
-	}
-	if !hasUser || !hasAssistant {
-		a.layout.Status.SetError("need at least one complete exchange to compact")
-		return
-	}
-
-	ctx, cancel := context.WithCancel(a.appCtx)
-	a.sendCancel = cancel
-	sess.SetStatus(session.StatusRunning)
-	a.layout.Status.SetMessage("compacting conversation...")
-
-	go func() {
-		summary, usage, err := a.ag.Compact(ctx, sess)
-
-		a.tapp.QueueUpdateDraw(func() {
-			a.sendCancel = nil
-			// Capture ctx.Err() before cancel() so we can distinguish a real
-			// API error from a user-initiated cancellation.
-			wasInterrupted := ctx.Err() != nil
-			cancel()
-			sess.SetStatus(session.StatusIdle)
-
-			if err != nil {
-				if wasInterrupted {
-					a.layout.Status.SetDefault(a.cfg.Model, session.StatusIdle)
-				} else {
-					a.layout.Status.SetError("compact failed: " + err.Error())
-				}
-				return
-			}
-
-			currentMsgs, _ := sess.Snapshot()
-			atSeq := len(currentMsgs) - 1
-			sess.SetCompact(summary, atSeq)
-
-			if a.store != nil {
-				// Build comma-separated list of all compact DB seqs. DB seq equals the
-				// in-memory array index, but RoleStatus entries are not written to DB,
-				// so skip backwards to the nearest real row for each compact point.
-				_, allMemSeqs := sess.GetCompact()
-				seqParts := make([]string, len(allMemSeqs))
-				for j, memSeq := range allMemSeqs {
-					dbS := memSeq
-					for dbS >= 0 && currentMsgs[dbS].Role == session.RoleStatus {
-						dbS--
-					}
-					seqParts[j] = strconv.Itoa(dbS)
-				}
-				lastDBSeq, _ := strconv.Atoi(seqParts[len(seqParts)-1])
-				go a.store.UpdateSessionCompact(sess.ID, summary, int64(lastDBSeq), strings.Join(seqParts, ",")) //nolint:errcheck
-			}
-
-			// After compact, the effective context size is the summary (the output),
-			// not the full history that was sent. Use CompletionTokens as the new baseline.
-			a.lastPromptTokens[sess.ID] = usage.CompletionTokens
-			a.layout.Status.SetPromptTokens(usage.CompletionTokens)
-			cost := float64(usage.PromptTokens)*a.cfg.InputPrice/1_000_000 +
-				float64(usage.CompletionTokens)*a.cfg.OutputPrice/1_000_000
-			if cost > 0 {
-				a.sessionCosts[sess.ID] += cost
-				a.layout.Status.SetSessionCost(a.sessionCosts[sess.ID])
-			}
-			if a.store != nil {
-				// Always persist even when cost==0 so resume shows the compacted baseline.
-				go a.store.UpdateSessionUsage(sess.ID, a.sessionCosts[sess.ID], usage.CompletionTokens) //nolint:errcheck
-			}
-
-			// redrawActive sets the status bar to idle; call SetMessage after so
-			// the "compacted" notice is the last thing written to sb.left.
-			a.redrawActive()
-			a.layout.Status.SetMessage("conversation compacted")
-		})
-	}()
+	a.redrawActive()
 }
 
-// handleAgentEvents reads the event channel and updates the UI.
-// Runs in a goroutine — must use QueueUpdateDraw for all UI calls.
-func (a *App) handleAgentEvents(sessionID string, ch <-chan agent.Event) {
-	for ev := range ch {
-		isActive := a.manager.ActiveID() == sessionID
-		sess, ok := a.manager.Get(sessionID)
-		if !ok {
-			continue
-		}
-
-		switch ev.Type {
-		case agent.EventSelectPrompt:
-			respCh := ev.SelectRespCh
-			tool := ev.Tool
-			a.tapp.QueueUpdateDraw(func() {
-				msgs, status := sess.Snapshot()
-				a.layout.Chat.Render(msgs)
-				a.layout.Status.SetDefault(a.cfg.Model, status)
-
-				a.layout.SelectView.Show(tool.SelectQuestion, tool.SelectOptions)
-				_, _, chatW, _ := a.layout.Chat.GetInnerRect()
-				a.layout.ShowSelect(a.layout.SelectView.Height(chatW + 1))
-				a.tapp.SetFocus(a.layout.SelectView)
-				a.layout.SelectView.SetCallback(func(answer string) {
-					a.layout.HideSelect()
-					a.tapp.SetFocus(a.layout.Input.TextArea)
-					respCh <- answer
-				})
-			})
-
-		case agent.EventToolApproval:
-			respCh := ev.RespCh
-			tool := ev.Tool
-			a.tapp.QueueUpdateDraw(func() {
-				msgs, status := sess.Snapshot()
-				a.layout.Chat.Render(msgs)
-				a.layout.Status.SetDefault(a.cfg.Model, status)
-
-				if tool.DiffPatch != "" {
-					// Show the diff approval view for write_file / edit_file.
-					files := []DiffFileChange{{
-						Path:  tool.FilePath,
-						Lines: ParseUnifiedDiff(tool.DiffPatch),
-					}}
-					a.layout.DiffView.Show(tool.Name, tool.Reasoning, files)
-					a.layout.ShowDiffView()
-					a.tapp.SetFocus(a.layout.DiffView)
-					a.layout.DiffView.SetCallbacks(
-						func() {
-							a.layout.HideDiffView()
-							a.tapp.SetFocus(a.layout.Input.TextArea)
-							respCh <- agent.ApprovalResult{Allowed: true}
-						},
-						func(reason string) {
-							a.layout.HideDiffView()
-							a.tapp.SetFocus(a.layout.Input.TextArea)
-							respCh <- agent.ApprovalResult{Allowed: false, DenyReason: reason}
-						},
-					)
-				} else {
-					a.layout.Approval.Show(tool.Name, tool.Input, tool.Reasoning)
-					a.layout.ShowApproval()
-					a.tapp.SetFocus(a.layout.Approval)
-					a.layout.Approval.SetCallbacks(
-						func() {
-							a.layout.HideApproval()
-							a.tapp.SetFocus(a.layout.Input.TextArea)
-							respCh <- agent.ApprovalResult{Allowed: true}
-						},
-						func(reason string) {
-							a.layout.HideApproval()
-							a.tapp.SetFocus(a.layout.Input.TextArea)
-							respCh <- agent.ApprovalResult{Allowed: false, DenyReason: reason}
-						},
-					)
-				}
-			})
-
-		case agent.EventReasoningDelta:
-			if isActive {
-				a.tapp.QueueUpdateDraw(func() {
-					if a.thinkingFrozen {
-						return
-					}
-					if !a.thinkingPending {
-						a.thinkingPending = true
-						a.thinkingStart = time.Now()
-						a.stopCountdown() // cancel connecting timer; reasoning has started
-					}
-					secs := int(time.Since(a.thinkingStart).Seconds())
-					sess.UpdateStatus(fmt.Sprintf(
-						"[%s]apex[-][%s] is thinking... (%ds)[-]", TC.ApexDim, TC.Muted, secs))
-					a.redrawActive()
-				})
-			}
-
-		case agent.EventTextDelta:
-			if isActive {
-				a.tapp.QueueUpdateDraw(func() {
-					a.finalizeStatus(sess)
-					a.redrawActive()
-				})
-			}
-
-		case agent.EventConnecting:
-			attempt, maxAttempts, retryAfter, connErr := ev.Attempt, ev.MaxAttempts, ev.RetryAfter, ev.Err
-			if isActive {
-				a.tapp.QueueUpdateDraw(func() {
-					if attempt == 1 && retryAfter == 0 {
-						// Brand new turn — reset all per-turn state.
-						a.resetTurnState()
-						a.connectStart = time.Now()
-					}
-					if retryAfter > 0 {
-						// This attempt failed; surface the error and fold countdown into the timer.
-						if connErr != nil {
-							a.layout.Status.SetError(fmt.Sprintf("error: %s", connErr.Error()))
-						}
-						a.startConnectingTimer(sess, attempt, maxAttempts, retryAfter)
-					} else {
-						// A new attempt is starting; clear any error shown for the previous attempt.
-						if attempt > 1 {
-							a.layout.Status.SetDefault(a.cfg.Model, session.StatusRunning)
-						}
-						a.startConnectingTimer(sess, 0, 0, 0)
-					}
-				})
-			}
-
-		case agent.EventPreparingTool:
-			if isActive {
-				a.tapp.QueueUpdateDraw(func() {
-					a.finalizeStatus(sess)
-					a.redrawActive()
-				})
-			}
-
-		case agent.EventToolStart, agent.EventToolDone:
-			if isActive {
-				a.tapp.QueueUpdateDraw(func() {
-					a.redrawActive()
-				})
-			}
-
-		case agent.EventUsageUpdate:
-			pt := ev.PromptTokens
-			callCost := ev.CallCost
-			ct := ev.CompletionTokens
-			a.tapp.QueueUpdateDraw(func() {
-				if isActive {
-					a.layout.Status.SetPromptTokens(pt)
-				}
-				cost := callCost
-				if cost == 0 {
-					cost = float64(pt)*a.cfg.InputPrice/1_000_000 +
-						float64(ct)*a.cfg.OutputPrice/1_000_000
-				}
-				if cost > 0 {
-					a.sessionCosts[sessionID] += cost
-					if isActive {
-						a.layout.Status.SetSessionCost(a.sessionCosts[sessionID])
-					}
-				}
-				a.lastPromptTokens[sessionID] = pt
-			})
-
-		case agent.EventDone:
-			sess.SetStatus(session.StatusIdle)
-			go a.persistSessionMessages(sess)
-			if a.store != nil {
-				cost := a.sessionCosts[sessionID]
-				pt := a.lastPromptTokens[sessionID]
-				go a.store.UpdateSessionUsage(sessionID, cost, pt) //nolint:errcheck
-			}
-			if isActive {
-				a.tapp.QueueUpdateDraw(func() {
-					a.finalizeStatus(sess)
-					a.redrawActive()
-				})
-			}
-
-		case agent.EventError:
-			sess.SetStatus(session.StatusError)
-			errStr := "agent error"
-			if ev.Err != nil {
-				errStr = ev.Err.Error()
-			}
-			if isActive {
-				a.tapp.QueueUpdateDraw(func() {
-					a.stopCountdown()
-					sess.UpdateStatus("") // clear connecting/retrying message from chat
-					msgs, _ := sess.Snapshot()
-					a.layout.Chat.Render(msgs)
-					a.layout.Status.SetError(fmt.Sprintf("error: %s", errStr))
-				})
-			}
-		}
+// resumeSession loads and activates a session, then updates the status bar.
+func (a *App) resumeSession(id string) {
+	sess, info, err := a.ctrl.ResumeSession(id)
+	if err != nil {
+		return
 	}
+	_ = sess
+	a.layout.Status.SetSessionCost(info.TotalCost)
+	a.layout.Status.SetPromptTokens(info.PromptTokens)
+	if info.ContextWindow > 0 && a.cfg.ContextWindow == 0 {
+		a.layout.Status.SetContextWindow(info.ContextWindow)
+	}
+	a.redrawActive()
 }
 
 // setupPalette wires palette callbacks.
@@ -945,12 +470,7 @@ func (a *App) setupPalette() {
 		},
 		// onAddEndpoint
 		func(name, baseURL, apiKey string) {
-			a.cfg.Endpoints = append(a.cfg.Endpoints, config.Endpoint{
-				Name:    name,
-				BaseURL: baseURL,
-				APIKey:  apiKey,
-			})
-			if err := a.cfg.Save(); err != nil {
+			if err := a.ctrl.AddEndpoint(name, baseURL, apiKey); err != nil {
 				a.layout.Status.SetError("save failed: " + err.Error())
 			} else {
 				a.layout.Status.SetMessage(fmt.Sprintf("endpoint %q added", name))
@@ -958,14 +478,7 @@ func (a *App) setupPalette() {
 		},
 		// onDelEndpoint
 		func(name string) {
-			eps := a.cfg.Endpoints
-			for i, ep := range eps {
-				if ep.Name == name {
-					a.cfg.Endpoints = append(eps[:i], eps[i+1:]...)
-					break
-				}
-			}
-			if err := a.cfg.Save(); err != nil {
+			if err := a.ctrl.RemoveEndpoint(name); err != nil {
 				a.layout.Status.SetError("save failed: " + err.Error())
 			} else {
 				a.layout.Status.SetMessage(fmt.Sprintf("endpoint %q removed", name))
@@ -980,36 +493,9 @@ func (a *App) setupPalette() {
 			epName, model := parts[0], parts[1]
 			var cw int64
 			if len(parts) == 3 {
-				cw, _ = strconv.ParseInt(parts[2], 10, 64)
+				fmt.Sscanf(parts[2], "%d", &cw)
 			}
-			a.cfg.ActiveEndpointName = epName
-			a.cfg.Model = model
-			var ep config.Endpoint
-			for _, e := range a.cfg.Endpoints {
-				if e.Name == epName {
-					ep = e
-					break
-				}
-			}
-			a.ag = agent.New(ep.BaseURL, ep.APIKey, model)
-			// Reset stored prices when switching models.
-			a.cfg.ContextWindow = 0
-			a.cfg.InputPrice = 0
-			a.cfg.OutputPrice = 0
-			if cw > 0 {
-				a.cfg.ContextWindow = cw
-				a.layout.Status.SetContextWindow(cw)
-			}
-			// Always fetch models.dev in background to fill in prices (and context if missing).
-			go a.fetchModelDevInfoAsync(model)
-			if err := a.cfg.Save(); err != nil {
-				a.layout.Status.SetError("save failed: " + err.Error())
-			}
-			if a.store != nil {
-				if sess, ok := a.manager.Active(); ok {
-					go a.store.UpdateSessionPricing(sess.ID, a.cfg.ContextWindow, a.cfg.InputPrice, a.cfg.OutputPrice) //nolint:errcheck
-				}
-			}
+			a.ctrl.SwitchModel(epName, model, cw)
 			a.layout.Status.SetDefault(model, session.StatusIdle)
 		},
 		// onResumeSession
@@ -1029,11 +515,7 @@ func (a *App) setupPalette() {
 		},
 		// getSessions
 		func() []paletteSessionInfo {
-			if a.store == nil {
-				return nil
-			}
-			workDir, _ := os.Getwd()
-			rows, err := a.store.ListSessions(workDir)
+			rows, err := a.ctrl.ListSessions()
 			if err != nil {
 				return nil
 			}
@@ -1082,12 +564,10 @@ func (a *App) setupPalette() {
 			}
 		},
 	)
-
 }
 
 func (a *App) openPalette() {
 	p := a.layout.Palette
-	// Wire actions onto menuItems, then Open() picks them up via cp.items = cp.menuItems.
 	p.menuItems = topLevelItems()
 	p.menuItems[0].Action = func() { p.switchMode(paletteModeResumeSession) }
 	p.menuItems[1].Action = func() { p.Close(); a.compactConversation() }
@@ -1099,8 +579,7 @@ func (a *App) openPalette() {
 		go func() {
 			var items []PaletteItem
 			for _, ep := range a.cfg.Endpoints {
-				ag := agent.New(ep.BaseURL, ep.APIKey, "")
-				models, _ := ag.ListModels(a.appCtx)
+				models, _ := a.ctrl.ListModels(a.ctrl.Context(), ep)
 				for _, m := range models {
 					items = append(items, PaletteItem{
 						Label: m.ID,
@@ -1117,63 +596,15 @@ func (a *App) openPalette() {
 			})
 		}()
 	}
-	p.Open() // sets visible=true, cp.items=cp.menuItems, refilters
+	p.Open()
 	a.layout.ShowPalette()
 	a.tapp.SetFocus(p)
-}
-
-// fetchModelDevInfoAsync fetches context window and pricing for modelID from models.dev
-// in a background goroutine and updates config + status bar when found.
-func (a *App) fetchModelDevInfoAsync(modelID string) {
-	info := agent.FetchModelDevInfo(a.appCtx, modelID)
-	if info.ContextWindow <= 0 && info.InputPrice == 0 && info.OutputPrice == 0 {
-		return
-	}
-	a.tapp.QueueUpdateDraw(func() {
-		changed := false
-		if info.ContextWindow > 0 && a.cfg.ContextWindow != info.ContextWindow {
-			a.cfg.ContextWindow = info.ContextWindow
-			a.layout.Status.SetContextWindow(info.ContextWindow)
-			changed = true
-		}
-		if info.InputPrice > 0 && a.cfg.InputPrice != info.InputPrice {
-			a.cfg.InputPrice = info.InputPrice
-			changed = true
-		}
-		if info.OutputPrice > 0 && a.cfg.OutputPrice != info.OutputPrice {
-			a.cfg.OutputPrice = info.OutputPrice
-			changed = true
-		}
-		if changed {
-			a.cfg.Save() //nolint:errcheck
-			if a.store != nil {
-				if sess, ok := a.manager.Active(); ok {
-					go a.store.UpdateSessionPricing(sess.ID, a.cfg.ContextWindow, a.cfg.InputPrice, a.cfg.OutputPrice) //nolint:errcheck
-				}
-			}
-		}
-	})
-}
-
-// parseCompactSeqs parses a comma-separated string of compact DB seqs (e.g. "5,12,20").
-func parseCompactSeqs(s string) []int {
-	if s == "" {
-		return nil
-	}
-	parts := strings.Split(s, ",")
-	out := make([]int, 0, len(parts))
-	for _, p := range parts {
-		if n, err := strconv.Atoi(strings.TrimSpace(p)); err == nil {
-			out = append(out, n)
-		}
-	}
-	return out
 }
 
 // redrawActive refreshes the chat and status for the current session.
 // Must only be called from the tview event loop.
 func (a *App) redrawActive() {
-	sess, ok := a.manager.Active()
+	sess, ok := a.ctrl.ActiveSession()
 	if !ok {
 		return
 	}

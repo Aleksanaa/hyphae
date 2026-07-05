@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -412,5 +413,21 @@ func (s *Store) FinalizeToolCall(callID, result, status string, isError bool) er
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+// ParseCompactSeqs parses a comma-separated string of compact DB seqs (e.g. "5,12,20").
+func ParseCompactSeqs(s string) []int {
+	if s == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	out := make([]int, 0, len(parts))
+	for _, p := range parts {
+		n, err := strconv.Atoi(strings.TrimSpace(p))
+		if err == nil {
+			out = append(out, n)
+		}
+	}
+	return out
+}
 
 func now() int64 { return time.Now().UnixMilli() }

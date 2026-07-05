@@ -311,6 +311,11 @@ func NewManager(workDir string) *Manager {
 	}
 }
 
+// WorkDir returns the working directory this manager was created with.
+func (m *Manager) WorkDir() string {
+	return m.workDir
+}
+
 // New creates a fresh session and adds it to the front.
 func (m *Manager) New() *Session {
 	id := newID()
