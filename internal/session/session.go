@@ -64,7 +64,8 @@ type Message struct {
 	ThinkingExpanded  bool        // UI: whether the thoughts box is expanded (RoleStatus only)
 	ToolGroupExpanded bool        // UI: whether the tool-call group is shown as expanded param boxes
 	ExpandedBox       bool        // UI: synthetic renderedMsgs entry rendered as an expanded dotted box
-	BoxTitle          string      // tview-tagged label for ExpandedBox (e.g. "[c]apex (thoughts)[-]")
+	BoxTitle          string      // tview-tagged label for ExpandedBox or FullWidth box
+	FullWidth         bool        // UI: force box to terminal width with centered title (requires BoxTitle)
 	ContentTagged     bool        // UI: Content already contains tview tags; skip Escape in rendering
 	ToolUses          []ToolUse   // assistant turns only
 	ToolResult        *ToolResult // tool turns only
@@ -93,13 +94,15 @@ func (s *Session) ToggleThinkingExpanded(idx int) {
 
 // Session holds the full local state for one conversation.
 type Session struct {
-	mu           sync.RWMutex
-	ID           string
-	Title        string
-	Status       Status
-	WorkDir      string
-	msgs         []Message
-	statusMsgIdx int // index of current turn's RoleStatus message; -1 if none
+	mu               sync.RWMutex
+	ID               string
+	Title            string
+	Status           Status
+	WorkDir          string
+	msgs             []Message
+	statusMsgIdx     int    // index of current turn's RoleStatus message; -1 if none
+	compactedSummary string // latest compact summary; empty = no compact
+	compactSeqs      []int  // all compact atSeqs in ascending order; nil = no compact
 }
 
 // UpdateStatus replaces the content of the current turn's status message.
@@ -131,6 +134,41 @@ func NewSession(id, workDir string) *Session {
 		Status:       StatusIdle,
 		statusMsgIdx: -1,
 	}
+}
+
+// SetCompact appends a new compact point. summary is the new cumulative summary
+// covering everything up to and including atSeq.
+func (s *Session) SetCompact(summary string, atSeq int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.compactedSummary = summary
+	s.compactSeqs = append(s.compactSeqs, atSeq)
+}
+
+// LoadCompact restores compact state from persistent storage (replaces, does not append).
+func (s *Session) LoadCompact(summary string, seqs []int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.compactedSummary = summary
+	if len(seqs) > 0 {
+		s.compactSeqs = make([]int, len(seqs))
+		copy(s.compactSeqs, seqs)
+	} else {
+		s.compactSeqs = nil
+	}
+}
+
+// GetCompact returns the latest compact summary and all compact point indices.
+// summary is empty and seqs is nil when no compact has been performed.
+func (s *Session) GetCompact() (summary string, seqs []int) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if len(s.compactSeqs) == 0 {
+		return s.compactedSummary, nil
+	}
+	out := make([]int, len(s.compactSeqs))
+	copy(out, s.compactSeqs)
+	return s.compactedSummary, out
 }
 
 // AddMessage appends a message and returns its index.

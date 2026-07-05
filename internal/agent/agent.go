@@ -396,56 +396,20 @@ func (a *Agent) loop(ctx context.Context, sess *session.Session, ch chan<- Event
 func buildMessages(sess *session.Session) []openai.ChatCompletionMessageParamUnion {
 	msgs := []openai.ChatCompletionMessageParamUnion{openai.SystemMessage(systemPrompt)}
 
-	history, _ := sess.Snapshot()
-	for _, m := range history {
-		if m.Partial || m.Error != nil {
-			continue
-		}
-		switch m.Role {
-		case session.RoleStatus:
-			// UI-only; never sent to the model
-
-		case session.RoleUser:
-			content := m.Content
-			if m.SentLabel != "" {
-				content += "\n\n" + m.SentLabel
-			}
-			msgs = append(msgs, openai.UserMessage(content))
-
-		case session.RoleAssistant:
-			var p openai.ChatCompletionAssistantMessageParam
-			if m.Content != "" {
-				p.Content.OfString = openai.String(m.Content)
-			}
-			for _, tu := range m.ToolUses {
-				p.ToolCalls = append(p.ToolCalls, openai.ChatCompletionMessageToolCallUnionParam{
-					OfFunction: &openai.ChatCompletionMessageFunctionToolCallParam{
-						ID: tu.ID,
-						Function: openai.ChatCompletionMessageFunctionToolCallFunctionParam{
-							Name:      tu.Name,
-							Arguments: tu.Input,
-						},
-					},
-				})
-			}
-			// Skip assistant turns with neither content nor tool calls — some providers
-			// (e.g. deepseek) only populate CoT and leave content empty; sending an
-			// empty assistant message causes an "invalid request" error.
-			if m.Content == "" && len(m.ToolUses) == 0 {
-				continue
-			}
-			msgs = append(msgs, openai.ChatCompletionMessageParamUnion{OfAssistant: &p})
-
-		case session.RoleTool:
-			if m.ToolResult != nil {
-				content := m.ToolResult.Content
-				if m.ToolResult.IsError {
-					content = fmt.Sprintf("[error] %s", content)
-				}
-				msgs = append(msgs, openai.ToolMessage(content, m.ToolResult.ID))
-			}
-		}
+	summary, compactSeqs := sess.GetCompact()
+	startIdx := 0
+	if len(compactSeqs) > 0 {
+		startIdx = compactSeqs[len(compactSeqs)-1] + 1
 	}
+	if summary != "" {
+		msgs = append(msgs, openai.UserMessage("[Previous conversation summary]\n\n"+summary))
+		var ap openai.ChatCompletionAssistantMessageParam
+		ap.Content.OfString = openai.String("Understood. I'll continue from where we left off.")
+		msgs = append(msgs, openai.ChatCompletionMessageParamUnion{OfAssistant: &ap})
+	}
+
+	history, _ := sess.Snapshot()
+	msgs, _ = appendHistory(msgs, history, startIdx)
 	return msgs
 }
 

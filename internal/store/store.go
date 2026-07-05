@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -58,6 +59,9 @@ CREATE TABLE sessions (
     input_price       REAL    NOT NULL DEFAULT 0,
     output_price      REAL    NOT NULL DEFAULT 0,
     last_prompt_tokens INTEGER NOT NULL DEFAULT 0,
+    compacted_summary TEXT    NOT NULL DEFAULT '',
+    compact_at_seq    INTEGER NOT NULL DEFAULT -1,
+    compact_seqs      TEXT    NOT NULL DEFAULT '',
     created_at     INTEGER NOT NULL,
     updated_at     INTEGER NOT NULL
 );
@@ -93,12 +97,28 @@ CREATE TABLE tool_calls (
 // ── Migrations ────────────────────────────────────────────────────────────────
 
 type migration struct {
-	id  int
-	sql string
+	id   int
+	name string
+	sql  string
 }
 
+// sqlAddCompactCols adds the compact columns that were introduced in the
+// initial schema but are missing from databases created before that change.
+// SQLite does not support IF NOT EXISTS on ALTER TABLE, so we catch the
+// duplicate-column error and treat it as success.
+const sqlAddCompactCols = `
+ALTER TABLE sessions ADD COLUMN compacted_summary TEXT NOT NULL DEFAULT '';
+ALTER TABLE sessions ADD COLUMN compact_at_seq    INTEGER NOT NULL DEFAULT -1;
+`
+
+const sqlAddCompactSeqs = `
+ALTER TABLE sessions ADD COLUMN compact_seqs TEXT NOT NULL DEFAULT '';
+`
+
 var migrations = []migration{
-	{1, sqlInitial},
+	{1, "initial", sqlInitial},
+	{2, "compact_session_cols", sqlAddCompactCols},
+	{3, "compact_seqs_col", sqlAddCompactSeqs},
 }
 
 func (s *Store) migrate() error {
@@ -120,12 +140,29 @@ func (s *Store) migrate() error {
 		if err != nil {
 			return err
 		}
-		if _, err := tx.Exec(m.sql); err != nil {
+		if _, execErr := tx.Exec(m.sql); execErr != nil {
 			tx.Rollback() //nolint:errcheck
-			return err
+			// Columns already exist (DB was created with the updated sqlInitial).
+			// Record the migration as applied without re-running the SQL.
+			if !strings.Contains(execErr.Error(), "duplicate column name") {
+				return execErr
+			}
+			tx2, err := s.db.Begin()
+			if err != nil {
+				return err
+			}
+			if _, err := tx2.Exec(`INSERT INTO migrations (id, name, applied_at) VALUES (?, ?, ?)`,
+				m.id, m.name, now()); err != nil {
+				tx2.Rollback() //nolint:errcheck
+				return err
+			}
+			if err := tx2.Commit(); err != nil {
+				return err
+			}
+			continue
 		}
 		if _, err := tx.Exec(`INSERT INTO migrations (id, name, applied_at) VALUES (?, ?, ?)`,
-			m.id, "initial", now()); err != nil {
+			m.id, m.name, now()); err != nil {
 			tx.Rollback() //nolint:errcheck
 			return err
 		}
@@ -148,6 +185,9 @@ type SessionRow struct {
 	InputPrice       float64
 	OutputPrice      float64
 	LastPromptTokens int64
+	CompactedSummary string
+	CompactAtSeq     int64
+	CompactSeqs      string // comma-separated list of all compact atSeqs
 	CreatedAt        int64
 	UpdatedAt        int64
 }
@@ -200,11 +240,21 @@ func (s *Store) GetSession(id string) (SessionRow, error) {
 	var r SessionRow
 	var title sql.NullString
 	err := s.db.QueryRow(
-		`SELECT id, work_dir, title, total_cost, context_window, input_price, output_price, last_prompt_tokens, created_at, updated_at
+		`SELECT id, work_dir, title, total_cost, context_window, input_price, output_price, last_prompt_tokens, compacted_summary, compact_at_seq, compact_seqs, created_at, updated_at
 		   FROM sessions WHERE id = ?`, id,
-	).Scan(&r.ID, &r.WorkDir, &title, &r.TotalCost, &r.ContextWindow, &r.InputPrice, &r.OutputPrice, &r.LastPromptTokens, &r.CreatedAt, &r.UpdatedAt)
+	).Scan(&r.ID, &r.WorkDir, &title, &r.TotalCost, &r.ContextWindow, &r.InputPrice, &r.OutputPrice, &r.LastPromptTokens, &r.CompactedSummary, &r.CompactAtSeq, &r.CompactSeqs, &r.CreatedAt, &r.UpdatedAt)
 	r.Title = title.String
 	return r, err
+}
+
+// UpdateSessionCompact stores the compact summary, latest compact point, and all compact points.
+// allSeqs is a comma-separated list of all compact atSeqs (e.g. "5,12,20").
+func (s *Store) UpdateSessionCompact(id, summary string, atSeq int64, allSeqs string) error {
+	_, err := s.db.Exec(
+		`UPDATE sessions SET compacted_summary = ?, compact_at_seq = ?, compact_seqs = ?, updated_at = ? WHERE id = ?`,
+		summary, atSeq, allSeqs, now(), id,
+	)
+	return err
 }
 
 // UpdateSessionUsage persists the cumulative cost and last prompt token count for a session.

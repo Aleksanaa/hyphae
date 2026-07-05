@@ -58,6 +58,9 @@ func stripTags(s string) string {
 	return out.String()
 }
 
+// toolIdxCompact is the sentinel toolIdx value for compact divider entries.
+const toolIdxCompact = -3
+
 // ChatView displays the conversation as individually bordered message boxes.
 type ChatView struct {
 	*tview.TextView
@@ -68,6 +71,11 @@ type ChatView struct {
 	selectedIdx     int             // box highlighted by last click; -1 = none
 	lastSelectedIdx int             // selectedIdx at last buildText call; -2 = never built
 	entries         []renderedEntry // one per displayed item (box or flat line)
+
+	// compact divider state (toolIdx == toolIdxCompact in entries marks a divider; sessIdx = divider index)
+	compactSummary  string
+	compactSeqs     []int        // all compact atSeqs in order; nil = no compact
+	compactExpanded map[int]bool // divider index → expanded state
 
 	// callbacks for double-clicking expandable items
 	onStatusExpand    func(sessionIdx int)
@@ -111,7 +119,22 @@ func NewChatView() *ChatView {
 		anchorBox:       -1,
 		selCursorBox:    -1,
 		mdCache:         make(map[string][]mdBlock),
+		compactExpanded: make(map[int]bool),
 	}
+}
+
+// SetCompact stores the compact state for rendering. Carries over expansion
+// state for unchanged dividers; new dividers start collapsed.
+func (cv *ChatView) SetCompact(summary string, seqs []int) {
+	cv.compactSummary = summary
+	newExpanded := make(map[int]bool, len(seqs))
+	for i, s := range seqs {
+		if i < len(cv.compactSeqs) && cv.compactSeqs[i] == s {
+			newExpanded[i] = cv.compactExpanded[i]
+		}
+	}
+	cv.compactSeqs = append([]int(nil), seqs...)
+	cv.compactExpanded = newExpanded
 }
 
 // SetStatusExpandCallback registers a function called when the user double-clicks
@@ -391,6 +414,15 @@ func (cv *ChatView) handleDoubleClick(docLine int) {
 		return
 	}
 	e := cv.entries[idx]
+	if e.toolIdx == toolIdxCompact {
+		divIdx := e.sessIdx
+		// Only the last divider holds a valid summary; old ones are position-only markers.
+		if divIdx == len(cv.compactSeqs)-1 {
+			cv.compactExpanded[divIdx] = !cv.compactExpanded[divIdx]
+			cv.buildText(cv.lastWidth)
+		}
+		return
+	}
 	if (e.toolIdx >= 0 || e.toolIdx == -2) && cv.onToolGroupExpand != nil {
 		cv.onToolGroupExpand(e.sessIdx)
 	} else if ((e.msg.Role == session.RoleStatus && e.msg.Content != "") || e.msg.ExpandedBox) && cv.onStatusExpand != nil {
@@ -550,7 +582,36 @@ func (cv *ChatView) buildText(width int) {
 		addEntry(entry, sessIdx, toolIdx, lp, bw, strings.Count(b.String()[prev:], "\n"))
 	}
 
+	lastDivider := len(cv.compactSeqs) - 1
+	renderCompactDividerAt := func(divIdx int) {
+		sep()
+		if divIdx == lastDivider && cv.compactExpanded[divIdx] && cv.compactSummary != "" {
+			renderBox(session.Message{
+				Role:      session.RoleAssistant,
+				BoxTitle:  fmt.Sprintf("[%s]compacted conversation[-]", TC.Muted),
+				Content:   cv.compactSummary,
+				FullWidth: true,
+			}, divIdx, toolIdxCompact)
+		} else {
+			label := "compacted conversation"
+			labelW := len(label)            // ASCII only
+			dashTotal := width - labelW - 2 // spaces around label
+			leftN := max(1, dashTotal/2)
+			rightN := max(1, dashTotal-leftN)
+			line := fmt.Sprintf("[%s]%s %s %s[-]", TC.Muted,
+				strings.Repeat("─", leftN), label, strings.Repeat("─", rightN))
+			b.WriteString(line)
+			b.WriteString("\n")
+			addEntry(session.Message{Role: session.RoleStatus}, divIdx, toolIdxCompact, 0, width, 1)
+		}
+	}
+
+	nextDivider := 0
 	for mi := 0; mi < mn; mi++ {
+		for nextDivider < len(cv.compactSeqs) && mi > cv.compactSeqs[nextDivider] {
+			renderCompactDividerAt(nextDivider)
+			nextDivider++
+		}
 		msg := msgs[mi]
 		if msg.Role == session.RoleTool {
 			continue
@@ -687,6 +748,12 @@ func (cv *ChatView) buildText(width int) {
 		}
 	}
 
+	// Flush any remaining dividers (e.g. compact just happened with no new messages yet).
+	for nextDivider < len(cv.compactSeqs) {
+		renderCompactDividerAt(nextDivider)
+		nextDivider++
+	}
+
 	cv.entries = entries
 	cv.buildCopyMasks(entries, maxW)
 
@@ -741,7 +808,11 @@ func (cv *ChatView) buildCopyMasks(entries []renderedEntry, maxW int) {
 				if blocks == nil {
 					break
 				}
-				rls := renderBlocksAnnotated(blocks, cw)
+				contentCW := cw
+				if msg.FullWidth {
+					contentCW = (e.boxRight - e.boxLeft) - 4
+				}
+				rls := renderBlocksAnnotated(blocks, contentCW)
 				actualW := 0
 				for _, rl := range rls {
 					if n := len(rl.copyMask); n > actualW {
@@ -751,6 +822,8 @@ func (cv *ChatView) buildCopyMasks(entries []renderedEntry, maxW int) {
 				minBW := 9
 				if msg.Partial {
 					minBW = 11
+				} else if msg.BoxTitle != "" {
+					minBW = tview.TaggedStringWidth(msg.BoxTitle) + 5
 				}
 				boxCW := max(minBW-4, actualW)
 				for j, rl := range rls {
@@ -787,7 +860,8 @@ func maxTaggedWidth(lines []string) int {
 
 // renderMessageBox writes a compact bordered box into b and returns leftPad and boxW.
 // Box anatomy:  ┌─ label ───┐ / │ content │ / └───────────┘
-// ExpandedBox uses dotted borders (╌/╎) and BoxTitle; normal uses solid and "apex".
+// ExpandedBox uses dotted borders (╌/╎) with BoxTitle; BoxTitle alone uses solid borders
+// with a centered title; otherwise solid borders with the "apex" label.
 func (cv *ChatView) renderMessageBox(b *strings.Builder, msg session.Message, width, maxW int, isHovered bool) (leftPad, boxW int) {
 	bc := Theme.Border.CSS()
 	if isHovered {
@@ -843,12 +917,16 @@ func (cv *ChatView) renderMessageBox(b *strings.Builder, msg session.Message, wi
 			}
 			lines = tview.WordWrap(content, maxContentW)
 		} else {
+			contentW := maxContentW
+			if msg.FullWidth {
+				contentW = width - 4
+			}
 			blocks, ok := cv.mdCache[msg.Content]
 			if !ok {
 				blocks = parseMarkdown(msg.Content)
 				cv.mdCache[msg.Content] = blocks
 			}
-			lines = renderBlocks(blocks, maxContentW)
+			lines = renderBlocks(blocks, contentW)
 		}
 
 		partialFrag, extraW := "", 0
@@ -857,12 +935,16 @@ func (cv *ChatView) renderMessageBox(b *strings.Builder, msg session.Message, wi
 			extraW = 2
 		}
 		minBoxW := 9
-		if msg.ExpandedBox {
+		if msg.BoxTitle != "" {
 			minBoxW = tview.TaggedStringWidth(msg.BoxTitle) + 5
 		} else if msg.Partial {
 			minBoxW = 11
 		}
-		boxW = max(minBoxW+extraW, maxTaggedWidth(lines)+4)
+		if msg.FullWidth {
+			boxW = width
+		} else {
+			boxW = max(minBoxW+extraW, maxTaggedWidth(lines)+4)
+		}
 		boxLine := mkLine(boxW - 4)
 
 		if msg.ExpandedBox {
@@ -871,6 +953,13 @@ func (cv *ChatView) renderMessageBox(b *strings.Builder, msg session.Message, wi
 			if len(lines) == 0 {
 				fmt.Fprintf(b, "%s\n", boxLine("", 0))
 			}
+		} else if msg.BoxTitle != "" {
+			titleTagW := tview.TaggedStringWidth(msg.BoxTitle)
+			inner := boxW - titleTagW - 4 // total dash space
+			leftF := inner / 2
+			rightF := inner - leftF
+			fmt.Fprintf(b, "[%s]┌%s %s [%s]%s┐[-]\n",
+				bc, fill(leftF), msg.BoxTitle, bc, fill(rightF))
 		} else {
 			fmt.Fprintf(b, "[%s]┌─ [%s]apex [%s]%s[%s]%s┐[-]\n",
 				bc, TC.ApexColor, bc, partialFrag, bc, fill(boxW-9-extraW))
@@ -1101,7 +1190,8 @@ func (cv *ChatView) selectedTextWhole() string {
 	multi := hi > lo
 	var parts []string
 	for i := lo; i <= hi; i++ {
-		msg := cv.entries[i].msg
+		e := cv.entries[i]
+		msg := e.msg
 		var content string
 		switch msg.Role {
 		case session.RoleUser:
@@ -1113,12 +1203,17 @@ func (cv *ChatView) selectedTextWhole() string {
 				content = msg.Content
 			}
 		}
+		if content == "" {
+			continue
+		}
 		if multi {
 			role := "assistant"
 			if msg.Role == session.RoleUser {
 				role = "you"
 			} else if msg.ExpandedBox {
 				role = "thoughts"
+			} else if e.toolIdx == toolIdxCompact {
+				role = "compact"
 			}
 			parts = append(parts, role+":\n"+content)
 		} else {
@@ -1148,7 +1243,11 @@ func computeMsgContent(msg session.Message, width, maxW int) ([]string, int) {
 		case msg.Error != nil:
 			plain = msg.Error.Error()
 		default:
-			raw := renderMarkdown(msg.Content, cw)
+			contentCW := cw
+			if msg.FullWidth {
+				contentCW = width - 4
+			}
+			raw := renderMarkdown(msg.Content, contentCW)
 			out := make([]string, len(raw))
 			for i, l := range raw {
 				out[i] = stripTags(l)

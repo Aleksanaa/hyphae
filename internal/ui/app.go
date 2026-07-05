@@ -217,6 +217,11 @@ func (a *App) resumeSession(id string) {
 	workDir, _ := os.Getwd()
 	sess := session.NewSession(id, workDir)
 
+	// seqToMemIdx maps DB seq → post-reload in-memory slice index.
+	// DB seq equals the original in-memory index (including RoleStatus gaps), but
+	// on reload RoleStatus rows are absent and synthetic ones may be inserted for
+	// thinking assistants, shifting subsequent indices.
+	seqToMemIdx := make(map[int]int, len(loaded))
 	msgs := make([]session.Message, 0, len(loaded))
 	for _, lm := range loaded {
 		// Synthesize a RoleStatus before assistant messages that have thinking
@@ -235,6 +240,7 @@ func (a *App) resumeSession(id string) {
 				ThinkingSecs:  lm.ThinkingSecs,
 			})
 		}
+		seqToMemIdx[lm.Seq] = len(msgs)
 		msg := session.Message{
 			Role:      session.Role(lm.Role),
 			Content:   lm.Content,
@@ -283,7 +289,7 @@ func (a *App) resumeSession(id string) {
 	a.manager.AddExisting(sess)
 	a.manager.SetActive(id)
 
-	// Restore cost and pricing from DB.
+	// Restore cost, pricing, and compact state from DB.
 	if a.store != nil {
 		if row, err := a.store.GetSession(id); err == nil {
 			a.sessionCosts[id] = row.TotalCost
@@ -293,6 +299,22 @@ func (a *App) resumeSession(id string) {
 			}
 			a.lastPromptTokens[id] = row.LastPromptTokens
 			a.layout.Status.SetPromptTokens(row.LastPromptTokens)
+			if row.CompactedSummary != "" {
+				// Parse all compact DB seqs; fall back to compact_at_seq for old rows.
+				dbSeqs := parseCompactSeqs(row.CompactSeqs)
+				if len(dbSeqs) == 0 && row.CompactAtSeq >= 0 {
+					dbSeqs = []int{int(row.CompactAtSeq)}
+				}
+				memSeqs := make([]int, len(dbSeqs))
+				for j, dbS := range dbSeqs {
+					idx, ok := seqToMemIdx[dbS]
+					if !ok {
+						idx = len(msgs) - 1
+					}
+					memSeqs[j] = idx
+				}
+				sess.LoadCompact(row.CompactedSummary, memSeqs)
+			}
 		}
 	}
 
@@ -422,22 +444,41 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 				a.layout.Status.SetError(err.Error())
 			}
 		} else if a.sendCancel != nil {
-			// Agent is running — interrupt it.
-			a.sendCancel()
-			a.sendCancel = nil
-			if a.layout.Approval.IsVisible() {
-				a.layout.HideApproval()
-			}
-			if a.layout.DiffView.IsVisible() {
-				a.layout.HideDiffView()
-			}
-			if a.layout.SelectView.IsVisible() {
-				a.layout.HideSelect()
-			}
-			a.tapp.SetFocus(a.layout.Input.TextArea)
+			// sendCancel may be stale after a completed turn; check session status
+			// as the authoritative signal (SetStatus(Idle) is called synchronously
+			// in EventDone before any QueueUpdateDraw).
+			isRunning := false
 			if sess, ok := a.manager.Active(); ok {
-				sess.SetStatus(session.StatusIdle)
-				a.redrawActive()
+				_, st := sess.Snapshot()
+				isRunning = st == session.StatusRunning
+			}
+			if isRunning {
+				// Agent is actually running — interrupt it.
+				a.sendCancel()
+				a.sendCancel = nil
+				if a.layout.Approval.IsVisible() {
+					a.layout.HideApproval()
+				}
+				if a.layout.DiffView.IsVisible() {
+					a.layout.HideDiffView()
+				}
+				if a.layout.SelectView.IsVisible() {
+					a.layout.HideSelect()
+				}
+				a.tapp.SetFocus(a.layout.Input.TextArea)
+				if sess, ok := a.manager.Active(); ok {
+					sess.SetStatus(session.StatusIdle)
+					a.redrawActive()
+				}
+			} else {
+				// Stale cancel — clear it and fall through to hover copy.
+				a.sendCancel = nil
+				text := a.layout.Chat.HoveredContent()
+				if text != "" {
+					if err := clipboard.WriteAll(text); err != nil {
+						a.layout.Status.SetError(err.Error())
+					}
+				}
 			}
 		} else {
 			// Agent is idle, no selection — copy hovered message.
@@ -578,6 +619,119 @@ func (a *App) sendMessage(text string) {
 
 	ch := a.ag.Send(ctx, sess)
 	go a.handleAgentEvents(sess.ID, ch)
+}
+
+// compactConversation sends the full session history to the model with the compact
+// prompt and stores the resulting summary. Future agent calls see the summary instead
+// of the full history.
+func (a *App) compactConversation() {
+	sess, ok := a.manager.Active()
+	if !ok {
+		return
+	}
+
+	// Use session status rather than sendCancel: sendCancel is never cleared by
+	// handleAgentEvents on normal completion, so it would always appear set.
+	msgs, status := sess.Snapshot()
+	if status == session.StatusRunning {
+		a.layout.Status.SetError("agent or compact is already running")
+		return
+	}
+
+	// Require at least one complete round after the current compact point.
+	// For a first compact this means any round; for re-compact it must be a
+	// round that occurred since the last compact (no redundant re-compaction).
+	_, compactSeqs := sess.GetCompact()
+	compactAtSeq := -1
+	if len(compactSeqs) > 0 {
+		compactAtSeq = compactSeqs[len(compactSeqs)-1]
+	}
+	var hasUser, hasAssistant bool
+	for i, m := range msgs {
+		if i <= compactAtSeq {
+			continue // skip already-compacted messages
+		}
+		if m.Role == session.RoleUser {
+			hasUser = true
+		} else if m.Role == session.RoleAssistant && !m.Partial && m.Error == nil && m.Content != "" {
+			hasAssistant = true
+		}
+		if hasUser && hasAssistant {
+			break
+		}
+	}
+	if !hasUser || !hasAssistant {
+		a.layout.Status.SetError("need at least one complete exchange to compact")
+		return
+	}
+
+	ctx, cancel := context.WithCancel(a.appCtx)
+	a.sendCancel = cancel
+	sess.SetStatus(session.StatusRunning)
+	a.layout.Status.SetMessage("compacting conversation...")
+
+	go func() {
+		summary, usage, err := a.ag.Compact(ctx, sess)
+
+		a.tapp.QueueUpdateDraw(func() {
+			a.sendCancel = nil
+			// Capture ctx.Err() before cancel() so we can distinguish a real
+			// API error from a user-initiated cancellation.
+			wasInterrupted := ctx.Err() != nil
+			cancel()
+			sess.SetStatus(session.StatusIdle)
+
+			if err != nil {
+				if wasInterrupted {
+					a.layout.Status.SetDefault(a.cfg.Model, session.StatusIdle)
+				} else {
+					a.layout.Status.SetError("compact failed: " + err.Error())
+				}
+				return
+			}
+
+			currentMsgs, _ := sess.Snapshot()
+			atSeq := len(currentMsgs) - 1
+			sess.SetCompact(summary, atSeq)
+
+			if a.store != nil {
+				// Build comma-separated list of all compact DB seqs. DB seq equals the
+				// in-memory array index, but RoleStatus entries are not written to DB,
+				// so skip backwards to the nearest real row for each compact point.
+				_, allMemSeqs := sess.GetCompact()
+				seqParts := make([]string, len(allMemSeqs))
+				for j, memSeq := range allMemSeqs {
+					dbS := memSeq
+					for dbS >= 0 && currentMsgs[dbS].Role == session.RoleStatus {
+						dbS--
+					}
+					seqParts[j] = strconv.Itoa(dbS)
+				}
+				lastDBSeq, _ := strconv.Atoi(seqParts[len(seqParts)-1])
+				go a.store.UpdateSessionCompact(sess.ID, summary, int64(lastDBSeq), strings.Join(seqParts, ",")) //nolint:errcheck
+			}
+
+			// After compact, the effective context size is the summary (the output),
+			// not the full history that was sent. Use CompletionTokens as the new baseline.
+			a.lastPromptTokens[sess.ID] = usage.CompletionTokens
+			a.layout.Status.SetPromptTokens(usage.CompletionTokens)
+			cost := float64(usage.PromptTokens)*a.cfg.InputPrice/1_000_000 +
+				float64(usage.CompletionTokens)*a.cfg.OutputPrice/1_000_000
+			if cost > 0 {
+				a.sessionCosts[sess.ID] += cost
+				a.layout.Status.SetSessionCost(a.sessionCosts[sess.ID])
+			}
+			if a.store != nil {
+				// Always persist even when cost==0 so resume shows the compacted baseline.
+				go a.store.UpdateSessionUsage(sess.ID, a.sessionCosts[sess.ID], usage.CompletionTokens) //nolint:errcheck
+			}
+
+			// redrawActive sets the status bar to idle; call SetMessage after so
+			// the "compacted" notice is the last thing written to sb.left.
+			a.redrawActive()
+			a.layout.Status.SetMessage("conversation compacted")
+		})
+	}()
 }
 
 // handleAgentEvents reads the event channel and updates the UI.
@@ -936,10 +1090,11 @@ func (a *App) openPalette() {
 	// Wire actions onto menuItems, then Open() picks them up via cp.items = cp.menuItems.
 	p.menuItems = topLevelItems()
 	p.menuItems[0].Action = func() { p.switchMode(paletteModeResumeSession) }
-	p.menuItems[1].Action = func() { p.switchMode(paletteModeAddEndpoint) }
-	p.menuItems[2].Action = func() { p.switchMode(paletteModeDelEndpoint) }
-	p.menuItems[4].Action = func() { p.switchMode(paletteModeHotkeys) }
-	p.menuItems[3].Action = func() {
+	p.menuItems[1].Action = func() { p.Close(); a.compactConversation() }
+	p.menuItems[2].Action = func() { p.switchMode(paletteModeAddEndpoint) }
+	p.menuItems[3].Action = func() { p.switchMode(paletteModeDelEndpoint) }
+	p.menuItems[5].Action = func() { p.switchMode(paletteModeHotkeys) }
+	p.menuItems[4].Action = func() {
 		p.switchMode(paletteModeSelectModel)
 		go func() {
 			var items []PaletteItem
@@ -1000,6 +1155,21 @@ func (a *App) fetchModelDevInfoAsync(modelID string) {
 	})
 }
 
+// parseCompactSeqs parses a comma-separated string of compact DB seqs (e.g. "5,12,20").
+func parseCompactSeqs(s string) []int {
+	if s == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	out := make([]int, 0, len(parts))
+	for _, p := range parts {
+		if n, err := strconv.Atoi(strings.TrimSpace(p)); err == nil {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
 // redrawActive refreshes the chat and status for the current session.
 // Must only be called from the tview event loop.
 func (a *App) redrawActive() {
@@ -1008,6 +1178,8 @@ func (a *App) redrawActive() {
 		return
 	}
 	msgs, status := sess.Snapshot()
+	summary, seqs := sess.GetCompact()
+	a.layout.Chat.SetCompact(summary, seqs)
 	a.layout.Chat.Render(msgs)
 	a.layout.Status.SetDefault(a.cfg.Model, status)
 }
