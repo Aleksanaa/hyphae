@@ -604,6 +604,7 @@ func groupMessages(msgs []session.Message, compactSeqs []int) []renderItem {
 				}
 				am := msgs[j]
 				if am.Content != "" || am.Error != nil || am.Partial {
+					j = roundStart
 					break
 				}
 				hasPendingOrError := false
@@ -640,9 +641,6 @@ func groupMessages(msgs []session.Message, compactSeqs []int) []renderItem {
 				continue
 			}
 
-			if msg.Content == "" {
-				continue
-			}
 			liveThinking, livePartial := "", false
 			for jj := mi + 1; jj < mn; jj++ {
 				if msgs[jj].Role == session.RoleAssistant {
@@ -650,6 +648,18 @@ func groupMessages(msgs []session.Message, compactSeqs []int) []renderItem {
 					livePartial = msgs[jj].Partial
 					break
 				}
+			}
+			// DB-loaded statuses carry ThinkingSecs but no Content; reconstruct the label
+			// using the same format that EvThinkingDone produces in live sessions.
+			if msg.Content == "" && liveThinking != "" {
+				if msg.ThinkingSecs <= 0 {
+					msg.Content = fmt.Sprintf("[%s]apex[-][%s] thought for a moment[-]", TC.ApexDim, TC.Muted)
+				} else {
+					msg.Content = fmt.Sprintf("[%s]apex[-][%s] thought for %ds[-]", TC.ApexDim, TC.Muted, msg.ThinkingSecs)
+				}
+			}
+			if msg.Content == "" {
+				continue
 			}
 			items = append(items, renderItem{
 				kind:         riLiveStatus,
