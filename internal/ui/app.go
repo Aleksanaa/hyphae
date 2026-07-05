@@ -199,9 +199,11 @@ func (a *App) persistSessionMessages(sess *session.Session) {
 
 // resumeSession loads a persisted session by id and makes it active.
 func (a *App) resumeSession(id string) {
-	// If already in memory, just activate.
+	// If already in memory, just activate and restore per-session status.
 	if _, ok := a.manager.Get(id); ok {
 		a.manager.SetActive(id)
+		a.layout.Status.SetSessionCost(a.sessionCosts[id])
+		a.layout.Status.SetPromptTokens(a.lastPromptTokens[id])
 		a.redrawActive()
 		return
 	}
@@ -283,17 +285,13 @@ func (a *App) resumeSession(id string) {
 	// Restore cost and pricing from DB.
 	if a.store != nil {
 		if row, err := a.store.GetSession(id); err == nil {
-			if row.TotalCost > 0 {
-				a.sessionCosts[id] = row.TotalCost
-				a.layout.Status.SetSessionCost(row.TotalCost)
-			}
+			a.sessionCosts[id] = row.TotalCost
+			a.layout.Status.SetSessionCost(row.TotalCost)
 			if row.ContextWindow > 0 && a.cfg.ContextWindow == 0 {
 				a.layout.Status.SetContextWindow(row.ContextWindow)
 			}
-			if row.LastPromptTokens > 0 {
-				a.lastPromptTokens[id] = row.LastPromptTokens
-				a.layout.Status.SetPromptTokens(row.LastPromptTokens)
-			}
+			a.lastPromptTokens[id] = row.LastPromptTokens
+			a.layout.Status.SetPromptTokens(row.LastPromptTokens)
 		}
 	}
 
