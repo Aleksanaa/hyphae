@@ -275,6 +275,7 @@ type LoadedMessage struct {
 	ThinkingSecs int
 	CallID       string // for role='tool': the tool call id
 	IsError      bool   // for role='tool'
+	CreatedAt    int64  // Unix milliseconds
 	ToolCalls    []LoadedToolCall
 }
 
@@ -282,7 +283,7 @@ type LoadedMessage struct {
 // with tool calls nested under their assistant messages.
 func (s *Store) LoadSessionMessages(sessionID string) ([]LoadedMessage, error) {
 	rows, err := s.db.Query(`
-		SELECT m.seq, m.role, m.content, m.thinking, m.thinking_secs, m.call_id, m.is_error,
+		SELECT m.seq, m.role, m.content, m.thinking, m.thinking_secs, m.call_id, m.is_error, m.created_at,
 		       tc.call_id, tc.tool_name, tc.display_key, tc.args, tc.result, tc.status, tc.is_error
 		  FROM messages m
 		  LEFT JOIN tool_calls tc ON tc.message_id = m.id
@@ -297,11 +298,12 @@ func (s *Store) LoadSessionMessages(sessionID string) ([]LoadedMessage, error) {
 	curSeq := -1
 	for rows.Next() {
 		var seq, thinkingSecs, msgIsError int
+		var createdAt int64
 		var role, content, thinking, msgCallID string
 		var tcCallID, tcName, tcDisplayKey, tcArgs, tcResult, tcStatus sql.NullString
 		var tcIsError sql.NullInt64
 		if err := rows.Scan(
-			&seq, &role, &content, &thinking, &thinkingSecs, &msgCallID, &msgIsError,
+			&seq, &role, &content, &thinking, &thinkingSecs, &msgCallID, &msgIsError, &createdAt,
 			&tcCallID, &tcName, &tcDisplayKey, &tcArgs, &tcResult, &tcStatus, &tcIsError,
 		); err != nil {
 			return nil, err
@@ -315,6 +317,7 @@ func (s *Store) LoadSessionMessages(sessionID string) ([]LoadedMessage, error) {
 				ThinkingSecs: thinkingSecs,
 				CallID:       msgCallID,
 				IsError:      msgIsError != 0,
+				CreatedAt:    createdAt,
 			})
 			curSeq = seq
 		}

@@ -406,7 +406,11 @@ func buildMessages(sess *session.Session) []openai.ChatCompletionMessageParamUni
 			// UI-only; never sent to the model
 
 		case session.RoleUser:
-			msgs = append(msgs, openai.UserMessage(m.Content))
+			content := m.Content
+			if !m.SentAt.IsZero() {
+				content += "\n\n[Sent: " + m.SentAt.UTC().Format("2006-01-02 15:04 UTC") + "]"
+			}
+			msgs = append(msgs, openai.UserMessage(content))
 
 		case session.RoleAssistant:
 			var p openai.ChatCompletionAssistantMessageParam

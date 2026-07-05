@@ -239,6 +239,7 @@ func (a *App) resumeSession(id string) {
 			Role:     session.Role(lm.Role),
 			Content:  lm.Content,
 			Thinking: lm.Thinking,
+			SentAt:   time.UnixMilli(lm.CreatedAt),
 		}
 		if lm.Role == string(session.RoleTool) {
 			msg.ToolResult = &session.ToolResult{
