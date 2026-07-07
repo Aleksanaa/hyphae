@@ -444,8 +444,12 @@ func (a *App) compactConversation() {
 	a.redrawActive()
 }
 
-// resumeSession loads and activates a session, then updates the status bar.
+// resumeSession persists the current session (if any), then loads and activates
+// a session from storage and updates the status bar.
 func (a *App) resumeSession(id string) {
+	if sess, ok := a.ctrl.ActiveSession(); ok {
+		go a.ctrl.PersistSession(sess)
+	}
 	sess, info, err := a.ctrl.ResumeSession(id)
 	if err != nil {
 		return
@@ -456,6 +460,17 @@ func (a *App) resumeSession(id string) {
 	if info.ContextWindow > 0 && a.cfg.ContextWindow == 0 {
 		a.layout.Status.SetContextWindow(info.ContextWindow)
 	}
+	a.redrawActive()
+}
+
+// newSession persists the current session (if any) and switches to a blank one.
+func (a *App) newSession() {
+	if sess, ok := a.ctrl.ActiveSession(); ok {
+		go a.ctrl.PersistSession(sess)
+	}
+	a.ctrl.NewSession()
+	a.layout.Status.SetSessionCost(0)
+	a.layout.Status.SetPromptTokens(0)
 	a.redrawActive()
 }
 
@@ -519,9 +534,13 @@ func (a *App) setupPalette() {
 			if err != nil {
 				return nil
 			}
-			out := make([]paletteSessionInfo, len(rows))
-			for i, r := range rows {
-				out[i] = paletteSessionInfo{ID: r.ID, Title: r.Title, UpdatedAt: r.UpdatedAt}
+			activeID := a.ctrl.ActiveID()
+			var out []paletteSessionInfo
+			for _, r := range rows {
+				if r.ID == activeID {
+					continue
+				}
+				out = append(out, paletteSessionInfo{ID: r.ID, Title: r.Title, UpdatedAt: r.UpdatedAt})
 			}
 			return out
 		},
@@ -570,11 +589,12 @@ func (a *App) openPalette() {
 	p := a.layout.Palette
 	p.menuItems = topLevelItems()
 	p.menuItems[0].Action = func() { p.switchMode(paletteModeResumeSession) }
-	p.menuItems[1].Action = func() { p.Close(); a.compactConversation() }
-	p.menuItems[2].Action = func() { p.switchMode(paletteModeAddEndpoint) }
-	p.menuItems[3].Action = func() { p.switchMode(paletteModeDelEndpoint) }
-	p.menuItems[5].Action = func() { p.switchMode(paletteModeHotkeys) }
-	p.menuItems[4].Action = func() {
+	p.menuItems[1].Action = func() { p.Close(); a.newSession() }
+	p.menuItems[2].Action = func() { p.Close(); a.compactConversation() }
+	p.menuItems[3].Action = func() { p.switchMode(paletteModeAddEndpoint) }
+	p.menuItems[4].Action = func() { p.switchMode(paletteModeDelEndpoint) }
+	p.menuItems[6].Action = func() { p.switchMode(paletteModeHotkeys) }
+	p.menuItems[5].Action = func() {
 		p.switchMode(paletteModeSelectModel)
 		go func() {
 			var items []PaletteItem

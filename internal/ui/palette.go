@@ -574,6 +574,7 @@ func (cp *CommandPalette) refilter() {
 func topLevelItems() []PaletteItem {
 	return []PaletteItem{
 		{Label: "Resume session", Sub: "continue a previous conversation"},
+		{Label: "New session", Sub: "save current and start fresh"},
 		{Label: "Compact conversation", Sub: "summarize and compress history"},
 		{Label: "Add endpoint", Sub: "register a new API endpoint"},
 		{Label: "Delete endpoint", Sub: "remove a saved endpoint"},

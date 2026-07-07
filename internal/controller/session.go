@@ -16,6 +16,17 @@ type SessionInfo struct {
 	ContextWindow int64
 }
 
+// NewSession creates a fresh session, registers it in storage, and makes it active.
+func (c *Controller) NewSession() *session.Session {
+	sess := c.mgr.New()
+	c.mgr.SetActive(sess.ID)
+	if c.st != nil {
+		workDir, _ := os.Getwd()
+		c.st.CreateSession(sess.ID, workDir) //nolint:errcheck
+	}
+	return sess
+}
+
 // ResumeSession loads a session from persistent storage (if not already in memory),
 // activates it, and restores billing state. Returns the session and its billing info.
 // If the session is already in memory, it is just activated.
