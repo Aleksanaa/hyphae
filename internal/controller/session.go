@@ -51,6 +51,12 @@ func (c *Controller) SwitchSession(id string) bool {
 	return true
 }
 
+// ReorderSession moves a session to a new display position. insertAt is the
+// index before which the session should appear (or end if >= len).
+func (c *Controller) ReorderSession(id string, insertAt int) {
+	c.mgr.Reorder(id, insertAt)
+}
+
 // OpenSessions returns all in-memory sessions in display order.
 func (c *Controller) OpenSessions() []*session.Session {
 	return c.mgr.All()

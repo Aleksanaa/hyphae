@@ -404,6 +404,54 @@ func (m *Manager) Remove(id string) {
 	}
 }
 
+// Reorder moves session id so it appears before the session currently at insertAt
+// in the display order, or at the end if insertAt >= len. No-op if id not found
+// or the position would not change.
+func (m *Manager) Reorder(id string, insertAt int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	from := -1
+	for i, oid := range m.order {
+		if oid == id {
+			from = i
+			break
+		}
+	}
+	if from < 0 {
+		return
+	}
+
+	n := len(m.order)
+	if insertAt < 0 {
+		insertAt = 0
+	}
+	if insertAt > n {
+		insertAt = n
+	}
+
+	// After removing the element at from, the insertion point shifts left by one
+	// for any target past the removed position.
+	effectiveInsert := insertAt
+	if insertAt > from {
+		effectiveInsert--
+	}
+	if from == effectiveInsert {
+		return
+	}
+
+	newOrder := make([]string, 0, n)
+	for i, oid := range m.order {
+		if i != from {
+			newOrder = append(newOrder, oid)
+		}
+	}
+	newOrder = append(newOrder, "")
+	copy(newOrder[effectiveInsert+1:], newOrder[effectiveInsert:])
+	newOrder[effectiveInsert] = id
+	m.order = newOrder
+}
+
 // All returns sessions in display order.
 func (m *Manager) All() []*Session {
 	m.mu.RLock()

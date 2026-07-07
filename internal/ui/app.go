@@ -131,6 +131,7 @@ func New(cfg *config.Config) *App {
 		func(id string) { a.switchTab(id) },
 		func(id string) { a.closeTab(id) },
 		func() { a.newSession() },
+		func(id string, insertAt int) { a.ctrl.ReorderSession(id, insertAt); a.syncTabs() },
 	)
 	layout := NewLayout(tabs, palette)
 	a.layout = layout
