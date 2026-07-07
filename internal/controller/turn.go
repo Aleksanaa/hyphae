@@ -235,14 +235,11 @@ func (c *Controller) processAgentEvents(sessionID string, agCh <-chan agent.Even
 		case agent.EventDone:
 			sess.SetStatus(session.StatusIdle)
 			c.finalizeStatus(sessionID, ts)
-			go c.PersistSession(sess)
-			if c.st != nil {
-				c.mu.Lock()
-				cost := c.sessionCosts[sessionID]
-				pt := c.lastPromptTokens[sessionID]
-				c.mu.Unlock()
-				go c.st.UpdateSessionUsage(sessionID, cost, pt) //nolint:errcheck
-			}
+			c.mu.Lock()
+			cost := c.sessionCosts[sessionID]
+			pt := c.lastPromptTokens[sessionID]
+			c.mu.Unlock()
+			go c.PersistSession(sess, cost, pt)
 			c.emit(Event{Kind: EvDone, SessionID: sessionID})
 
 		case agent.EventError:

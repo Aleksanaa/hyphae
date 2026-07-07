@@ -20,10 +20,6 @@ type SessionInfo struct {
 func (c *Controller) NewSession() *session.Session {
 	sess := c.mgr.New()
 	c.mgr.SetActive(sess.ID)
-	if c.st != nil {
-		workDir, _ := os.Getwd()
-		c.st.CreateSession(sess.ID, workDir) //nolint:errcheck
-	}
 	return sess
 }
 
@@ -147,11 +143,24 @@ func (c *Controller) ResumeSession(id string) (*session.Session, SessionInfo, er
 
 // PersistSession writes all non-status, non-partial messages for sess to the store.
 // Safe to call from a goroutine; store errors are silently ignored.
-func (c *Controller) PersistSession(sess *session.Session) {
+func (c *Controller) PersistSession(sess *session.Session, cost float64, promptTokens int64) {
 	if c.st == nil {
 		return
 	}
 	msgs, _ := sess.Snapshot()
+	hasContent := false
+	for _, msg := range msgs {
+		if msg.Role != session.RoleStatus && !msg.Partial {
+			hasContent = true
+			break
+		}
+	}
+	if !hasContent {
+		return
+	}
+	workDir, _ := os.Getwd()
+	c.st.CreateSession(sess.ID, workDir)       //nolint:errcheck
+	c.st.UpdateSessionUsage(sess.ID, cost, promptTokens) //nolint:errcheck
 	var lastThinkingSecs int
 	for seq, msg := range msgs {
 		if msg.Role == session.RoleStatus {

@@ -448,7 +448,8 @@ func (a *App) compactConversation() {
 // a session from storage and updates the status bar.
 func (a *App) resumeSession(id string) {
 	if sess, ok := a.ctrl.ActiveSession(); ok {
-		go a.ctrl.PersistSession(sess)
+		id := sess.ID
+		go a.ctrl.PersistSession(sess, a.ctrl.SessionCost(id), a.ctrl.LastPromptTokens(id))
 	}
 	sess, info, err := a.ctrl.ResumeSession(id)
 	if err != nil {
@@ -466,7 +467,8 @@ func (a *App) resumeSession(id string) {
 // newSession persists the current session (if any) and switches to a blank one.
 func (a *App) newSession() {
 	if sess, ok := a.ctrl.ActiveSession(); ok {
-		go a.ctrl.PersistSession(sess)
+		id := sess.ID
+		go a.ctrl.PersistSession(sess, a.ctrl.SessionCost(id), a.ctrl.LastPromptTokens(id))
 	}
 	a.ctrl.NewSession()
 	a.layout.Status.SetSessionCost(0)
