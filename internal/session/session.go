@@ -138,6 +138,13 @@ func (s *Session) FinalizeThinkingStatus(content string, secs int) {
 	}
 }
 
+// GetStatus returns the current session status without copying messages.
+func (s *Session) GetStatus() Status {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.Status
+}
+
 // NewSession creates an empty session.
 func NewSession(id, workDir string) *Session {
 	return &Session{
@@ -382,6 +389,19 @@ func (m *Manager) AddExisting(s *Session) {
 	}
 	m.sessions[s.ID] = s
 	m.order = append([]string{s.ID}, m.order...)
+}
+
+// Remove deletes a session from the manager.
+func (m *Manager) Remove(id string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.sessions, id)
+	for i, oid := range m.order {
+		if oid == id {
+			m.order = append(m.order[:i], m.order[i+1:]...)
+			break
+		}
+	}
 }
 
 // All returns sessions in display order.

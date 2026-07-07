@@ -15,11 +15,103 @@ import (
 
 // App is the root application coordinator.
 type App struct {
-	tapp     *tview.Application
-	layout   *Layout
-	ctrl     *controller.Controller
-	cfg      *config.Config
-	shutdown func() // cancels the controller context and closes the store
+	tapp        *tview.Application
+	layout      *Layout
+	ctrl        *controller.Controller
+	cfg         *config.Config
+	shutdown    func() // cancels the controller context and closes the store
+	tabContents map[string]*TabContent
+}
+
+// activeContent returns the TabContent for the currently active session, or nil.
+func (a *App) activeContent() *TabContent {
+	return a.tabContents[a.ctrl.ActiveID()]
+}
+
+// newTabContent creates a fully wired TabContent for a new session tab.
+func (a *App) newTabContent() *TabContent {
+	tc := &TabContent{}
+
+	tc.Chat = NewChatView()
+	tc.Scrollbar = NewScrollbar(
+		func() int { return tc.Chat.TotalLines },
+		func() int { _, _, _, h := tc.Chat.GetInnerRect(); return h },
+		func() int { y, _ := tc.Chat.GetScrollOffset(); return y },
+		func(y int) { tc.Chat.ScrollTo(y, 0) },
+	)
+	tc.Status = NewStatusBar()
+	tc.Input = NewInputView(func(text string) {
+		a.ctrl.SendMessage(text)
+		a.redrawActive()
+	})
+	tc.Approval = NewApprovalView()
+	tc.DiffView = NewDiffView()
+	tc.SelectView = NewSelectView()
+
+	tc.Chat.SetStatusExpandCallback(func(sessionIdx int) {
+		if sess, ok := a.ctrl.ActiveSession(); ok {
+			sess.ToggleThinkingExpanded(sessionIdx)
+			a.redrawActive()
+		}
+	})
+	tc.Chat.SetToolGroupExpandCallback(func(sessionIdx int) {
+		if sess, ok := a.ctrl.ActiveSession(); ok {
+			sess.ToggleToolGroupExpanded(sessionIdx)
+			a.redrawActive()
+		}
+	})
+
+	tc.Chat.TextView.SetFocusFunc(func() { tc.Chat.SetFocused(true) })
+	tc.Chat.TextView.SetBlurFunc(func() { tc.Chat.SetFocused(false) })
+	tc.Input.TextArea.SetFocusFunc(func() { tc.Input.SetFocused(true) })
+	tc.Input.TextArea.SetBlurFunc(func() { tc.Input.SetFocused(false) })
+	tc.Input.TextArea.SetChangedFunc(func() { tc.Status.Reset() })
+
+	chatRow := tview.NewFlex().SetDirection(tview.FlexColumn).
+		AddItem(tc.Chat, 0, 1, false).
+		AddItem(tc.Scrollbar, 1, 0, false)
+
+	tc.body = tview.NewFlex().SetDirection(tview.FlexRow).
+		AddItem(chatRow, 0, 1, false).
+		AddItem(tc.Approval, 0, 0, false).
+		AddItem(tc.DiffView, 0, 0, false).
+		AddItem(tc.SelectView, 0, 0, false).
+		AddItem(tc.Input, 6, 0, true)
+
+	tc.Root = tview.NewFlex().SetDirection(tview.FlexRow).
+		AddItem(tc.body, 0, 1, true).
+		AddItem(tc.Status, 1, 0, false)
+
+	return tc
+}
+
+// persistActive fires off a background persist of the current session's messages.
+func (a *App) persistActive() {
+	if sess, ok := a.ctrl.ActiveSession(); ok {
+		id := sess.ID
+		go a.ctrl.PersistSession(sess, a.ctrl.SessionCost(id), a.ctrl.LastPromptTokens(id))
+	}
+}
+
+// registerTab wires a TabContent for an existing session ID and registers it
+// in both the app map and the layout. Callers set status and switch to the tab.
+func (a *App) registerTab(id string) *TabContent {
+	tc := a.newTabContent()
+	a.tabContents[id] = tc
+	a.layout.AddTabContent(id, tc)
+	return tc
+}
+
+// openNewTab creates a fresh session, registers its tab with default status,
+// and returns the new session ID. The caller is responsible for switching to it.
+func (a *App) openNewTab() string {
+	sess := a.ctrl.NewSession()
+	tc := a.registerTab(sess.ID)
+	tc.Status.SetDefault(a.cfg.Model, session.StatusIdle)
+	if a.cfg.ContextWindow > 0 {
+		tc.Status.SetContextWindow(a.cfg.ContextWindow)
+	}
+	return sess.ID
 }
 
 // New wires up and returns a ready-to-run App.
@@ -27,72 +119,50 @@ func New(cfg *config.Config) *App {
 	ctrl, shutdown := controller.NewFromConfig(cfg)
 
 	a := &App{
-		tapp:     tview.NewApplication(),
-		cfg:      cfg,
-		ctrl:     ctrl,
-		shutdown: shutdown,
+		tapp:        tview.NewApplication(),
+		cfg:         cfg,
+		ctrl:        ctrl,
+		shutdown:    shutdown,
+		tabContents: make(map[string]*TabContent),
 	}
 
-	chat := NewChatView()
-	scrollbar := NewScrollbar(
-		func() int { return chat.TotalLines },
-		func() int { _, _, _, h := chat.GetInnerRect(); return h },
-		func() int { y, _ := chat.GetScrollOffset(); return y },
-		func(y int) { chat.ScrollTo(y, 0) },
-	)
-	status := NewStatusBar()
-	input := NewInputView(a.sendMessage)
-	approval := NewApprovalView()
-	diffView := NewDiffView()
-	selectView := NewSelectView()
 	palette := NewCommandPalette()
-	layout := NewLayout(chat, scrollbar, input, status, approval, diffView, selectView, palette)
+	tabs := NewTabBar(
+		func(id string) { a.switchTab(id) },
+		func(id string) { a.closeTab(id) },
+		func() { a.newSession() },
+	)
+	layout := NewLayout(tabs, palette)
 	a.layout = layout
-	status.SetDefault(cfg.Model, session.StatusIdle)
-	if cfg.ContextWindow > 0 {
-		status.SetContextWindow(cfg.ContextWindow)
-	}
+
+	a.setupPalette()
+
+	id := a.openNewTab()
+	layout.ShowTab(id)
+	a.syncTabs()
+
 	if cfg.Model != "" && (cfg.ContextWindow == 0 || cfg.InputPrice == 0) {
 		go ctrl.FetchModelDevInfoAsync(ctrl.Context(), cfg.Model)
 	}
 
-	a.setupPalette()
-
-	chat.SetStatusExpandCallback(func(sessionIdx int) {
-		if sess, ok := ctrl.ActiveSession(); ok {
-			sess.ToggleThinkingExpanded(sessionIdx)
-			a.redrawActive()
-		}
-	})
-	chat.SetToolGroupExpandCallback(func(sessionIdx int) {
-		if sess, ok := ctrl.ActiveSession(); ok {
-			sess.ToggleToolGroupExpanded(sessionIdx)
-			a.redrawActive()
-		}
-	})
-
-	chat.TextView.SetFocusFunc(func() { chat.SetFocused(true) })
-	chat.TextView.SetBlurFunc(func() { chat.SetFocused(false) })
-	input.TextArea.SetFocusFunc(func() { input.SetFocused(true) })
-	input.TextArea.SetBlurFunc(func() { input.SetFocused(false) })
-	input.TextArea.SetChangedFunc(func() { a.layout.Status.Reset() })
-
 	a.tapp.EnableMouse(true)
 	a.tapp.SetMouseCapture(func(event *tcell.EventMouse, action tview.MouseAction) (*tcell.EventMouse, tview.MouseAction) {
-		_, iy, _, ih := chat.GetInnerRect()
-		_, my := event.Position()
-		if my < iy || my >= iy+ih {
-			chat.ClearHover()
+		atc := a.activeContent()
+		if atc != nil {
+			_, iy, _, ih := atc.Chat.GetInnerRect()
+			_, my := event.Position()
+			if my < iy || my >= iy+ih {
+				atc.Chat.ClearHover()
+			}
+			atc.Status.SetSelActive(atc.Chat.HasSelection())
 		}
-		layout.Status.SetSelActive(chat.HasSelection())
 		return event, action
 	})
 	a.tapp.SetInputCapture(a.handleGlobalKey)
-	a.tapp.SetRoot(layout.Root, true).SetFocus(input.TextArea)
+	a.tapp.SetRoot(layout.Root, true).SetFocus(a.tabContents[id].Input.TextArea)
 
 	go func() {
 		for ev := range ctrl.Events() {
-			ev := ev
 			a.tapp.QueueUpdateDraw(func() { a.handleControllerEvent(ev) })
 		}
 	}()
@@ -102,10 +172,12 @@ func New(cfg *config.Config) *App {
 
 // Run starts the event loop.
 func (a *App) Run() error {
-	if len(a.cfg.Endpoints) == 0 {
-		a.layout.Status.SetError("no endpoint configured — press Ctrl+P to add one")
-	} else if a.cfg.Model == "" {
-		a.layout.Status.SetError("no model selected — press Ctrl+P to select one")
+	if tc := a.activeContent(); tc != nil {
+		if len(a.cfg.Endpoints) == 0 {
+			tc.Status.SetError("no endpoint configured — press Ctrl+P to add one")
+		} else if a.cfg.Model == "" {
+			tc.Status.SetError("no model selected — press Ctrl+P to select one")
+		}
 	}
 
 	defer a.shutdown()
@@ -124,6 +196,12 @@ func (a *App) handleControllerEvent(ev controller.Event) {
 	isActive := a.ctrl.ActiveID() == ev.SessionID
 	sess, hasSess := a.ctrl.Manager().Get(ev.SessionID)
 
+	// tc is the active tab's content; only valid when isActive.
+	var tc *TabContent
+	if isActive {
+		tc = a.activeContent()
+	}
+
 	switch ev.Kind {
 	case controller.EvRedraw:
 		if isActive {
@@ -131,28 +209,28 @@ func (a *App) handleControllerEvent(ev controller.Event) {
 		}
 
 	case controller.EvStatusMsg:
-		if isActive {
-			a.layout.Status.SetMessage(ev.Text)
+		if isActive && tc != nil {
+			tc.Status.SetMessage(ev.Text)
 		}
 
 	case controller.EvStatusErr:
-		if isActive {
-			a.layout.Status.SetError("error: " + ev.Text)
+		if isActive && tc != nil {
+			tc.Status.SetError("error: " + ev.Text)
 		}
 
 	case controller.EvTokensUpdate:
-		if isActive {
-			a.layout.Status.SetPromptTokens(ev.PromptTokens)
-			a.layout.Status.SetSessionCost(ev.SessionCost)
+		if isActive && tc != nil {
+			tc.Status.SetPromptTokens(ev.PromptTokens)
+			tc.Status.SetSessionCost(ev.SessionCost)
 		}
 
 	case controller.EvContextWindow:
-		if isActive {
-			a.layout.Status.SetContextWindow(ev.ContextWindow)
+		if isActive && tc != nil {
+			tc.Status.SetContextWindow(ev.ContextWindow)
 		}
 
 	case controller.EvConnecting:
-		if !isActive || !hasSess {
+		if !isActive || !hasSess || tc == nil {
 			break
 		}
 		var text string
@@ -169,7 +247,7 @@ func (a *App) handleControllerEvent(ev controller.Event) {
 		a.redrawActive()
 
 	case controller.EvThinkingUpdate:
-		if !isActive || !hasSess {
+		if !isActive || !hasSess || tc == nil {
 			break
 		}
 		secs := ev.ThinkingSecs
@@ -200,75 +278,84 @@ func (a *App) handleControllerEvent(ev controller.Event) {
 	case controller.EvDone:
 		if isActive {
 			a.redrawActive()
+		} else {
+			// Background session finished — clear its running dot.
+			a.syncTabs()
 		}
 
 	case controller.EvError:
-		if !isActive {
+		if !isActive || tc == nil || !hasSess {
 			break
 		}
 		msgs, _ := sess.Snapshot()
-		a.layout.Chat.Render(msgs)
-		a.layout.Status.SetError(ev.Text)
+		tc.Chat.Render(msgs)
+		tc.Status.SetError(ev.Text)
 
 	case controller.EvToolApproval:
+		if !isActive || tc == nil || !hasSess {
+			break
+		}
 		tool := ev.Tool
 		respCh := ev.RespCh
 		msgs, status := sess.Snapshot()
-		a.layout.Chat.Render(msgs)
-		a.layout.Status.SetDefault(a.cfg.Model, status)
+		tc.Chat.Render(msgs)
+		tc.Status.SetDefault(a.cfg.Model, status)
 
 		if tool.DiffPatch != "" {
 			files := []DiffFileChange{{
 				Path:  tool.FilePath,
 				Lines: ParseUnifiedDiff(tool.DiffPatch),
 			}}
-			a.layout.DiffView.Show(tool.Name, tool.Reasoning, files)
-			a.layout.ShowDiffView()
-			a.tapp.SetFocus(a.layout.DiffView)
-			a.layout.DiffView.SetCallbacks(
+			tc.DiffView.Show(tool.Name, tool.Reasoning, files)
+			tc.ShowDiffView()
+			a.tapp.SetFocus(tc.DiffView)
+			tc.DiffView.SetCallbacks(
 				func() {
-					a.layout.HideDiffView()
-					a.tapp.SetFocus(a.layout.Input.TextArea)
+					tc.HideDiffView()
+					a.tapp.SetFocus(tc.Input.TextArea)
 					respCh <- controller.ApprovalResult{Allowed: true}
 				},
 				func(reason string) {
-					a.layout.HideDiffView()
-					a.tapp.SetFocus(a.layout.Input.TextArea)
+					tc.HideDiffView()
+					a.tapp.SetFocus(tc.Input.TextArea)
 					respCh <- controller.ApprovalResult{Allowed: false, DenyReason: reason}
 				},
 			)
 		} else {
-			a.layout.Approval.Show(tool.Name, tool.Input, tool.Reasoning)
-			a.layout.ShowApproval()
-			a.tapp.SetFocus(a.layout.Approval)
-			a.layout.Approval.SetCallbacks(
+			tc.Approval.Show(tool.Name, tool.Input, tool.Reasoning)
+			tc.ShowApproval()
+			a.tapp.SetFocus(tc.Approval)
+			tc.Approval.SetCallbacks(
 				func() {
-					a.layout.HideApproval()
-					a.tapp.SetFocus(a.layout.Input.TextArea)
+					tc.HideApproval()
+					a.tapp.SetFocus(tc.Input.TextArea)
 					respCh <- controller.ApprovalResult{Allowed: true}
 				},
 				func(reason string) {
-					a.layout.HideApproval()
-					a.tapp.SetFocus(a.layout.Input.TextArea)
+					tc.HideApproval()
+					a.tapp.SetFocus(tc.Input.TextArea)
 					respCh <- controller.ApprovalResult{Allowed: false, DenyReason: reason}
 				},
 			)
 		}
 
 	case controller.EvSelectPrompt:
+		if !isActive || tc == nil || !hasSess {
+			break
+		}
 		tool := ev.Tool
 		respCh := ev.SelectRespCh
 		msgs, status := sess.Snapshot()
-		a.layout.Chat.Render(msgs)
-		a.layout.Status.SetDefault(a.cfg.Model, status)
+		tc.Chat.Render(msgs)
+		tc.Status.SetDefault(a.cfg.Model, status)
 
-		a.layout.SelectView.Show(tool.SelectQuestion, tool.SelectOptions)
-		_, _, chatW, _ := a.layout.Chat.GetInnerRect()
-		a.layout.ShowSelect(a.layout.SelectView.Height(chatW + 1))
-		a.tapp.SetFocus(a.layout.SelectView)
-		a.layout.SelectView.SetCallback(func(answer string) {
-			a.layout.HideSelect()
-			a.tapp.SetFocus(a.layout.Input.TextArea)
+		tc.SelectView.Show(tool.SelectQuestion, tool.SelectOptions)
+		_, _, chatW, _ := tc.Chat.GetInnerRect()
+		tc.ShowSelect(tc.SelectView.Height(chatW + 1))
+		a.tapp.SetFocus(tc.SelectView)
+		tc.SelectView.SetCallback(func(answer string) {
+			tc.HideSelect()
+			a.tapp.SetFocus(tc.Input.TextArea)
 			respCh <- answer
 		})
 	}
@@ -276,44 +363,46 @@ func (a *App) handleControllerEvent(ev controller.Event) {
 
 // handleGlobalKey intercepts application-level shortcuts.
 func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
-	if a.layout.SelectView.IsVisible() {
+	tc := a.activeContent()
+
+	if tc != nil && tc.SelectView.IsVisible() {
 		switch event.Key() {
 		case tcell.KeyEscape:
-			a.layout.SelectView.Cancel()
+			tc.SelectView.Cancel()
 			return nil
 		case tcell.KeyTab, tcell.KeyBacktab:
 			return nil
 		}
 	}
 
-	if a.layout.Approval.IsVisible() {
+	if tc != nil && tc.Approval.IsVisible() {
 		switch event.Key() {
 		case tcell.KeyTab, tcell.KeyBacktab:
-			if a.layout.Approval.GetSelected() == "allow" {
-				a.layout.Approval.SetSelected("deny")
+			if tc.Approval.GetSelected() == "allow" {
+				tc.Approval.SetSelected("deny")
 			} else {
-				a.layout.Approval.SetSelected("allow")
+				tc.Approval.SetSelected("allow")
 			}
-			a.tapp.SetFocus(a.layout.Approval)
+			a.tapp.SetFocus(tc.Approval)
 			return nil
 		case tcell.KeyEscape:
-			a.layout.Approval.Deny("")
+			tc.Approval.Deny("")
 			return nil
 		}
 	}
 
-	if a.layout.DiffView.IsVisible() {
+	if tc != nil && tc.DiffView.IsVisible() {
 		switch event.Key() {
 		case tcell.KeyTab, tcell.KeyBacktab:
-			if a.layout.DiffView.GetSelected() == "allow" {
-				a.layout.DiffView.SetSelected("deny")
+			if tc.DiffView.GetSelected() == "allow" {
+				tc.DiffView.SetSelected("deny")
 			} else {
-				a.layout.DiffView.SetSelected("allow")
+				tc.DiffView.SetSelected("allow")
 			}
-			a.tapp.SetFocus(a.layout.DiffView)
+			a.tapp.SetFocus(tc.DiffView)
 			return nil
 		case tcell.KeyEscape:
-			a.layout.DiffView.Deny("")
+			tc.DiffView.Deny("")
 			return nil
 		}
 	}
@@ -368,6 +457,14 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 	}
 
 	switch {
+	case event.Key() == tcell.KeyLeft && event.Modifiers()&tcell.ModAlt != 0:
+		a.cycleTab(-1)
+		return nil
+
+	case event.Key() == tcell.KeyRight && event.Modifiers()&tcell.ModAlt != 0:
+		a.cycleTab(1)
+		return nil
+
 	case event.Key() == tcell.KeyCtrlP:
 		a.openPalette()
 		return nil
@@ -377,103 +474,102 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 		return nil
 
 	case event.Key() == tcell.KeyCtrlC:
-		if a.layout.Chat.HasSelection() {
-			text := a.layout.Chat.SelectedText()
+		if tc == nil {
+			return nil
+		}
+		if tc.Chat.HasSelection() {
+			text := tc.Chat.SelectedText()
 			if text != "" {
 				if err := clipboard.WriteAll(text); err != nil {
-					a.layout.Status.SetError(err.Error())
+					tc.Status.SetError(err.Error())
 				}
 			}
-		} else if sel, _, _ := a.layout.Input.GetSelection(); sel != "" {
+		} else if sel, _, _ := tc.Input.GetSelection(); sel != "" {
 			if err := clipboard.WriteAll(sel); err != nil {
-				a.layout.Status.SetError(err.Error())
+				tc.Status.SetError(err.Error())
 			}
 		} else if a.ctrl.IsRunning() {
 			a.ctrl.Cancel()
-			if a.layout.Approval.IsVisible() {
-				a.layout.HideApproval()
+			if tc.Approval.IsVisible() {
+				tc.HideApproval()
 			}
-			if a.layout.DiffView.IsVisible() {
-				a.layout.HideDiffView()
+			if tc.DiffView.IsVisible() {
+				tc.HideDiffView()
 			}
-			if a.layout.SelectView.IsVisible() {
-				a.layout.HideSelect()
+			if tc.SelectView.IsVisible() {
+				tc.HideSelect()
 			}
-			a.tapp.SetFocus(a.layout.Input.TextArea)
+			a.tapp.SetFocus(tc.Input.TextArea)
 			a.redrawActive()
 		} else {
-			text := a.layout.Chat.HoveredContent()
+			text := tc.Chat.HoveredContent()
 			if text != "" {
 				if err := clipboard.WriteAll(text); err != nil {
-					a.layout.Status.SetError(err.Error())
+					tc.Status.SetError(err.Error())
 				}
 			}
 		}
 		return nil
 
 	case event.Key() == tcell.KeyTab:
-		if a.tapp.GetFocus() == a.layout.Input.TextArea {
-			a.tapp.SetFocus(a.layout.Chat.TextView)
+		if tc == nil {
+			return nil
+		}
+		if a.tapp.GetFocus() == tc.Input.TextArea {
+			a.tapp.SetFocus(tc.Chat.TextView)
 		} else {
-			a.tapp.SetFocus(a.layout.Input.TextArea)
+			a.tapp.SetFocus(tc.Input.TextArea)
 		}
 		return nil
 
 	case event.Key() == tcell.KeyEscape:
-		a.tapp.SetFocus(a.layout.Input.TextArea)
+		if tc != nil {
+			a.tapp.SetFocus(tc.Input.TextArea)
+		}
 		return nil
 	}
 	return event
 }
 
-// sendMessage sends user text to the active (or a new) session.
-// Called from the TextArea input capture; runs on the tview event loop.
-func (a *App) sendMessage(text string) {
-	a.ctrl.SendMessage(text)
-	// Immediate re-render from within the event loop; EvRedraw from the agent
-	// goroutine will handle subsequent updates.
-	a.redrawActive()
-}
-
 // compactConversation runs the compact workflow via the controller.
 func (a *App) compactConversation() {
 	if err := a.ctrl.Compact(); err != nil {
-		a.layout.Status.SetError(err.Error())
+		if tc := a.activeContent(); tc != nil {
+			tc.Status.SetError(err.Error())
+		}
 		return
 	}
 	a.redrawActive()
 }
 
 // resumeSession persists the current session (if any), then loads and activates
-// a session from storage and updates the status bar.
+// a session from storage. If already open in a tab, just switches to it.
 func (a *App) resumeSession(id string) {
-	if sess, ok := a.ctrl.ActiveSession(); ok {
-		id := sess.ID
-		go a.ctrl.PersistSession(sess, a.ctrl.SessionCost(id), a.ctrl.LastPromptTokens(id))
+	a.persistActive()
+
+	// If already open, just switch to its existing tab.
+	if _, exists := a.tabContents[id]; exists {
+		a.switchTab(id)
+		return
 	}
+
 	sess, info, err := a.ctrl.ResumeSession(id)
 	if err != nil {
 		return
 	}
-	_ = sess
-	a.layout.Status.SetSessionCost(info.TotalCost)
-	a.layout.Status.SetPromptTokens(info.PromptTokens)
+
+	tc := a.registerTab(sess.ID)
+	tc.Status.SetDefault(a.cfg.Model, session.StatusIdle)
 	if info.ContextWindow > 0 && a.cfg.ContextWindow == 0 {
-		a.layout.Status.SetContextWindow(info.ContextWindow)
+		tc.Status.SetContextWindow(info.ContextWindow)
 	}
-	a.redrawActive()
+	a.switchTab(sess.ID)
 }
 
 // newSession persists the current session (if any) and switches to a blank one.
 func (a *App) newSession() {
-	if sess, ok := a.ctrl.ActiveSession(); ok {
-		id := sess.ID
-		go a.ctrl.PersistSession(sess, a.ctrl.SessionCost(id), a.ctrl.LastPromptTokens(id))
-	}
-	a.ctrl.NewSession()
-	a.layout.Status.SetSessionCost(0)
-	a.layout.Status.SetPromptTokens(0)
-	a.redrawActive()
+	a.persistActive()
+	a.switchTab(a.openNewTab())
 }
 
 // setupPalette wires palette callbacks.
@@ -483,22 +579,32 @@ func (a *App) setupPalette() {
 		// onClose
 		func() {
 			a.layout.HidePalette()
-			a.tapp.SetFocus(a.layout.Input.TextArea)
+			if tc := a.activeContent(); tc != nil {
+				a.tapp.SetFocus(tc.Input.TextArea)
+			}
 		},
 		// onAddEndpoint
 		func(name, baseURL, apiKey string) {
 			if err := a.ctrl.AddEndpoint(name, baseURL, apiKey); err != nil {
-				a.layout.Status.SetError("save failed: " + err.Error())
+				if tc := a.activeContent(); tc != nil {
+					tc.Status.SetError("save failed: " + err.Error())
+				}
 			} else {
-				a.layout.Status.SetMessage(fmt.Sprintf("endpoint %q added", name))
+				if tc := a.activeContent(); tc != nil {
+					tc.Status.SetMessage(fmt.Sprintf("endpoint %q added", name))
+				}
 			}
 		},
 		// onDelEndpoint
 		func(name string) {
 			if err := a.ctrl.RemoveEndpoint(name); err != nil {
-				a.layout.Status.SetError("save failed: " + err.Error())
+				if tc := a.activeContent(); tc != nil {
+					tc.Status.SetError("save failed: " + err.Error())
+				}
 			} else {
-				a.layout.Status.SetMessage(fmt.Sprintf("endpoint %q removed", name))
+				if tc := a.activeContent(); tc != nil {
+					tc.Status.SetMessage(fmt.Sprintf("endpoint %q removed", name))
+				}
 			}
 		},
 		// onSelectModel — value is "endpointName\x00modelName\x00contextWindow"
@@ -513,12 +619,13 @@ func (a *App) setupPalette() {
 				fmt.Sscanf(parts[2], "%d", &cw)
 			}
 			a.ctrl.SwitchModel(epName, model, cw)
-			a.layout.Status.SetDefault(model, session.StatusIdle)
+			if tc := a.activeContent(); tc != nil {
+				tc.Status.SetDefault(model, session.StatusIdle)
+			}
 		},
 		// onResumeSession
 		func(id string) {
 			a.layout.HidePalette()
-			a.tapp.SetFocus(a.layout.Input.TextArea)
 			a.resumeSession(id)
 		},
 		// getEndpoints
@@ -560,10 +667,14 @@ func (a *App) setupPalette() {
 					Sub:   "toggle focus: input ↔ chat",
 					Action: func() {
 						p.Close()
-						if a.tapp.GetFocus() == a.layout.Input.TextArea {
-							a.tapp.SetFocus(a.layout.Chat.TextView)
+						tc := a.activeContent()
+						if tc == nil {
+							return
+						}
+						if a.tapp.GetFocus() == tc.Input.TextArea {
+							a.tapp.SetFocus(tc.Chat.TextView)
 						} else {
-							a.tapp.SetFocus(a.layout.Input.TextArea)
+							a.tapp.SetFocus(tc.Input.TextArea)
 						}
 					},
 				},
@@ -575,6 +686,11 @@ func (a *App) setupPalette() {
 				{
 					Label:  "Ctrl+C",
 					Sub:    "copy message (idle) / interrupt agent (running)",
+					Action: func() { p.Close() },
+				},
+				{
+					Label:  "Alt+←/→",
+					Sub:    "cycle tabs",
 					Action: func() { p.Close() },
 				},
 				{
@@ -623,16 +739,85 @@ func (a *App) openPalette() {
 	a.tapp.SetFocus(p)
 }
 
+// syncTabs refreshes the tab bar from the current in-memory session list.
+func (a *App) syncTabs() {
+	sessions := a.ctrl.OpenSessions()
+	activeID := a.ctrl.ActiveID()
+	tabs := make([]TabInfo, len(sessions))
+	for i, s := range sessions {
+		tabs[i] = TabInfo{
+			ID:      s.ID,
+			Title:   s.Title,
+			Running: s.GetStatus().IsActive(),
+		}
+	}
+	a.layout.Tabs.Sync(tabs, activeID)
+}
+
+// switchTab switches to an already-open session tab and redraws.
+func (a *App) switchTab(id string) {
+	if !a.ctrl.SwitchSession(id) {
+		return
+	}
+	tc := a.tabContents[id]
+	if tc == nil {
+		return
+	}
+	a.layout.ShowTab(id)
+	tc.Status.SetSessionCost(a.ctrl.SessionCost(id))
+	tc.Status.SetPromptTokens(a.ctrl.LastPromptTokens(id))
+	a.tapp.SetFocus(tc.Input.TextArea)
+	a.redrawActive()
+}
+
+// closeTab persists and removes a session tab. If it was active and no other
+// session remains, a new one is created automatically.
+func (a *App) closeTab(id string) {
+	wasActive := a.ctrl.ActiveID() == id
+	a.ctrl.CloseSession(id)
+	a.layout.RemoveTab(id)
+	delete(a.tabContents, id)
+	if wasActive {
+		if _, ok := a.ctrl.ActiveSession(); !ok {
+			a.openNewTab()
+		}
+		a.switchTab(a.ctrl.ActiveID())
+	} else {
+		a.redrawActive()
+	}
+}
+
+// cycleTab moves to the next (+1) or previous (-1) tab.
+func (a *App) cycleTab(delta int) {
+	sessions := a.ctrl.OpenSessions()
+	if len(sessions) < 2 {
+		return
+	}
+	activeID := a.ctrl.ActiveID()
+	for i, s := range sessions {
+		if s.ID == activeID {
+			next := sessions[(i+delta+len(sessions))%len(sessions)]
+			a.switchTab(next.ID)
+			return
+		}
+	}
+}
+
 // redrawActive refreshes the chat and status for the current session.
 // Must only be called from the tview event loop.
 func (a *App) redrawActive() {
+	a.syncTabs()
+	tc := a.activeContent()
+	if tc == nil {
+		return
+	}
 	sess, ok := a.ctrl.ActiveSession()
 	if !ok {
 		return
 	}
 	msgs, status := sess.Snapshot()
 	summary, seqs := sess.GetCompact()
-	a.layout.Chat.SetCompact(summary, seqs)
-	a.layout.Chat.Render(msgs)
-	a.layout.Status.SetDefault(a.cfg.Model, status)
+	tc.Chat.SetCompact(summary, seqs)
+	tc.Chat.Render(msgs)
+	tc.Status.SetDefault(a.cfg.Model, status)
 }

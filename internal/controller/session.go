@@ -16,6 +16,46 @@ type SessionInfo struct {
 	ContextWindow int64
 }
 
+// CloseSession persists a session and removes it from memory. If it was active,
+// the manager switches to any remaining session, or clears the active ID if none remain.
+func (c *Controller) CloseSession(id string) {
+	sess, ok := c.mgr.Get(id)
+	if !ok {
+		return
+	}
+	c.mu.Lock()
+	cost := c.sessionCosts[id]
+	pt := c.lastPromptTokens[id]
+	c.mu.Unlock()
+	go c.PersistSession(sess, cost, pt)
+
+	if c.mgr.ActiveID() == id {
+		newActive := ""
+		for _, s := range c.mgr.All() {
+			if s.ID != id {
+				newActive = s.ID
+				break
+			}
+		}
+		c.mgr.SetActive(newActive)
+	}
+	c.mgr.Remove(id)
+}
+
+// SwitchSession activates an already-open in-memory session. Returns false if not found.
+func (c *Controller) SwitchSession(id string) bool {
+	if _, ok := c.mgr.Get(id); !ok {
+		return false
+	}
+	c.mgr.SetActive(id)
+	return true
+}
+
+// OpenSessions returns all in-memory sessions in display order.
+func (c *Controller) OpenSessions() []*session.Session {
+	return c.mgr.All()
+}
+
 // NewSession creates a fresh session, registers it in storage, and makes it active.
 func (c *Controller) NewSession() *session.Session {
 	sess := c.mgr.New()
@@ -159,7 +199,7 @@ func (c *Controller) PersistSession(sess *session.Session, cost float64, promptT
 		return
 	}
 	workDir, _ := os.Getwd()
-	c.st.CreateSession(sess.ID, workDir)       //nolint:errcheck
+	c.st.CreateSession(sess.ID, workDir)                 //nolint:errcheck
 	c.st.UpdateSessionUsage(sess.ID, cost, promptTokens) //nolint:errcheck
 	var lastThinkingSecs int
 	for seq, msg := range msgs {

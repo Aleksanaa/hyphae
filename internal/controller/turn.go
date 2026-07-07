@@ -3,7 +3,6 @@ package controller
 import (
 	"context"
 	"fmt"
-	"os"
 	"time"
 
 	"github.com/aleksanaa/hyphae/internal/agent"
@@ -98,12 +97,7 @@ func (c *Controller) SendMessage(text string) {
 
 	sess, ok := c.mgr.Active()
 	if !ok {
-		sess = c.mgr.New()
-		c.mgr.SetActive(sess.ID)
-		if c.st != nil {
-			workDir, _ := os.Getwd()
-			c.st.CreateSession(sess.ID, workDir) //nolint:errcheck
-		}
+		return
 	}
 
 	sess.AddMessage(session.Message{
