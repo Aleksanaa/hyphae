@@ -226,8 +226,8 @@ func (a *App) handleControllerEvent(ev controller.Event) {
 		}
 
 	case controller.EvContextWindow:
-		if isActive && tc != nil {
-			tc.Status.SetContextWindow(ev.ContextWindow)
+		if atc := a.activeContent(); atc != nil {
+			atc.Status.SetContextWindow(ev.ContextWindow)
 		}
 
 	case controller.EvConnecting:
