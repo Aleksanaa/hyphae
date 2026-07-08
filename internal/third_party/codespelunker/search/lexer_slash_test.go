@@ -7,8 +7,8 @@ import (
 
 func TestScanRegexEscapedSlash(t *testing.T) {
 	cases := []struct {
-		input   string
-		want    string
+		input string
+		want  string
 	}{
 		{`/foo\/bar/`, `foo/bar`},
 		{`/(https?:\/\/)/`, `(https?://)`},
