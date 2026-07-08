@@ -582,8 +582,12 @@ func (a *App) resumeSession(id string) {
 
 	tc := a.registerTab(sess.ID)
 	tc.Status.SetDefault(a.cfg.Model, session.StatusIdle)
-	if info.ContextWindow > 0 && a.cfg.ContextWindow == 0 {
-		tc.Status.SetContextWindow(info.ContextWindow)
+	cw := info.ContextWindow
+	if cw == 0 {
+		cw = a.cfg.ContextWindow
+	}
+	if cw > 0 {
+		tc.Status.SetContextWindow(cw)
 	}
 	if info.PlanMode {
 		tc.ShowPlanMode()
