@@ -9,6 +9,9 @@ import (
 	"path/filepath"
 	"strings"
 
+	codespelunker "github.com/aleksanaa/hyphae/internal/third_party/codespelunker"
+	"github.com/aleksanaa/hyphae/internal/third_party/codespelunker/ranker"
+	"github.com/aleksanaa/hyphae/internal/third_party/codespelunker/snippet"
 	openai "github.com/openai/openai-go/v3"
 )
 
@@ -253,31 +256,77 @@ var builtinTools = []toolDef{
 	},
 	{
 		schema: openai.ChatCompletionFunctionTool(openai.FunctionDefinitionParam{
-			Name:        "search_files",
-			Description: openai.String("Search for a text pattern across files. Returns matching lines with file names."),
+			Name: "search_files",
+			Description: openai.String("Search for code or text across files using boolean query syntax. " +
+				"Supports: AND (implicit between terms), OR, NOT, \"exact phrases\", /regex/, fuzzy~1, " +
+				"and filters: ext:go, lang:Python, path:pkg, file:test. " +
+				"Returns ranked matching lines with file names and line numbers."),
 			Parameters: openai.FunctionParameters{
 				"type": "object",
 				"properties": map[string]any{
-					"pattern": map[string]any{"type": "string", "description": "Text or regex pattern to search for"},
-					"path":    map[string]any{"type": "string", "description": "Directory or file to search (defaults to working directory)"},
+					"query":          map[string]any{"type": "string", "description": "Search query. Examples: \"func SendMessage\", \"error OR panic\", \"TODO NOT fixme\", \"ctx context.Context\" ext:go"},
+					"path":           map[string]any{"type": "string", "description": "Directory to search (defaults to working directory)"},
+					"case_sensitive": map[string]any{"type": "boolean", "description": "Whether the search is case-sensitive (default: false)"},
 				},
-				"required": []string{"pattern"},
+				"required": []string{"query"},
 			},
 		}),
 		execute: func(ctx context.Context, args map[string]any, workDir string) (string, error) {
+			query := str(args, "query")
+			if query == "" {
+				return "", fmt.Errorf("query is required")
+			}
 			p := str(args, "path")
 			if p == "" {
 				p = workDir
 			} else {
 				p = resolvePath(p, workDir)
 			}
-			cmd := exec.CommandContext(ctx, "grep", "-rn", "--include=*", str(args, "pattern"), p)
-			cmd.Dir = workDir
-			out, _ := cmd.CombinedOutput()
-			if len(out) == 0 {
+			caseSensitive, _ := args["case_sensitive"].(bool)
+
+			results, _, err := codespelunker.Search(ctx, query, p, codespelunker.Options{
+				CaseSensitive: caseSensitive,
+			})
+			if err != nil {
+				return "", err
+			}
+			if len(results) == 0 {
 				return "(no matches)", nil
 			}
-			return string(out), nil
+
+			testIntent := ranker.HasTestIntent(strings.Fields(query))
+			results = ranker.RankResults("tfidf", len(results), results, nil, nil, testIntent)
+
+			const maxFiles = 20
+			if len(results) > maxFiles {
+				results = results[:maxFiles]
+			}
+
+			var sb strings.Builder
+			for _, res := range results {
+				lines := snippet.FindAllMatchingLines(res, 200, 1, 0)
+				if len(lines) == 0 {
+					continue
+				}
+				rel, err := filepath.Rel(workDir, res.Location)
+				if err != nil {
+					rel = res.Location
+				}
+				fmt.Fprintf(&sb, "=== %s", rel)
+				if res.Language != "" {
+					fmt.Fprintf(&sb, " (%s)", res.Language)
+				}
+				fmt.Fprintln(&sb, " ===")
+				for _, lr := range lines {
+					fmt.Fprintf(&sb, "%4d: %s\n", lr.LineNumber, lr.Content)
+				}
+				sb.WriteByte('\n')
+			}
+			out := strings.TrimRight(sb.String(), "\n")
+			if out == "" {
+				return "(no matches)", nil
+			}
+			return out, nil
 		},
 	},
 	{
