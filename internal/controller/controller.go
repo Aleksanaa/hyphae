@@ -85,12 +85,13 @@ type SessionSummary struct {
 // Controller owns session lifecycle, agent orchestration, and persistence.
 // The UI subscribes to events via Events() and calls methods to trigger actions.
 type Controller struct {
-	mu  sync.Mutex
-	ag  *agent.Agent
-	mgr *session.Manager
-	cfg *config.Config
-	st  *store.Store
-	ctx context.Context
+	mu        sync.Mutex
+	persistMu sync.Map // map[sessionID]*sync.Mutex — serializes concurrent PersistSession calls
+	ag        *agent.Agent
+	mgr       *session.Manager
+	cfg       *config.Config
+	st        *store.Store
+	ctx       context.Context
 
 	incoming chan Event // emit() writes here; eventForwarder drains it
 	ch       chan Event // Events() returns this; eventForwarder fills it

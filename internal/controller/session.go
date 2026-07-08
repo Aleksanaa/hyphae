@@ -3,6 +3,7 @@ package controller
 import (
 	"fmt"
 	"os"
+	"sync"
 
 	"github.com/aleksanaa/hyphae/internal/agent"
 	"github.com/aleksanaa/hyphae/internal/session"
@@ -201,10 +202,14 @@ func (c *Controller) ResumeSession(id string) (*session.Session, SessionInfo, er
 
 // PersistSession writes all non-status, non-partial messages for sess to the store.
 // Safe to call from a goroutine; store errors are silently ignored.
+// At most one persist runs per session at a time to prevent seq-number races.
 func (c *Controller) PersistSession(sess *session.Session, cost float64, promptTokens int64) {
 	if c.st == nil {
 		return
 	}
+	mu, _ := c.persistMu.LoadOrStore(sess.ID, &sync.Mutex{})
+	mu.(*sync.Mutex).Lock()
+	defer mu.(*sync.Mutex).Unlock()
 	msgs, _ := sess.Snapshot()
 	hasContent := false
 	for _, msg := range msgs {
