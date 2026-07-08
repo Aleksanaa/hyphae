@@ -260,13 +260,15 @@ var builtinTools = []toolDef{
 			Description: openai.String("Search for code or text across files using boolean query syntax. " +
 				"Supports: AND (implicit between terms), OR, NOT, \"exact phrases\", /regex/, fuzzy~1, " +
 				"and filters: ext:go, lang:Python, path:pkg, file:test. " +
-				"Returns ranked matching lines with file names and line numbers."),
+				"Returns ranked matching lines with file names and line numbers. " +
+				"Note: in /regex/ patterns, . does not match newlines; ^ and $ match the whole file by default; use (?m)^pattern or pattern(?m)$ to anchor to line starts/ends."),
 			Parameters: openai.FunctionParameters{
 				"type": "object",
 				"properties": map[string]any{
 					"query":          map[string]any{"type": "string", "description": "Search query. Examples: \"func SendMessage\", \"error OR panic\", \"TODO NOT fixme\", \"ctx context.Context\" ext:go"},
-					"path":           map[string]any{"type": "string", "description": "Directory to search (defaults to working directory)"},
+					"path":           map[string]any{"type": "string", "description": "Directory or file to search (defaults to working directory)"},
 					"case_sensitive": map[string]any{"type": "boolean", "description": "Whether the search is case-sensitive (default: false)"},
+					"context_lines":  map[string]any{"type": "number", "description": "Lines of context to show around each match (default 1, max 5)"},
 				},
 				"required": []string{"query"},
 			},
@@ -283,6 +285,20 @@ var builtinTools = []toolDef{
 				p = resolvePath(p, workDir)
 			}
 			caseSensitive, _ := args["case_sensitive"].(bool)
+
+			// If path points to a single file, search its directory filtered to that filename.
+			if info, err := os.Stat(p); err == nil && !info.IsDir() {
+				query += " file:" + info.Name()
+				p = filepath.Dir(p)
+			}
+
+			ctxLines := 1
+			if v, ok := args["context_lines"].(float64); ok && v >= 0 {
+				ctxLines = int(v)
+				if ctxLines > 5 {
+					ctxLines = 5
+				}
+			}
 
 			results, _, err := codespelunker.Search(ctx, query, p, codespelunker.Options{
 				CaseSensitive: caseSensitive,
@@ -304,7 +320,7 @@ var builtinTools = []toolDef{
 
 			var sb strings.Builder
 			for _, res := range results {
-				lines := snippet.FindAllMatchingLines(res, 200, 1, 0)
+				lines := snippet.FindAllMatchingLines(res, 200, ctxLines, ctxLines)
 				if len(lines) == 0 {
 					continue
 				}

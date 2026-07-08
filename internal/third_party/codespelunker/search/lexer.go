@@ -224,6 +224,19 @@ func (l *Lexer) scanRegex() Token {
 		if ch == eof || ch == '/' {
 			break
 		}
+		// Allow \/ as an escaped forward slash inside the pattern.
+		if ch == '\\' {
+			next := l.read()
+			if next == '/' {
+				sb.WriteRune('/')
+			} else {
+				sb.WriteRune('\\')
+				if next != eof {
+					sb.WriteRune(next)
+				}
+			}
+			continue
+		}
 		sb.WriteRune(ch)
 	}
 	return Token{Type: REGEX, Literal: sb.String()}
