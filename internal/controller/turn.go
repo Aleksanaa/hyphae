@@ -44,6 +44,13 @@ func (c *Controller) startConnectingTimer(sessionID string, ts *turnState, retry
 		retryRemaining := int(retryDelay.Seconds())
 		for {
 			elapsed := int(time.Since(start).Seconds())
+			// Check cancellation before emitting to avoid stale EvConnecting
+			// events landing in the queue after EvThinkingDone.
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
 			c.emit(Event{
 				Kind:           EvConnecting,
 				SessionID:      sessionID,
