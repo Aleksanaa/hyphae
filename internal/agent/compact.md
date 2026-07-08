@@ -1,43 +1,40 @@
 
-## Conversation Condensation Directive
+[Automated context-compression directive — triggered by the user, injected by the application.]
 
-The objective of this task is to generate an exhaustive summary of the dialogue to preserve critical context. The output must retain a high level of technical detail, architectural choices, and specific programming patterns so that development can resume seamlessly.
+Generate an exhaustive summary of the preceding conversation to preserve critical context for continuation. The output must retain high technical detail: architectural choices, specific programming patterns, file paths, method signatures, and code fragments.
 
-Prior to formatting the final summary, you must document your review process inside `<analysis>` tags to verify all details are captured. During this evaluation phase:
+Before writing the final summary, document your review inside `<analysis>` tags to verify all details are captured:
 
-1. Review the dialogue sequentially from beginning to end. For every segment, meticulously document:
-* The user’s precise goals and stated objectives.
-* The strategy and methodology applied to fulfill those goals.
-* Crucial architectural decisions, technical frameworks, and coding paradigms.
-* Exact technical data, including file paths, complete code blocks, method signatures, and specific lines modified.
+1. Review the dialogue sequentially from beginning to end. For every segment document:
+   - The user's precise goals and stated objectives
+   - The strategy and methodology applied
+   - Architectural decisions, technical frameworks, and coding paradigms
+   - Exact technical data: file paths, complete code blocks, method signatures, specific lines changed
 
-
-2. Verify the absolute technical correctness and thoroughness of your review before proceeding.
-
----
-
-### Required Summary Framework
-
-Your final output must be organized into the following distinct sections:
-
-1. **Core Objectives and Intent:** A detailed breakdown of everything the user explicitly asked to achieve.
-2. **Critical Technical Paradigms:** A structured list of the key methodologies, frameworks, and technical concepts utilized.
-3. **Target Files and Code Repository:** A comprehensive inventory of the specific files evaluated, written, or edited. Highlight the most recent updates, provide full code blocks where relevant, and explain the significance of each file's involvement.
-4. **Resolved and Active Issues:** A log of the technical hurdles overcome during the session, along with any active troubleshooting.
-5. **Backlog of Requested Tasks:** A clear list of uncompleted items that the user has explicitly requested.
-6. **Active State Prior to Summary:** A granular description of the exact task being executed immediately before this summary was triggered, with a heavy emphasis on the final exchange. Include relevant filenames and code fragments.
-7. **Immediate Next Action (Conditional):** Define the single next logical step that directly extends the active state described above. This action **must** align perfectly with the user's explicit goals and immediate prior task. If the previous task was successfully finished, do not suggest tangential steps unless previously authorized by the user.
-8. **Verbatim Contextual Evidence:** If a next step is defined, provide exact, unedited textual quotes from the final moments of the conversation to prove precisely where the work left off and prevent scope drift.
+2. Verify technical correctness and completeness before proceeding.
 
 ---
 
-### Expected Output Structure
+### Required Summary Structure
 
-Your final response must strictly adhere to this format:
+Organize the output into these sections:
+
+1. **Core Objectives and Intent** — Everything the user explicitly asked to achieve.
+2. **Critical Technical Paradigms** — Key methodologies, frameworks, and concepts used.
+3. **Target Files and Code Repository** — All files touched: context, modifications, and relevant code blocks.
+4. **Resolved and Active Issues** — Technical problems overcome and any still open.
+5. **Backlog of Requested Tasks** — Uncompleted items explicitly requested by the user.
+6. **Active State Prior to Summary** — The exact task executing when this directive was triggered, with emphasis on the final exchange.
+7. **Immediate Next Action (Conditional)** — The single next logical step extending the active state. Must align with the user's explicit goals. Omit if the previous task was cleanly finished with no authorized follow-on.
+8. **Verbatim Contextual Evidence** — If a next step is defined, exact unedited quotes from the final exchange proving where work left off.
+
+---
+
+### Output Format
 
 ```markdown
 <analysis>
-[Insert your chronological reasoning, technical validation, and verification process here]
+[Chronological reasoning, technical validation, and verification]
 </analysis>
 
 <summary>
@@ -50,14 +47,14 @@ Your final response must strictly adhere to this format:
 
 3. Target Files and Code Repository:
    - [File Path 1]
-      - [Context and importance of this file]
-      - [Details of modifications made]
-      - [Relevant Code Block]
+      - [Context and importance]
+      - [Modifications made]
+      - [Relevant code block]
    - [File Path 2]
-      - [Relevant Code Block]
+      - [Relevant code block]
 
 4. Resolved and Active Issues:
-   [Detailed log of troubleshooting and fixes]
+   [Detailed log]
 
 5. Backlog of Requested Tasks:
    - [Task 1]
@@ -67,9 +64,11 @@ Your final response must strictly adhere to this format:
    [Granular description of the latest interaction and current work state]
 
 7. Immediate Next Action (Conditional):
-   [Specific next step aligned with the user's intent]
-</summary>
+   [Specific next step]
 
+8. Verbatim Contextual Evidence:
+   [Exact quotes from the final exchange]
+</summary>
 ```
 
-Please generate the summary now by applying this structural blueprint to the preceding conversation, ensuring total accuracy and depth.
+Execute this directive now.
