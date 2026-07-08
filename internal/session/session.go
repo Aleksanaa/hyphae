@@ -111,10 +111,40 @@ type Session struct {
 	Title            string
 	Status           Status
 	WorkDir          string
+	PlanMode         bool
+	PlanModeExited   bool // true for one turn after plan mode is disabled
 	msgs             []Message
 	statusMsgIdx     int    // index of current turn's RoleStatus message; -1 if none
 	compactedSummary string // latest compact summary; empty = no compact
 	compactSeqs      []int  // all compact atSeqs in ascending order; nil = no compact
+}
+
+// SetPlanMode enables or disables plan mode for this session.
+// Disabling sets PlanModeExited so the next buildMessages call can notify the model.
+func (s *Session) SetPlanMode(on bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !on && s.PlanMode {
+		s.PlanModeExited = true
+	}
+	if on {
+		s.PlanModeExited = false
+	}
+	s.PlanMode = on
+}
+
+// IsPlanMode reports whether plan mode is active for this session.
+func (s *Session) IsPlanMode() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.PlanMode
+}
+
+// ClearPlanModeExited clears the one-shot exit flag after the model has been notified.
+func (s *Session) ClearPlanModeExited() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.PlanModeExited = false
 }
 
 // UpdateStatus replaces the content of the current turn's status message.

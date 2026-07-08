@@ -100,10 +100,18 @@ func (c *Controller) SendMessage(text string) {
 		return
 	}
 
+	var sentLabel string
+	if sess.PlanModeExited {
+		sess.ClearPlanModeExited()
+		sentLabel = agent.PlanModeExitLabel() + "\n"
+	} else if sess.IsPlanMode() {
+		sentLabel = agent.PlanModeLabel() + "\n"
+	}
+	sentLabel += agent.FormatSentLabel(time.Now())
 	sess.AddMessage(session.Message{
 		Role:      session.RoleUser,
 		Content:   text,
-		SentLabel: agent.FormatSentLabel(time.Now()),
+		SentLabel: sentLabel,
 	})
 	sess.SetStatus(session.StatusConnecting)
 

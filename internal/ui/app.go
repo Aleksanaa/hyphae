@@ -47,6 +47,7 @@ func (a *App) newTabContent() *TabContent {
 	tc.Approval = NewApprovalView()
 	tc.DiffView = NewDiffView()
 	tc.SelectView = NewSelectView()
+	tc.PlanMode = NewPlanModeView(func() { a.togglePlanMode() })
 
 	tc.Chat.SetStatusExpandCallback(func(sessionIdx int) {
 		if sess, ok := a.ctrl.ActiveSession(); ok {
@@ -76,6 +77,7 @@ func (a *App) newTabContent() *TabContent {
 		AddItem(tc.Approval, 0, 0, false).
 		AddItem(tc.DiffView, 0, 0, false).
 		AddItem(tc.SelectView, 0, 0, false).
+		AddItem(tc.PlanMode, 0, 0, false).
 		AddItem(tc.Input, 6, 0, true)
 
 	tc.Root = tview.NewFlex().SetDirection(tview.FlexRow).
@@ -532,6 +534,25 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 	return event
 }
 
+// togglePlanMode flips plan mode for the active session and updates the indicator.
+func (a *App) togglePlanMode() {
+	sess, ok := a.ctrl.ActiveSession()
+	if !ok {
+		return
+	}
+	on := !sess.IsPlanMode()
+	sess.SetPlanMode(on)
+	a.ctrl.SaveSessionPlanMode(sess.ID, on)
+	if tc := a.activeContent(); tc != nil {
+		if on {
+			tc.ShowPlanMode()
+		} else {
+			tc.HidePlanMode()
+		}
+	}
+	a.redrawActive()
+}
+
 // compactConversation runs the compact workflow via the controller.
 func (a *App) compactConversation() {
 	if err := a.ctrl.Compact(); err != nil {
@@ -563,6 +584,9 @@ func (a *App) resumeSession(id string) {
 	tc.Status.SetDefault(a.cfg.Model, session.StatusIdle)
 	if info.ContextWindow > 0 && a.cfg.ContextWindow == 0 {
 		tc.Status.SetContextWindow(info.ContextWindow)
+	}
+	if info.PlanMode {
+		tc.ShowPlanMode()
 	}
 	a.switchTab(sess.ID)
 }
@@ -710,10 +734,11 @@ func (a *App) openPalette() {
 	p.menuItems[0].Action = func() { p.switchMode(paletteModeResumeSession) }
 	p.menuItems[1].Action = func() { p.Close(); a.newSession() }
 	p.menuItems[2].Action = func() { p.Close(); a.compactConversation() }
-	p.menuItems[3].Action = func() { p.switchMode(paletteModeAddEndpoint) }
-	p.menuItems[4].Action = func() { p.switchMode(paletteModeDelEndpoint) }
-	p.menuItems[6].Action = func() { p.switchMode(paletteModeHotkeys) }
-	p.menuItems[5].Action = func() {
+	p.menuItems[3].Action = func() { p.Close(); a.togglePlanMode() }
+	p.menuItems[4].Action = func() { p.switchMode(paletteModeAddEndpoint) }
+	p.menuItems[5].Action = func() { p.switchMode(paletteModeDelEndpoint) }
+	p.menuItems[7].Action = func() { p.switchMode(paletteModeHotkeys) }
+	p.menuItems[6].Action = func() {
 		p.switchMode(paletteModeSelectModel)
 		go func() {
 			var items []PaletteItem

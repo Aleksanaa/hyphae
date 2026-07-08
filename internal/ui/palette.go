@@ -576,6 +576,7 @@ func topLevelItems() []PaletteItem {
 		{Label: "Resume session", Sub: "continue a previous conversation"},
 		{Label: "New session", Sub: "save current and start fresh"},
 		{Label: "Compact conversation", Sub: "summarize and compress history"},
+		{Label: "Toggle plan mode", Sub: "explore and plan without making changes"},
 		{Label: "Add endpoint", Sub: "register a new API endpoint"},
 		{Label: "Delete endpoint", Sub: "remove a saved endpoint"},
 		{Label: "Select model", Sub: "choose model from an endpoint"},

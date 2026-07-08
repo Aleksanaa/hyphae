@@ -116,10 +116,15 @@ const sqlAddCompactSeqs = `
 ALTER TABLE sessions ADD COLUMN compact_seqs TEXT NOT NULL DEFAULT '';
 `
 
+const sqlAddPlanMode = `
+ALTER TABLE sessions ADD COLUMN plan_mode INTEGER NOT NULL DEFAULT 0;
+`
+
 var migrations = []migration{
 	{1, "initial", sqlInitial},
 	{2, "compact_session_cols", sqlAddCompactCols},
 	{3, "compact_seqs_col", sqlAddCompactSeqs},
+	{4, "plan_mode_col", sqlAddPlanMode},
 }
 
 func (s *Store) migrate() error {
@@ -189,6 +194,7 @@ type SessionRow struct {
 	CompactedSummary string
 	CompactAtSeq     int64
 	CompactSeqs      string // comma-separated list of all compact atSeqs
+	PlanMode         bool
 	CreatedAt        int64
 	UpdatedAt        int64
 }
@@ -240,12 +246,27 @@ func (s *Store) ListSessions(workDir string) ([]SessionRow, error) {
 func (s *Store) GetSession(id string) (SessionRow, error) {
 	var r SessionRow
 	var title sql.NullString
+	var planMode int
 	err := s.db.QueryRow(
-		`SELECT id, work_dir, title, total_cost, context_window, input_price, output_price, last_prompt_tokens, compacted_summary, compact_at_seq, compact_seqs, created_at, updated_at
+		`SELECT id, work_dir, title, total_cost, context_window, input_price, output_price, last_prompt_tokens, compacted_summary, compact_at_seq, compact_seqs, plan_mode, created_at, updated_at
 		   FROM sessions WHERE id = ?`, id,
-	).Scan(&r.ID, &r.WorkDir, &title, &r.TotalCost, &r.ContextWindow, &r.InputPrice, &r.OutputPrice, &r.LastPromptTokens, &r.CompactedSummary, &r.CompactAtSeq, &r.CompactSeqs, &r.CreatedAt, &r.UpdatedAt)
+	).Scan(&r.ID, &r.WorkDir, &title, &r.TotalCost, &r.ContextWindow, &r.InputPrice, &r.OutputPrice, &r.LastPromptTokens, &r.CompactedSummary, &r.CompactAtSeq, &r.CompactSeqs, &planMode, &r.CreatedAt, &r.UpdatedAt)
 	r.Title = title.String
+	r.PlanMode = planMode != 0
 	return r, err
+}
+
+// UpdateSessionPlanMode persists the plan mode flag for a session.
+func (s *Store) UpdateSessionPlanMode(id string, planMode bool) error {
+	v := 0
+	if planMode {
+		v = 1
+	}
+	_, err := s.db.Exec(
+		`UPDATE sessions SET plan_mode = ?, updated_at = ? WHERE id = ?`,
+		v, now(), id,
+	)
+	return err
 }
 
 // UpdateSessionCompact stores the compact summary, latest compact point, and all compact points.

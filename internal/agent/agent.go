@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	_ "embed"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +14,9 @@ import (
 
 	"github.com/aleksanaa/hyphae/internal/session"
 )
+
+//go:embed plan_mode.md
+var planModePrompt string
 
 const systemPrompt = `You are a skilled coding assistant. You help the user read, write, and reason about code.
 
@@ -432,8 +436,7 @@ func extractReasoning(argsJSON string) (reasoning, input string) {
 	return reasoning, argsJSON
 }
 
-// FormatSentLabel returns the frozen "[Sent: ...]" suffix for a user message,
-// using the local timezone offset at the time of the call.
+// FormatSentLabel returns the timestamp tag for a user message.
 func FormatSentLabel(t time.Time) string {
 	_, secs := t.Local().Zone()
 	h, mins := secs/3600, secs%3600/60
@@ -446,7 +449,17 @@ func FormatSentLabel(t time.Time) string {
 	} else {
 		tz = fmt.Sprintf("UTC%+d", h)
 	}
-	return "[Sent: " + t.Local().Format("2006-01-02 15:04") + " " + tz + "]"
+	return "<system-timestamp>The message is sent on " + t.Local().Format("2006-01-02 15:04") + " " + tz + "</system-timestamp>"
+}
+
+// PlanModeLabel returns the system-reminder block to append for an active plan mode turn.
+func PlanModeLabel() string {
+	return "<system-reminder>\n" + planModePrompt + "\n</system-reminder>"
+}
+
+// PlanModeExitLabel returns the system-reminder block to append when plan mode just ended.
+func PlanModeExitLabel() string {
+	return "<system-reminder>\nPlan mode has ended. You may now make changes freely.\n</system-reminder>"
 }
 
 // isRetryable returns true for transient errors that warrant a retry.

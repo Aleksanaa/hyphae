@@ -13,6 +13,7 @@ type TabContent struct {
 	Approval   *ApprovalView
 	DiffView   *DiffView
 	SelectView *SelectView
+	PlanMode   *PlanModeView
 	body       *tview.Flex // retained for ResizeItem calls
 	Root       *tview.Flex // the full content flex for this tab
 }
@@ -42,4 +43,14 @@ func (tc *TabContent) ShowSelect(height int) {
 func (tc *TabContent) HideSelect() {
 	tc.SelectView.visible = false
 	tc.body.ResizeItem(tc.SelectView, 0, 0)
+}
+
+func (tc *TabContent) ShowPlanMode() {
+	tc.PlanMode.Show()
+	tc.body.ResizeItem(tc.PlanMode, PlanModeHeight, 0)
+}
+
+func (tc *TabContent) HidePlanMode() {
+	tc.PlanMode.visible = false
+	tc.body.ResizeItem(tc.PlanMode, 0, 0)
 }

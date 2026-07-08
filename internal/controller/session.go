@@ -14,6 +14,7 @@ type SessionInfo struct {
 	TotalCost     float64
 	PromptTokens  int64
 	ContextWindow int64
+	PlanMode      bool
 }
 
 // CloseSession persists a session and removes it from memory. If it was active,
@@ -55,6 +56,13 @@ func (c *Controller) SwitchSession(id string) bool {
 // index before which the session should appear (or end if >= len).
 func (c *Controller) ReorderSession(id string, insertAt int) {
 	c.mgr.Reorder(id, insertAt)
+}
+
+// SaveSessionPlanMode persists the plan mode flag to the store.
+func (c *Controller) SaveSessionPlanMode(id string, on bool) {
+	if c.st != nil {
+		go c.st.UpdateSessionPlanMode(id, on) //nolint:errcheck
+	}
 }
 
 // OpenSessions returns all in-memory sessions in display order.
@@ -161,6 +169,10 @@ func (c *Controller) ResumeSession(id string) (*session.Session, SessionInfo, er
 		info.TotalCost = row.TotalCost
 		info.PromptTokens = row.LastPromptTokens
 		info.ContextWindow = row.ContextWindow
+		info.PlanMode = row.PlanMode
+		if row.PlanMode {
+			sess.SetPlanMode(true)
+		}
 
 		c.mu.Lock()
 		c.sessionCosts[id] = row.TotalCost
