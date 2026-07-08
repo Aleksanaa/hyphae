@@ -120,11 +120,17 @@ const sqlAddPlanMode = `
 ALTER TABLE sessions ADD COLUMN plan_mode INTEGER NOT NULL DEFAULT 0;
 `
 
+const sqlAddSessionModel = `
+ALTER TABLE sessions ADD COLUMN model            TEXT NOT NULL DEFAULT '';
+ALTER TABLE sessions ADD COLUMN active_endpoint  TEXT NOT NULL DEFAULT '';
+`
+
 var migrations = []migration{
 	{1, "initial", sqlInitial},
 	{2, "compact_session_cols", sqlAddCompactCols},
 	{3, "compact_seqs_col", sqlAddCompactSeqs},
 	{4, "plan_mode_col", sqlAddPlanMode},
+	{5, "session_model_col", sqlAddSessionModel},
 }
 
 func (s *Store) migrate() error {
@@ -195,6 +201,8 @@ type SessionRow struct {
 	CompactAtSeq     int64
 	CompactSeqs      string // comma-separated list of all compact atSeqs
 	PlanMode         bool
+	Model            string
+	ActiveEndpoint   string
 	CreatedAt        int64
 	UpdatedAt        int64
 }
@@ -221,7 +229,7 @@ func (s *Store) UpdateSessionTitle(id, title string) error {
 // ListSessions returns sessions for workDir ordered newest first.
 func (s *Store) ListSessions(workDir string) ([]SessionRow, error) {
 	rows, err := s.db.Query(
-		`SELECT id, work_dir, title, total_cost, context_window, input_price, output_price, last_prompt_tokens, created_at, updated_at
+		`SELECT id, work_dir, title, total_cost, last_prompt_tokens, created_at, updated_at
 		   FROM sessions WHERE work_dir = ? ORDER BY updated_at DESC`,
 		workDir,
 	)
@@ -233,7 +241,7 @@ func (s *Store) ListSessions(workDir string) ([]SessionRow, error) {
 	for rows.Next() {
 		var r SessionRow
 		var title sql.NullString
-		if err := rows.Scan(&r.ID, &r.WorkDir, &title, &r.TotalCost, &r.ContextWindow, &r.InputPrice, &r.OutputPrice, &r.LastPromptTokens, &r.CreatedAt, &r.UpdatedAt); err != nil {
+		if err := rows.Scan(&r.ID, &r.WorkDir, &title, &r.TotalCost, &r.LastPromptTokens, &r.CreatedAt, &r.UpdatedAt); err != nil {
 			return nil, err
 		}
 		r.Title = title.String
@@ -248,12 +256,21 @@ func (s *Store) GetSession(id string) (SessionRow, error) {
 	var title sql.NullString
 	var planMode int
 	err := s.db.QueryRow(
-		`SELECT id, work_dir, title, total_cost, context_window, input_price, output_price, last_prompt_tokens, compacted_summary, compact_at_seq, compact_seqs, plan_mode, created_at, updated_at
+		`SELECT id, work_dir, title, total_cost, context_window, input_price, output_price, last_prompt_tokens, compacted_summary, compact_at_seq, compact_seqs, plan_mode, model, active_endpoint, created_at, updated_at
 		   FROM sessions WHERE id = ?`, id,
-	).Scan(&r.ID, &r.WorkDir, &title, &r.TotalCost, &r.ContextWindow, &r.InputPrice, &r.OutputPrice, &r.LastPromptTokens, &r.CompactedSummary, &r.CompactAtSeq, &r.CompactSeqs, &planMode, &r.CreatedAt, &r.UpdatedAt)
+	).Scan(&r.ID, &r.WorkDir, &title, &r.TotalCost, &r.ContextWindow, &r.InputPrice, &r.OutputPrice, &r.LastPromptTokens, &r.CompactedSummary, &r.CompactAtSeq, &r.CompactSeqs, &planMode, &r.Model, &r.ActiveEndpoint, &r.CreatedAt, &r.UpdatedAt)
 	r.Title = title.String
 	r.PlanMode = planMode != 0
 	return r, err
+}
+
+// UpdateSessionModel persists the model and active endpoint for a session.
+func (s *Store) UpdateSessionModel(id, model, activeEndpoint string) error {
+	_, err := s.db.Exec(
+		`UPDATE sessions SET model = ?, active_endpoint = ?, updated_at = ? WHERE id = ?`,
+		model, activeEndpoint, now(), id,
+	)
+	return err
 }
 
 // UpdateSessionPlanMode persists the plan mode flag for a session.

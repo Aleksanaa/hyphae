@@ -12,10 +12,14 @@ import (
 
 // SessionInfo carries the billing and display metadata for a resumed session.
 type SessionInfo struct {
-	TotalCost     float64
-	PromptTokens  int64
-	ContextWindow int64
-	PlanMode      bool
+	TotalCost      float64
+	PromptTokens   int64
+	ContextWindow  int64
+	InputPrice     float64
+	OutputPrice    float64
+	PlanMode       bool
+	Model          string
+	ActiveEndpoint string
 }
 
 // CloseSession persists a session and removes it from memory. If it was active,
@@ -75,6 +79,9 @@ func (c *Controller) OpenSessions() []*session.Session {
 func (c *Controller) NewSession() *session.Session {
 	sess := c.mgr.New()
 	c.mgr.SetActive(sess.ID)
+	c.mu.Lock()
+	c.sessionModels[sess.ID] = [2]string{c.cfg.Model, c.cfg.ActiveEndpointName}
+	c.mu.Unlock()
 	return sess
 }
 
@@ -170,7 +177,11 @@ func (c *Controller) ResumeSession(id string) (*session.Session, SessionInfo, er
 		info.TotalCost = row.TotalCost
 		info.PromptTokens = row.LastPromptTokens
 		info.ContextWindow = row.ContextWindow
+		info.InputPrice = row.InputPrice
+		info.OutputPrice = row.OutputPrice
 		info.PlanMode = row.PlanMode
+		info.Model = row.Model
+		info.ActiveEndpoint = row.ActiveEndpoint
 		if row.PlanMode {
 			sess.SetPlanMode(true)
 		}
@@ -178,6 +189,7 @@ func (c *Controller) ResumeSession(id string) (*session.Session, SessionInfo, er
 		c.mu.Lock()
 		c.sessionCosts[id] = row.TotalCost
 		c.lastPromptTokens[id] = row.LastPromptTokens
+		c.sessionModels[id] = [2]string{row.Model, row.ActiveEndpoint}
 		c.mu.Unlock()
 
 		if row.CompactedSummary != "" {
@@ -221,9 +233,17 @@ func (c *Controller) PersistSession(sess *session.Session, cost float64, promptT
 	if !hasContent {
 		return
 	}
+	c.mu.Lock()
+	sm := c.sessionModels[sess.ID]
+	c.mu.Unlock()
+	model, ep := sm[0], sm[1]
+	if model == "" {
+		model, ep = c.cfg.Model, c.cfg.ActiveEndpointName
+	}
 	workDir, _ := os.Getwd()
 	c.st.CreateSession(sess.ID, workDir)                 //nolint:errcheck
 	c.st.UpdateSessionUsage(sess.ID, cost, promptTokens) //nolint:errcheck
+	c.st.UpdateSessionModel(sess.ID, model, ep)          //nolint:errcheck
 	var lastThinkingSecs int
 	for seq, msg := range msgs {
 		if msg.Role == session.RoleStatus {

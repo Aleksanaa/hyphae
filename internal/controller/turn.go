@@ -225,8 +225,8 @@ func (c *Controller) processAgentEvents(sessionID string, agCh <-chan agent.Even
 			c.mu.Lock()
 			cost := callCost
 			if cost == 0 {
-				cost = float64(pt)*c.cfg.InputPrice/1_000_000 +
-					float64(ct)*c.cfg.OutputPrice/1_000_000
+				cost = float64(pt)*c.inputPrice/1_000_000 +
+					float64(ct)*c.outputPrice/1_000_000
 			}
 			if cost > 0 {
 				c.sessionCosts[sessionID] += cost

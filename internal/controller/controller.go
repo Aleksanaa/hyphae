@@ -98,7 +98,13 @@ type Controller struct {
 
 	sessionCosts     map[string]float64
 	lastPromptTokens map[string]int64
+	sessionModels    map[string][2]string // sessionID → {modelID, endpointName}
 	sendCancel       context.CancelFunc
+
+	// Pricing/context-window for the current model; not persisted in config.
+	contextWindow int64
+	inputPrice    float64
+	outputPrice   float64
 }
 
 // New creates a Controller. ctx is the application-lifetime context; when it is
@@ -114,6 +120,7 @@ func New(ag *agent.Agent, mgr *session.Manager, cfg *config.Config, st *store.St
 		ch:               make(chan Event),
 		sessionCosts:     make(map[string]float64),
 		lastPromptTokens: make(map[string]int64),
+		sessionModels:    make(map[string][2]string),
 	}
 	go c.eventForwarder()
 	return c
@@ -171,6 +178,13 @@ func (c *Controller) Events() <-chan Event { return c.ch }
 
 // Context returns the application-lifetime context.
 func (c *Controller) Context() context.Context { return c.ctx }
+
+// ContextWindow returns the in-memory context window for the current model.
+func (c *Controller) ContextWindow() int64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.contextWindow
+}
 
 // emit enqueues an event for delivery. Never blocks; returns immediately once
 // the forwarder goroutine accepts the event (or the context expires).

@@ -29,10 +29,10 @@ func (c *Controller) RemoveEndpoint(name string) error {
 	return c.cfg.Save()
 }
 
-// SwitchModel updates the active endpoint and model, recreates the agent,
-// resets per-model pricing, and saves the config. Fetches updated pricing
-// from models.dev in the background.
-func (c *Controller) SwitchModel(epName, modelID string, cw int64) {
+// SwitchModel updates the active endpoint and model, recreates the agent, and
+// saves the config. inputPrice and outputPrice restore previously known pricing
+// (pass 0 on a fresh switch; they will be fetched from models.dev in the background).
+func (c *Controller) SwitchModel(epName, modelID string, cw int64, inputPrice, outputPrice float64) {
 	c.cfg.ActiveEndpointName = epName
 	c.cfg.Model = modelID
 	var ep config.Endpoint
@@ -42,22 +42,26 @@ func (c *Controller) SwitchModel(epName, modelID string, cw int64) {
 			break
 		}
 	}
+	activeID := c.mgr.ActiveID()
 	c.mu.Lock()
 	c.ag = agent.New(ep.BaseURL, ep.APIKey, modelID)
+	c.contextWindow = cw
+	c.inputPrice = inputPrice
+	c.outputPrice = outputPrice
+	if activeID != "" {
+		c.sessionModels[activeID] = [2]string{modelID, epName}
+	}
 	c.mu.Unlock()
 
-	c.cfg.ContextWindow = 0
-	c.cfg.InputPrice = 0
-	c.cfg.OutputPrice = 0
 	if cw > 0 {
-		c.cfg.ContextWindow = cw
 		c.emit(Event{Kind: EvContextWindow, ContextWindow: cw})
 	}
 	go c.FetchModelDevInfoAsync(c.ctx, modelID)
 
 	if c.st != nil {
 		if sess, ok := c.mgr.Active(); ok {
-			go c.st.UpdateSessionPricing(sess.ID, c.cfg.ContextWindow, c.cfg.InputPrice, c.cfg.OutputPrice) //nolint:errcheck
+			go c.st.UpdateSessionModel(sess.ID, modelID, epName)               //nolint:errcheck
+			go c.st.UpdateSessionPricing(sess.ID, cw, inputPrice, outputPrice) //nolint:errcheck
 		}
 	}
 	c.cfg.Save() //nolint:errcheck
@@ -100,26 +104,32 @@ func (c *Controller) FetchModelDevInfoAsync(ctx context.Context, modelID string)
 	if info.ContextWindow <= 0 && info.InputPrice == 0 && info.OutputPrice == 0 {
 		return
 	}
+	c.mu.Lock()
 	changed := false
-	if info.ContextWindow > 0 && c.cfg.ContextWindow != info.ContextWindow {
-		c.cfg.ContextWindow = info.ContextWindow
+	if info.ContextWindow > 0 && c.contextWindow != info.ContextWindow {
+		c.contextWindow = info.ContextWindow
+		changed = true
+	}
+	if info.InputPrice > 0 && c.inputPrice != info.InputPrice {
+		c.inputPrice = info.InputPrice
+		changed = true
+	}
+	if info.OutputPrice > 0 && c.outputPrice != info.OutputPrice {
+		c.outputPrice = info.OutputPrice
+		changed = true
+	}
+	cw, ip, op := c.contextWindow, c.inputPrice, c.outputPrice
+	c.mu.Unlock()
+
+	if !changed {
+		return
+	}
+	if info.ContextWindow > 0 {
 		c.emit(Event{Kind: EvContextWindow, ContextWindow: info.ContextWindow})
-		changed = true
 	}
-	if info.InputPrice > 0 && c.cfg.InputPrice != info.InputPrice {
-		c.cfg.InputPrice = info.InputPrice
-		changed = true
-	}
-	if info.OutputPrice > 0 && c.cfg.OutputPrice != info.OutputPrice {
-		c.cfg.OutputPrice = info.OutputPrice
-		changed = true
-	}
-	if changed {
-		c.cfg.Save() //nolint:errcheck
-		if c.st != nil {
-			if sess, ok := c.mgr.Active(); ok {
-				go c.st.UpdateSessionPricing(sess.ID, c.cfg.ContextWindow, c.cfg.InputPrice, c.cfg.OutputPrice) //nolint:errcheck
-			}
+	if c.st != nil {
+		if sess, ok := c.mgr.Active(); ok {
+			go c.st.UpdateSessionPricing(sess.ID, cw, ip, op) //nolint:errcheck
 		}
 	}
 }

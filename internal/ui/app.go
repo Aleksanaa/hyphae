@@ -110,9 +110,6 @@ func (a *App) openNewTab() string {
 	sess := a.ctrl.NewSession()
 	tc := a.registerTab(sess.ID)
 	tc.Status.SetDefault(a.cfg.Model, session.StatusIdle)
-	if a.cfg.ContextWindow > 0 {
-		tc.Status.SetContextWindow(a.cfg.ContextWindow)
-	}
 	return sess.ID
 }
 
@@ -144,7 +141,7 @@ func New(cfg *config.Config) *App {
 	layout.ShowTab(id)
 	a.syncTabs()
 
-	if cfg.Model != "" && (cfg.ContextWindow == 0 || cfg.InputPrice == 0) {
+	if cfg.Model != "" {
 		go ctrl.FetchModelDevInfoAsync(ctrl.Context(), cfg.Model)
 	}
 
@@ -580,14 +577,24 @@ func (a *App) resumeSession(id string) {
 		return
 	}
 
+	// Restore per-session model if it differs from the current default.
+	model := a.cfg.Model
+	if info.Model != "" {
+		a.ctrl.SwitchModel(info.ActiveEndpoint, info.Model, info.ContextWindow, info.InputPrice, info.OutputPrice)
+		model = info.Model
+	}
+
 	tc := a.registerTab(sess.ID)
-	tc.Status.SetDefault(a.cfg.Model, session.StatusIdle)
+	tc.Status.SetDefault(model, session.StatusIdle)
 	cw := info.ContextWindow
 	if cw == 0 {
-		cw = a.cfg.ContextWindow
+		cw = a.ctrl.ContextWindow()
 	}
 	if cw > 0 {
 		tc.Status.SetContextWindow(cw)
+	} else if info.Model == "" && model != "" {
+		// Old session with no stored model; ensure CW is available for the current model.
+		go a.ctrl.FetchModelDevInfoAsync(a.ctrl.Context(), model)
 	}
 	if info.PlanMode {
 		tc.ShowPlanMode()
@@ -647,7 +654,7 @@ func (a *App) setupPalette() {
 			if len(parts) == 3 {
 				fmt.Sscanf(parts[2], "%d", &cw)
 			}
-			a.ctrl.SwitchModel(epName, model, cw)
+			a.ctrl.SwitchModel(epName, model, cw, 0, 0)
 			if tc := a.activeContent(); tc != nil {
 				tc.Status.SetDefault(model, session.StatusIdle)
 			}
