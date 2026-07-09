@@ -22,15 +22,15 @@ var builtinTools = []toolDef{
 			Description: openai.String(`Execute a Starlark program. All operations are available as built-in functions.
 
 Built-ins (first arg positional, rest keyword-only):
-  read_file(path, offset=?, limit=?)
-  write_file(path, content=, reasoning=)
-  edit_file(path, edits=, reasoning=)       edits: list of {old_string, new_string} dicts
-  list_directory(path=?)             returns list of filenames (dirs end with /)
-  run_shell(command, reasoning=)
-  web_fetch(url, format=?, reasoning=)           format: "markdown"|"text"|"html"
-  web_search(query, max_results=?, reasoning=)   returns list of {title, url, snippet} dicts
-  search_files(pattern, path=?, glob=?, case_sensitive=?)  returns list of {file, line, content} dicts
-  ask_user(question, options=)
+  read_file(path, offset=?, limit=?) → string
+  write_file(path, content=, reasoning=) → None
+  edit_file(path, edits=, reasoning=) → None   edits: list of {old_string, new_string} dicts
+  list_directory(path=?) → list of strings (dirs end with /)
+  run_shell(command, reasoning=) → string (combined stdout+stderr)
+  web_fetch(url, format=?, reasoning=) → string   format: "markdown"|"text"|"html"
+  web_search(query, max_results=?, reasoning=) → list of {title, url, snippet} dicts
+  search_files(pattern, path=?, glob=?, case_sensitive=?) → list of {file, line, content} dicts
+  ask_user(question, options=) → string (selected option or free text)
 
 write_file, edit_file, run_shell, web_fetch, web_search require approval and pause for confirmation; denial raises an error. You must pass reasoning= to explain the action — omitting it is an error.`),
 			Parameters: openai.FunctionParameters{
