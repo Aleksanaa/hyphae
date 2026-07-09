@@ -59,10 +59,11 @@ const (
 	NOP Opcode = iota // - NOP -
 
 	// stack operations
-	DUP  //   x DUP x x
-	DUP2 // x y DUP2 x y x y
-	POP  //   x POP -
-	EXCH // x y EXCH y x
+	DUP        //   x DUP x x
+	DUP2       // x y DUP2 x y x y
+	POP        //   x POP        -
+	PRINT_EXPR //   x PRINT_EXPR -  (displays x via thread.Print if not None)
+	EXCH       // x y EXCH       y x
 
 	// binary comparisons
 	// (order must match Token)
@@ -202,6 +203,7 @@ var opcodeNames = [...]string{
 	PIPE:         "pipe",
 	PLUS:         "plus",
 	POP:          "pop",
+	PRINT_EXPR:   "print_expr",
 	PREDECLARED:  "predeclared",
 	RETURN:       "return",
 	SETDICT:      "setdict",
@@ -276,6 +278,7 @@ var stackEffect = [...]int8{
 	PIPE:         -1,
 	PLUS:         -1,
 	POP:          -1,
+	PRINT_EXPR:   -1,
 	PREDECLARED:  +1,
 	RETURN:       -1,
 	SETLOCALCELL: -1,
@@ -361,6 +364,7 @@ type Binding struct {
 // A pcomp holds the compiler state for a Program.
 type pcomp struct {
 	prog *Program // what we're building
+	repl bool     // emit PRINT_EXPR for top-level expression statements
 
 	names     map[string]uint32
 	constants map[any]uint32
@@ -369,7 +373,8 @@ type pcomp struct {
 
 // An fcomp holds the compiler state for a Funcode.
 type fcomp struct {
-	fn *Funcode // what we're building
+	fn       *Funcode // what we're building
+	topLevel bool     // true for the module's top-level function
 
 	pcomp *pcomp
 	pos   syntax.Position // current position of generated code
@@ -501,19 +506,21 @@ func File(opts *syntax.FileOptions, stmts []syntax.Stmt, pos syntax.Position, na
 			Globals:   bindings(globals),
 			Recursion: opts.Recursion,
 		},
+		repl:      opts.REPL,
 		names:     make(map[string]uint32),
 		constants: make(map[any]uint32),
 		functions: make(map[*Funcode]uint32),
 	}
-	pcomp.prog.Toplevel = pcomp.function(name, pos, stmts, locals, nil)
+	pcomp.prog.Toplevel = pcomp.function(name, pos, stmts, locals, nil, true)
 
 	return pcomp.prog
 }
 
-func (pcomp *pcomp) function(name string, pos syntax.Position, stmts []syntax.Stmt, locals, freevars []*resolve.Binding) *Funcode {
+func (pcomp *pcomp) function(name string, pos syntax.Position, stmts []syntax.Stmt, locals, freevars []*resolve.Binding, topLevel bool) *Funcode {
 	fcomp := &fcomp{
-		pcomp: pcomp,
-		pos:   pos,
+		pcomp:    pcomp,
+		pos:      pos,
+		topLevel: topLevel,
 		fn: &Funcode{
 			Prog:     pcomp.prog,
 			Pos:      pos,
@@ -1055,7 +1062,11 @@ func (fcomp *fcomp) stmt(stmt syntax.Stmt) {
 			return
 		}
 		fcomp.expr(stmt.X)
-		fcomp.emit(POP)
+		if fcomp.topLevel && fcomp.pcomp.repl {
+			fcomp.emit(PRINT_EXPR)
+		} else {
+			fcomp.emit(POP)
+		}
 
 	case *syntax.BranchStmt:
 		// Resolver invariant: break/continue appear only within loops.
@@ -1849,7 +1860,7 @@ func (fcomp *fcomp) function(f *resolve.Function) {
 
 	fcomp.emit1(MAKETUPLE, uint32(ndefaults+len(f.FreeVars)))
 
-	funcode := fcomp.pcomp.function(f.Name, f.Pos, f.Body, f.Locals, f.FreeVars)
+	funcode := fcomp.pcomp.function(f.Name, f.Pos, f.Body, f.Locals, f.FreeVars, false)
 
 	if debug {
 		// TODO(adonovan): do compilations sequentially not as a tree,

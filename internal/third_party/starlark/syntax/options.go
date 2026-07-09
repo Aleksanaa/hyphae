@@ -30,6 +30,7 @@ type FileOptions struct {
 
 	// compiler
 	Recursion bool // disable recursion check for functions in this file
+	REPL      bool // print top-level expression values automatically (REPL/notebook mode)
 }
 
 // TODO(adonovan): provide a canonical flag parser for FileOptions.

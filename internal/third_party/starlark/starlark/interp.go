@@ -157,6 +157,17 @@ loop:
 		case compile.POP:
 			sp--
 
+		case compile.PRINT_EXPR:
+			v := stack[sp-1]
+			sp--
+			if v != None {
+				if thread.Print != nil {
+					thread.Print(thread, v.String())
+				} else {
+					fmt.Println(v)
+				}
+			}
+
 		case compile.EXCH:
 			stack[sp-2], stack[sp-1] = stack[sp-1], stack[sp-2]
 
