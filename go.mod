@@ -15,6 +15,7 @@ require (
 	github.com/rivo/tview v0.42.0
 	github.com/rivo/uniseg v0.4.7
 	github.com/yuin/goldmark v1.8.2
+	go.starlark.net v0.0.0-20260708150628-5395d018f003
 	golang.org/x/net v0.56.0
 	modernc.org/sqlite v1.53.0
 )

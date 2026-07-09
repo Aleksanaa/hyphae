@@ -20,13 +20,13 @@ var planModePrompt string
 
 const systemPrompt = `You are a skilled coding assistant. You help the user read, write, and reason about code.
 
-You have tools to read files, edit files (targeted replacements), write files, list directories, run shell commands, fetch web pages, and search for text. Use them methodically: understand the task, explore when needed, make targeted changes, and verify your work.
+You have one tool: run. It executes a Starlark program where every operation (reading files, editing files, running shell commands, searching, fetching URLs, asking the user) is available as a built-in function. Use run for all tasks — exploration, editing, verification, and multi-step workflows alike.
 
-search_files supports boolean queries (AND/OR/NOT, phrases, /regex/, ext:go filters) and returns ranked results — prefer it over grep, and prefer one rich query over multiple narrow ones.
+search_files supports boolean queries (AND/OR/NOT, phrases, /regex/, ext:go filters) and returns ranked results. Prefer one rich query over many narrow ones.
 
-For file edits, prefer edit_file over write_file — it takes an edits array of {old_string, new_string} pairs and applies them in order. Each old_string must appear exactly once in the file; include enough surrounding context to make it unique. Use write_file only to create new files.
+For file edits, prefer edit_file over write_file — it takes an edits list of {old_string: ..., new_string: ...} dicts and applies them in order. Each old_string must appear exactly once; include enough surrounding context to make it unique.
 
-run_shell, web_fetch, web_search, write_file, and edit_file require user approval before executing. Always fill in the "reasoning" field with one short sentence explaining why — it is shown to the user in the approval prompt.`
+write_file, edit_file, run_shell, web_fetch, and web_search require user approval and will pause mid-script for confirmation.`
 
 // EventType classifies an agent event sent to the UI.
 type EventType string
@@ -277,106 +277,13 @@ func (a *Agent) loop(ctx context.Context, sess *session.Session, ch chan<- Event
 
 			te := &ToolEvent{CallID: tc.ID, Name: tc.Function.Name, Input: tc.Function.Arguments}
 
-			// ask_user blocks waiting for user selection before continuing.
-			if tc.Function.Name == "ask_user" {
-				var args struct {
-					Question string   `json:"question"`
-					Options  []string `json:"options"`
-				}
-				json.Unmarshal([]byte(tc.Function.Arguments), &args)
-				te.SelectQuestion = args.Question
-				te.SelectOptions = args.Options
-
-				sess.SetToolState(msgIdx, tc.ID, "pending")
-				respCh := make(chan string, 1)
-				select {
-				case ch <- Event{Type: EventSelectPrompt, Tool: te, SelectRespCh: respCh}:
-				case <-ctx.Done():
-					return
-				}
-				var answer string
-				select {
-				case answer = <-respCh:
-				case <-ctx.Done():
-					return
-				}
-				te.Output = answer
-				sess.AddMessage(session.Message{
-					Role:       session.RoleTool,
-					ToolResult: &session.ToolResult{ID: tc.ID, Content: answer},
-				})
-				sess.SetToolResult(msgIdx, tc.ID, answer, false)
-				select {
-				case ch <- Event{Type: EventToolDone, Tool: te}:
-				case <-ctx.Done():
-				}
-				continue
-			}
-
-			if requiresApproval(tc.Function.Name) {
-				te.Reasoning, te.Input = extractReasoning(tc.Function.Arguments)
-				var diffErr error
-				te.FilePath, te.DiffPatch, diffErr = computeDiffForApproval(tc.Function.Name, tc.Function.Arguments, sess.WorkDir)
-				if diffErr != nil {
-					errMsg := diffErr.Error()
-					sess.AddMessage(session.Message{
-						Role:       session.RoleTool,
-						ToolResult: &session.ToolResult{ID: tc.ID, Content: errMsg, IsError: true},
-					})
-					sess.SetToolResult(msgIdx, tc.ID, errMsg, true)
-					te.Output = errMsg
-					te.IsError = true
-					select {
-					case ch <- Event{Type: EventToolDone, Tool: te}:
-					case <-ctx.Done():
-					}
-					continue
-				}
-				sess.SetToolState(msgIdx, tc.ID, "pending")
-				respCh := make(chan ApprovalResult, 1)
-				select {
-				case ch <- Event{Type: EventToolApproval, Tool: te, RespCh: respCh}:
-				case <-ctx.Done():
-					return
-				}
-				var approval ApprovalResult
-				select {
-				case approval = <-respCh:
-				case <-ctx.Done():
-					return
-				}
-				if !approval.Allowed {
-					denied := "Execution denied by user."
-					if approval.DenyReason != "" {
-						denied += " Reason: " + approval.DenyReason
-					}
-					sess.AddMessage(session.Message{
-						Role:       session.RoleTool,
-						ToolResult: &session.ToolResult{ID: tc.ID, Content: denied, IsError: true},
-					})
-					sess.SetToolResult(msgIdx, tc.ID, denied, true)
-					sess.SetToolState(msgIdx, tc.ID, "refused")
-					te.Output = denied
-					te.IsError = true
-					select {
-					case ch <- Event{Type: EventToolDone, Tool: te}:
-					case <-ctx.Done():
-					}
-					continue
-				}
-			}
-
-			if requiresApproval(tc.Function.Name) {
-				sess.SetToolState(msgIdx, tc.ID, "running")
-			}
-
 			select {
 			case ch <- Event{Type: EventToolStart, Tool: te}:
 			case <-ctx.Done():
 				return
 			}
 
-			output, isErr := executeTool(ctx, tc.Function.Name, tc.Function.Arguments, sess.WorkDir)
+			output, isErr := runScript(ctx, ch, tc.Function.Arguments, sess.WorkDir)
 			te.Output = output
 			te.IsError = isErr
 
@@ -510,18 +417,10 @@ func ParseToolDisplay(name, input string) (displayKey string, params []session.T
 		return string(raw)
 	}
 
-	primary := "path"
+	primary := "code"
 	switch name {
-	case "run_shell":
-		primary = "command"
-	case "web_fetch":
-		primary = "url"
-	case "web_search":
-		primary = "query"
-	case "search_files":
-		primary = "pattern"
-	case "ask_user":
-		primary = "question"
+	case "run":
+		primary = "code"
 	}
 	if v, ok := m[primary]; ok {
 		val := fmtVal(v)
