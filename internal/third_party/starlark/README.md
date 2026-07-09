@@ -11,3 +11,14 @@ Top-level expression statements now emit a `PRINT_EXPR` opcode (instead of `POP`
 - `starlark/interp.go` — `PRINT_EXPR` case in the bytecode interpreter
 
 When updating from upstream, re-apply these changes.
+
+**d0c31416 — add \*\* operator, \*\*= augmented assignment, and pow()**
+Merged from https://github.com/google/starlark-go/pull/632. Changes are in:
+- `syntax/scan.go` — `STARSTAR` token moved between binary ops; `STARSTAR_EQ` added
+- `syntax/parse.go` — `parseFactor()` and `parsePower()` for right-associative `**`
+- `internal/compile/compile.go` — `STARSTAR` opcode, augmented assignment support
+- `starlark/eval.go` — `STARSTAR` case in `Binary()`, `floatPow()` helper
+- `starlark/interp.go` — `STARSTAR` added to binop switch
+- `starlark/library.go` — `pow()` builtin
+
+This is an upstream PR not yet merged; verify it landed before dropping this note on update.
