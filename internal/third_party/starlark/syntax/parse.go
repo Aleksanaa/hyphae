@@ -14,6 +14,7 @@ package syntax
 import (
 	"log"
 	"slices"
+	"strings"
 )
 
 // Enable this flag to print the token stream and log.Fatal on the first error.
@@ -894,6 +895,29 @@ func (p *parser) parsePrimary() Expr {
 		raw := p.tokval.raw
 		pos := p.nextToken()
 		return &Literal{Token: tok, TokenPos: pos, Raw: raw, Value: val}
+	case FSTRING_FULL:
+		val := p.tokval.string
+		raw := p.tokval.raw
+		token := p.tok
+		pos := p.nextToken()
+		response := Literal{Token: token, TokenPos: pos, Raw: raw, Value: val}
+		return &response
+	case FSTRING_PART:
+		resultExpr := FStringExpr{}
+		resultExpr.StringParts = append(resultExpr.StringParts, strings.ReplaceAll(strings.ReplaceAll(p.tokval.string, "}", "}}"), "{", "{{"))
+		resultExpr.RawParts = append(resultExpr.RawParts, p.tokval.raw)
+		toktmp := p.tok
+		pos := p.nextToken()
+		resultExpr.TokenPos = pos
+		for toktmp != FSTRING_END {
+			x := p.parseTest()
+			resultExpr.Args = append(resultExpr.Args, x)
+			resultExpr.StringParts = append(resultExpr.StringParts, strings.ReplaceAll(strings.ReplaceAll(p.tokval.string, "}", "}}"), "{", "{{"))
+			resultExpr.RawParts = append(resultExpr.RawParts, p.tokval.raw)
+			toktmp = p.tok
+			p.nextToken()
+		}
+		return &resultExpr
 
 	case LBRACK:
 		return p.parseList()
