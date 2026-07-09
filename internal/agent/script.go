@@ -423,6 +423,9 @@ func buildScriptEnv(ctx context.Context, ch chan<- Event, workDir string, counte
 				}
 			}
 			if requiresApproval(toolName) {
+				if _, hasReasoning := argsMap["reasoning"]; !hasReasoning {
+					return nil, fmt.Errorf("%s: reasoning= is required — briefly explain to the user why you are performing this action", toolName)
+				}
 				jsonBytes, _ := json.Marshal(argsMap)
 				argsJSON := string(jsonBytes)
 				te := &ToolEvent{
@@ -430,6 +433,7 @@ func buildScriptEnv(ctx context.Context, ch chan<- Event, workDir string, counte
 					Name:   toolName,
 				}
 				te.Reasoning, te.Input = extractReasoning(argsJSON)
+				delete(argsMap, "reasoning")
 				var diffErr error
 				te.FilePath, te.DiffPatch, diffErr = computeDiffForApproval(toolName, argsJSON, workDir)
 				if diffErr != nil {
