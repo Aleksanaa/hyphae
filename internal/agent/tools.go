@@ -29,7 +29,7 @@ Available built-in functions. The first argument may be passed positionally; rem
   run_shell(command)
   web_fetch(url, format=?)                    — format: "markdown" (default)|"text"|"html"
   web_search(query, max_results=?)            — returns a list of {title, url, snippet} dicts
-  search_files(query, path=?, case_sensitive=?, context_lines=?)
+  search_files(pattern, path=?, glob=?, case_sensitive=?)        — returns a list of {file, line, content} dicts
   ask_user(question, options=)
 
 IMPORTANT: built-in functions return their output as values. You must print() to see results:

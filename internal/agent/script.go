@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,12 +10,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync/atomic"
 
-	codespelunker "github.com/aleksanaa/hyphae/internal/third_party/codespelunker"
-	"github.com/aleksanaa/hyphae/internal/third_party/codespelunker/ranker"
-	"github.com/aleksanaa/hyphae/internal/third_party/codespelunker/snippet"
+	"github.com/boyter/gocodewalker"
 	starlarkmath "go.starlark.net/lib/math"
 	starlarktime "go.starlark.net/lib/time"
 	"go.starlark.net/starlark"
@@ -190,74 +190,93 @@ func starlarkWebSearch(ctx context.Context, args map[string]any, _ string) (star
 }
 
 func starlarkSearchFiles(ctx context.Context, args map[string]any, workDir string) (starlark.Value, error) {
-	query := str(args, "query")
-	if query == "" {
-		return nil, fmt.Errorf("query is required")
+	pattern := str(args, "pattern")
+	if pattern == "" {
+		return nil, fmt.Errorf("pattern is required")
 	}
+
 	p := str(args, "path")
 	if p == "" {
 		p = workDir
 	} else {
 		p = resolvePath(p, workDir)
 	}
+
+	glob := str(args, "glob")
 	caseSensitive, _ := args["case_sensitive"].(bool)
 
-	if info, err := os.Stat(p); err == nil && !info.IsDir() {
-		query += " file:" + info.Name()
-		p = filepath.Dir(p)
+	reStr := pattern
+	if !caseSensitive {
+		reStr = "(?i)" + pattern
 	}
-
-	ctxLines := 1
-	if v, ok := args["context_lines"].(float64); ok && v >= 0 {
-		ctxLines = int(v)
-		if ctxLines > 5 {
-			ctxLines = 5
-		}
-	}
-
-	results, _, err := codespelunker.Search(ctx, query, p, codespelunker.Options{
-		CaseSensitive: caseSensitive,
-	})
+	re, err := regexp.Compile(reStr)
 	if err != nil {
-		return nil, err
-	}
-	if len(results) == 0 {
-		return starlark.String("(no matches)"), nil
+		return nil, fmt.Errorf("invalid pattern: %w", err)
 	}
 
-	testIntent := ranker.HasTestIntent(strings.Fields(query))
-	results = ranker.RankResults("tfidf", len(results), results, nil, nil, testIntent)
+	searchCtx, cancelSearch := context.WithCancel(ctx)
+	defer cancelSearch()
 
-	const maxFiles = 20
-	if len(results) > maxFiles {
-		results = results[:maxFiles]
-	}
+	fileQueue := make(chan *gocodewalker.File, 1000)
+	walker := gocodewalker.NewParallelFileWalker([]string{p}, fileQueue)
+	walker.ExcludeDirectory = []string{".git", ".hg", ".svn"}
 
-	var sb strings.Builder
-	for _, res := range results {
-		lines := snippet.FindAllMatchingLines(res, 200, ctxLines, ctxLines)
-		if len(lines) == 0 {
+	go func() {
+		<-searchCtx.Done()
+		walker.Terminate()
+	}()
+	go func() { _ = walker.Start() }()
+
+	const maxResults = 500
+	var elems []starlark.Value
+
+	for f := range fileQueue {
+		if searchCtx.Err() != nil {
+			break
+		}
+
+		if glob != "" {
+			if matched, _ := filepath.Match(glob, f.Filename); !matched {
+				continue
+			}
+		}
+
+		content, err := os.ReadFile(f.Location)
+		if err != nil || len(content) == 0 {
 			continue
 		}
-		rel, err := filepath.Rel(workDir, res.Location)
+
+		// Skip binary files.
+		check := content
+		if len(check) > 10_000 {
+			check = check[:10_000]
+		}
+		if bytes.IndexByte(check, 0) != -1 {
+			continue
+		}
+
+		rel, err := filepath.Rel(workDir, f.Location)
 		if err != nil {
-			rel = res.Location
+			rel = f.Location
 		}
-		fmt.Fprintf(&sb, "=== %s", rel)
-		if res.Language != "" {
-			fmt.Fprintf(&sb, " (%s)", res.Language)
+
+		for lineNum, line := range strings.Split(string(content), "\n") {
+			if re.MatchString(line) {
+				d := new(starlark.Dict)
+				d.SetKey(starlark.String("file"), starlark.String(rel))                              //nolint:errcheck
+				d.SetKey(starlark.String("line"), starlark.MakeInt(lineNum+1))                       //nolint:errcheck
+				d.SetKey(starlark.String("content"), starlark.String(strings.TrimRight(line, "\r"))) //nolint:errcheck
+				elems = append(elems, d)
+			}
 		}
-		fmt.Fprintln(&sb, " ===")
-		for _, lr := range lines {
-			fmt.Fprintf(&sb, "%4d: %s\n", lr.LineNumber, lr.Content)
+
+		if len(elems) >= maxResults {
+			cancelSearch()
+			break
 		}
-		sb.WriteByte('\n')
 	}
-	out := strings.TrimRight(sb.String(), "\n")
-	if out == "" {
-		return starlark.String("(no matches)"), nil
-	}
-	return starlark.String(out), nil
+
+	return starlark.NewList(elems), nil
 }
 
 // ── Script execution ──────────────────────────────────────────────────────────
@@ -279,7 +298,7 @@ var scriptTools = []scriptTool{
 	{"run_shell", "command", starlarkRunShell},
 	{"web_fetch", "url", starlarkWebFetch},
 	{"web_search", "query", starlarkWebSearch},
-	{"search_files", "query", starlarkSearchFiles},
+	{"search_files", "pattern", starlarkSearchFiles},
 }
 
 // runScript executes a Starlark program with all agent operations available as
