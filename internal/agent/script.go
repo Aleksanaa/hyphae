@@ -14,11 +14,11 @@ import (
 	"strings"
 	"sync/atomic"
 
-	"github.com/boyter/gocodewalker"
 	starlarkmath "github.com/aleksanaa/hyphae/internal/third_party/starlark/lib/math"
 	starlarktime "github.com/aleksanaa/hyphae/internal/third_party/starlark/lib/time"
 	"github.com/aleksanaa/hyphae/internal/third_party/starlark/starlark"
 	"github.com/aleksanaa/hyphae/internal/third_party/starlark/syntax"
+	"github.com/boyter/gocodewalker"
 )
 
 // ── Starlark built-in implementations ────────────────────────────────────────
@@ -335,7 +335,7 @@ func runScript(ctx context.Context, ch chan<- Event, argsJSON, workDir string) (
 
 	env := buildScriptEnv(ctx, ch, workDir, &counter)
 	thread.SetMaxExecutionSteps(1_000_000_000)
-	opts := &syntax.FileOptions{TopLevelControl: true, GlobalReassign: true, While: true, Set: true, Recursion: true}
+	opts := &syntax.FileOptions{TopLevelControl: true, GlobalReassign: true, While: true, Set: true, Recursion: true, REPL: true}
 	_, err := starlark.ExecFileOptions(opts, thread, "<run>", args.Code, env)
 	if err != nil {
 		out := sb.String()

@@ -19,7 +19,7 @@ var builtinTools = []toolDef{
 	{
 		schema: openai.ChatCompletionFunctionTool(openai.FunctionDefinitionParam{
 			Name: "run",
-			Description: openai.String(`Execute a Starlark program. All operations are available as built-in functions; only print() output is returned — unlike a Python REPL, expression values are NOT shown automatically. Always use print() to see results.
+			Description: openai.String(`Execute a Starlark program. All operations are available as built-in functions.
 
 Built-ins (first arg positional, rest keyword-only):
   read_file(path, offset=?, limit=?)
