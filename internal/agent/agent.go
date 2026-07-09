@@ -26,9 +26,10 @@ For file edits, prefer edit_file over write_file — it takes an edits list of {
 
 search_files(pattern) takes a regex and returns a list of {file, line, content} dicts — use Starlark to filter, group, or format results.
 
-Two modules are pre-loaded as globals (no import statement needed or supported):
+Three modules are pre-loaded as globals (no import statement needed or supported):
   math  — math.sqrt, math.pow, math.pi, math.log, math.sin, math.ceil, math.floor, ...
   time  — time.now(), time.parse_duration("1h30m"), time.hour, time.minute, ...
+  json  — json.encode(v), json.decode(s), json.indent(s)
 
 Starlark is a sandboxed subset of Python. Supported: arithmetic, strings, lists, dicts, sets, comprehensions, for/while loops, if/else, mutable globals, recursive functions, and standard built-ins (len, range, int, float, str, bool, sorted, min, max, zip, enumerate, print, type, round, divmod, ...).
 Not supported: import, class, try/except, yield, global/nonlocal, f-strings, ** exponentiation.

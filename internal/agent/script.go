@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync/atomic"
 
+	starlarkjson "github.com/aleksanaa/hyphae/internal/third_party/starlark/lib/json"
 	starlarkmath "github.com/aleksanaa/hyphae/internal/third_party/starlark/lib/math"
 	starlarktime "github.com/aleksanaa/hyphae/internal/third_party/starlark/lib/time"
 	"github.com/aleksanaa/hyphae/internal/third_party/starlark/starlark"
@@ -359,6 +360,7 @@ func runScript(ctx context.Context, ch chan<- Event, argsJSON, workDir string) (
 // modules plus every operation wrapped as a built-in function.
 func buildScriptEnv(ctx context.Context, ch chan<- Event, workDir string, counter *atomic.Int64) starlark.StringDict {
 	env := starlark.StringDict{
+		"json": starlarkjson.Module,
 		"math": starlarkmath.Module,
 		"time": starlarktime.Module,
 		// divmod(a, b) returns (a//b, a%b) as a tuple, matching Python.
