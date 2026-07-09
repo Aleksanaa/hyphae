@@ -350,7 +350,7 @@ func (p *parser) parseSmallStmt() Stmt {
 	// Assignment
 	x := p.parseExpr(false)
 	switch p.tok {
-	case EQ, PLUS_EQ, MINUS_EQ, STAR_EQ, SLASH_EQ, SLASHSLASH_EQ, PERCENT_EQ, AMP_EQ, PIPE_EQ, CIRCUMFLEX_EQ, LTLT_EQ, GTGT_EQ:
+	case EQ, PLUS_EQ, MINUS_EQ, STAR_EQ, SLASH_EQ, SLASHSLASH_EQ, PERCENT_EQ, AMP_EQ, PIPE_EQ, CIRCUMFLEX_EQ, LTLT_EQ, GTGT_EQ, STARSTAR_EQ:
 		op := p.tok
 		pos := p.nextToken() // consume op
 		rhs := p.parseExpr(false)
@@ -627,7 +627,7 @@ func (p *parser) parseTestPrec(prec int) Expr {
 	defer p.leave()
 
 	if prec >= len(preclevels) {
-		return p.parsePrimaryWithSuffix()
+		return p.parseFactor()
 	}
 
 	// expr = NOT expr
@@ -712,6 +712,36 @@ func init() {
 
 // primary_with_suffix = primary
 //
+// parseFactor parses a unary expression or power expression.
+//
+//	factor = ('-'|'+'|'~') factor | power
+func (p *parser) parseFactor() Expr {
+	if p.tok == MINUS || p.tok == PLUS || p.tok == TILDE {
+		tok := p.tok
+		pos := p.nextToken()
+		x := p.parseFactor()
+		return &UnaryExpr{
+			OpPos: pos,
+			Op:    tok,
+			X:     x,
+		}
+	}
+	return p.parsePower()
+}
+
+// parsePower parses a power expression (right-associative **).
+//
+//	power = primary_with_suffix ('**' factor)?
+func (p *parser) parsePower() Expr {
+	x := p.parsePrimaryWithSuffix()
+	if p.tok == STARSTAR {
+		pos := p.nextToken()
+		y := p.parseFactor()
+		return &BinaryExpr{OpPos: pos, Op: STARSTAR, X: x, Y: y}
+	}
+	return x
+}
+
 //	| primary '.' IDENT
 //	| primary slice_suffix
 //	| primary call_suffix
@@ -886,15 +916,6 @@ func (p *parser) parsePrimary() Expr {
 			Rparen: rparen,
 		}
 
-	case MINUS, PLUS, TILDE: // unary
-		tok := p.tok
-		pos := p.nextToken()
-		x := p.parsePrimaryWithSuffix()
-		return &UnaryExpr{
-			OpPos: pos,
-			Op:    tok,
-			X:     x,
-		}
 	}
 
 	// Report start pos of final token as it may be a NEWLINE (#532).

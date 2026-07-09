@@ -87,6 +87,7 @@ const (
 	CIRCUMFLEX
 	LTLT
 	GTGT
+	STARSTAR
 
 	IN
 
@@ -217,6 +218,7 @@ var opcodeNames = [...]string{
 	SLASHSLASH:   "slashslash",
 	SLICE:        "slice",
 	STAR:         "star",
+	STARSTAR:     "starstar",
 	TILDE:        "tilde",
 	TRUE:         "true",
 	UMINUS:       "uminus",
@@ -292,6 +294,7 @@ var stackEffect = [...]int8{
 	SLASHSLASH:   -1,
 	SLICE:        -3,
 	STAR:         -1,
+	STARSTAR:     -1,
 	TRUE:         +1,
 	UMINUS:       0,
 	UNIVERSAL:    +1,
@@ -1118,7 +1121,8 @@ func (fcomp *fcomp) stmt(stmt syntax.Stmt) {
 			syntax.PIPE_EQ,
 			syntax.CIRCUMFLEX_EQ,
 			syntax.LTLT_EQ,
-			syntax.GTGT_EQ:
+			syntax.GTGT_EQ,
+			syntax.STARSTAR_EQ:
 			// augmented assignment: x += y
 
 			var set func()
@@ -1638,6 +1642,8 @@ func (fcomp *fcomp) binop(pos syntax.Position, op syntax.Token) {
 		fcomp.emit(LTLT)
 	case syntax.GTGT:
 		fcomp.emit(GTGT)
+	case syntax.STARSTAR:
+		fcomp.emit(STARSTAR)
 	case syntax.IN:
 		fcomp.emit(IN)
 	case syntax.NOT_IN:
