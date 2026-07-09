@@ -19,34 +19,20 @@ var builtinTools = []toolDef{
 	{
 		schema: openai.ChatCompletionFunctionTool(openai.FunctionDefinitionParam{
 			Name: "run",
-			Description: openai.String(`Execute a Starlark program with all operations available as built-in functions. Use this for any task that requires reading, writing, searching, or running commands — especially when it involves loops, conditionals, or chaining results.
+			Description: openai.String(`Execute a Starlark program. All operations are available as built-in functions; only print() output is returned — unlike a Python REPL, expression values are NOT shown automatically. Always use print() to see results.
 
-Available built-in functions. The first argument may be passed positionally; remaining arguments are keyword-only:
+Built-ins (first arg positional, rest keyword-only):
   read_file(path, offset=?, limit=?)
   write_file(path, content=)
-  edit_file(path, edits=)                     — edits is a list of {old_string, new_string} dicts
-  list_directory(path=?)                      — returns a list of filename strings (dirs end with /)
+  edit_file(path, edits=)           edits: list of {old_string, new_string} dicts
+  list_directory(path=?)            returns list of filenames (dirs end with /)
   run_shell(command)
-  web_fetch(url, format=?)                    — format: "markdown" (default)|"text"|"html"
-  web_search(query, max_results=?)            — returns a list of {title, url, snippet} dicts
-  search_files(pattern, path=?, glob=?, case_sensitive=?)        — returns a list of {file, line, content} dicts
+  web_fetch(url, format=?)          format: "markdown"|"text"|"html"
+  web_search(query, max_results=?)  returns list of {title, url, snippet} dicts
+  search_files(pattern, path=?, glob=?, case_sensitive=?)  returns list of {file, line, content} dicts
   ask_user(question, options=)
 
-IMPORTANT: built-in functions return their output as values. You must print() to see results:
-  print(web_search("exchange rate"))
-  content = read_file("main.go")
-  print(content)
-
-write_file, edit_file, run_shell, web_fetch, and web_search require user approval before executing and will pause the script for confirmation. If denied, the call raises an error and the script stops.
-
-Two modules are available as globals — no import needed:
-  math.sqrt(2), math.pi, math.log(x), math.sin(x), math.ceil(x), math.floor(x), ...
-  time.now(), time.parse_duration("1h30m"), time.hour, time.minute, ...
-
-The script's print() output is returned as the result.
-
-Starlark is a sandboxed subset of Python. Supports: arithmetic, strings, lists, dicts, sets (set() built-in), list/dict comprehensions, for/while loops and if/else at any level, mutable global variables, recursive functions, and built-ins (len, range, int, float, str, sorted, min, max, zip, enumerate, type, ...). Does NOT support: import, class, try/except, yield, global/nonlocal, f-strings, ** exponentiation, or any stdlib beyond math and time.
-For exponentiation use math.pow(x, y). The % operator supports basic specifiers (%s, %d, %f, %g) but NOT width or precision modifiers — "%.6f" % x will error. For rounded output use round(x, 6) which works like Python's two-argument round().`),
+write_file, edit_file, run_shell, web_fetch, web_search require approval and pause for confirmation; denial raises an error.`),
 			Parameters: openai.FunctionParameters{
 				"type": "object",
 				"properties": map[string]any{

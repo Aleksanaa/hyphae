@@ -13,8 +13,8 @@ require (
 	github.com/rivo/tview v0.42.0
 	github.com/rivo/uniseg v0.4.7
 	github.com/yuin/goldmark v1.8.2
-	go.starlark.net v0.0.0-20260708150628-5395d018f003
 	golang.org/x/net v0.56.0
+	golang.org/x/sys v0.46.0
 	modernc.org/sqlite v1.53.0
 )
 
@@ -35,7 +35,6 @@ require (
 	github.com/tidwall/pretty v1.2.1 // indirect
 	github.com/tidwall/sjson v1.2.5 // indirect
 	golang.org/x/sync v0.21.0 // indirect
-	golang.org/x/sys v0.46.0 // indirect
 	golang.org/x/term v0.44.0 // indirect
 	golang.org/x/text v0.38.0 // indirect
 	modernc.org/libc v1.73.4 // indirect

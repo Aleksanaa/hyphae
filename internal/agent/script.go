@@ -15,10 +15,10 @@ import (
 	"sync/atomic"
 
 	"github.com/boyter/gocodewalker"
-	starlarkmath "go.starlark.net/lib/math"
-	starlarktime "go.starlark.net/lib/time"
-	"go.starlark.net/starlark"
-	"go.starlark.net/syntax"
+	starlarkmath "github.com/aleksanaa/hyphae/internal/third_party/starlark/lib/math"
+	starlarktime "github.com/aleksanaa/hyphae/internal/third_party/starlark/lib/time"
+	"github.com/aleksanaa/hyphae/internal/third_party/starlark/starlark"
+	"github.com/aleksanaa/hyphae/internal/third_party/starlark/syntax"
 )
 
 // ── Starlark built-in implementations ────────────────────────────────────────

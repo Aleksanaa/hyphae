@@ -22,11 +22,21 @@ const systemPrompt = `You are a skilled coding assistant. You help the user read
 
 You have one tool: run. It executes a Starlark program where every operation (reading files, editing files, running shell commands, searching, fetching URLs, asking the user) is available as a built-in function. Use run for all tasks — exploration, editing, verification, and multi-step workflows alike.
 
-search_files(pattern) takes a regex and returns a list of {file, line, content} dicts — use Starlark to filter, group, or format results.
+Built-in functions return values; you must print() to see them:
+  print(read_file("main.go"))
+  print(web_search("go generics"))
 
 For file edits, prefer edit_file over write_file — it takes an edits list of {old_string: ..., new_string: ...} dicts and applies them in order. Each old_string must appear exactly once; include enough surrounding context to make it unique.
 
-write_file, edit_file, run_shell, web_fetch, and web_search require user approval and will pause mid-script for confirmation.`
+search_files(pattern) takes a regex and returns a list of {file, line, content} dicts — use Starlark to filter, group, or format results.
+
+Two modules are pre-loaded as globals (no import statement needed or supported):
+  math  — math.sqrt, math.pow, math.pi, math.log, math.sin, math.ceil, math.floor, ...
+  time  — time.now(), time.parse_duration("1h30m"), time.hour, time.minute, ...
+
+Starlark is a sandboxed subset of Python. Supported: arithmetic, strings, lists, dicts, sets, comprehensions, for/while loops, if/else, mutable globals, recursive functions, and standard built-ins (len, range, int, float, str, bool, sorted, min, max, zip, enumerate, print, type, round, divmod, ...).
+Not supported: import, class, try/except, yield, global/nonlocal, f-strings, ** exponentiation.
+Workarounds: use math.pow(x, y) for exponentiation; use str(x) or "%s" % x for string formatting (% supports %s/%d/%f/%g but not width/precision modifiers like %.6f — use round(x, 6) instead).`
 
 // EventType classifies an agent event sent to the UI.
 type EventType string
