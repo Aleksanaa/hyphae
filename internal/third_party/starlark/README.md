@@ -12,6 +12,10 @@ Top-level expression statements now emit a `PRINT_EXPR` opcode (instead of `POP`
 
 When updating from upstream, re-apply these changes.
 
+**2fbf0a97 — add width/precision modifiers to string % formatting**
+The `%` operator now supports flags (`-+#0 `), field width, and precision (e.g. `%.6f`, `%10d`, `%-20s`, `%08.3f`). Changes are in:
+- `starlark/eval.go` — `interpolate()` parses flags/width/precision and delegates to `fmt.Fprintf`
+
 **4bc42f68 — add f-string literals (f"…{expr}…") to Starlark**
 Merged from https://github.com/google/starlark-go/pull/625. Changes are in:
 - `syntax/scan.go` — `FSTRING_FULL`, `FSTRING_PART`, `FSTRING_END` tokens; scanner logic
