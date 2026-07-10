@@ -116,9 +116,11 @@ func (c *Controller) ResumeSession(id string) (*session.Session, SessionInfo, er
 	seqToMemIdx := make(map[int]int, len(loaded))
 	msgs := make([]session.Message, 0, len(loaded))
 	for _, lm := range loaded {
-		if lm.Role == string(session.RoleAssistant) && lm.Thinking != "" {
-			// Insert a bare status row; the chat renderer derives the "thought for Xs"
-			// label itself from ThinkingSecs + the adjacent assistant's Thinking field.
+		if lm.Role == string(session.RoleAssistant) {
+			// Insert a bare status row before every assistant to match the live-session
+			// memory layout (the agent always adds a status before each API call).
+			// Without this, non-thinking assistants shift all subsequent BulkLoad indices,
+			// causing PersistSession to create spurious duplicate DB rows.
 			msgs = append(msgs, session.Message{
 				Role:         session.RoleStatus,
 				ThinkingSecs: lm.ThinkingSecs,
