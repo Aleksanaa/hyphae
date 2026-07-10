@@ -252,6 +252,7 @@ func (c *Controller) processAgentEvents(sessionID string, agCh <-chan agent.Even
 			c.mu.Unlock()
 			go c.PersistSession(sess, cost, pt)
 			c.emit(Event{Kind: EvDone, SessionID: sessionID})
+			return
 
 		case agent.EventError:
 			sess.SetStatus(session.StatusError)
@@ -262,6 +263,16 @@ func (c *Controller) processAgentEvents(sessionID string, agCh <-chan agent.Even
 			ts.stopCountdown()
 			sess.UpdateStatus("")
 			c.emit(Event{Kind: EvError, SessionID: sessionID, Text: fmt.Sprintf("error: %s", errStr)})
+			return
 		}
+	}
+
+	// Channel closed without EventDone/EventError — agent was cancelled mid-flight.
+	// Ensure the status line reflects the stopped state.
+	if sess, ok := c.mgr.Get(sessionID); ok {
+		sess.SetStatus(session.StatusIdle)
+		ts.stopCountdown()
+		sess.UpdateStatus("")
+		c.emit(Event{Kind: EvRedraw, SessionID: sessionID})
 	}
 }
