@@ -45,18 +45,32 @@ func (s Status) IsActive() bool {
 	return false
 }
 
-// ToolParam is a display key-value pair extracted from a tool's JSON input.
-type ToolParam struct{ Key, Value string }
+// StatusEventKind classifies a single tool operation update.
+type StatusEventKind int8
+
+const (
+	StatusEventDoing   StatusEventKind = iota // tool executing now
+	StatusEventWants                          // awaiting user approval
+	StatusEventDone                           // tool completed
+	StatusEventRefused                        // approval denied; excluded from aggregate
+	StatusEventFailed                         // tool errored; excluded from aggregate
+)
+
+// StatusEvent records one structured tool operation update.
+type StatusEvent struct {
+	Kind   StatusEventKind
+	Verb   string // doing: gerund; wants: infinitive; done: past-tense
+	NounP  string // plural noun for aggregation (done only): "files", "commands"
+	Target string // display string: "config.go", "ls -la"
+}
 
 // ToolUse is a tool call made by the assistant.
 type ToolUse struct {
-	ID            string
-	Name          string
-	Input         string // JSON; sent verbatim to the model
-	Output        string
-	State         string      // "running" | "done" | "error"
-	DisplayKey    string      // primary arg value for summary labels (≤50 chars)
-	DisplayParams []ToolParam // ordered key-value pairs for the expanded param view
+	ID     string
+	Name   string
+	Input  string // JSON; sent verbatim to the model
+	Output string
+	State  string // "running" | "done" | "error"
 }
 
 // ToolResult is the response to a tool call.
@@ -68,31 +82,21 @@ type ToolResult struct {
 
 // Message is one turn in the conversation.
 type Message struct {
-	Role              Role
-	Content           string
-	SentLabel         string      // frozen "[Sent: ...]" suffix for user messages; empty for all other roles
-	Thinking          string      // reasoning_content from CoT-capable models
-	ThinkingSecs      int         // UI: CoT duration in seconds; set once per turn on RoleStatus
-	ThinkingExpanded  bool        // UI: whether the thoughts box is expanded (RoleStatus only)
-	ToolGroupExpanded bool        // UI: whether the tool-call group is shown as expanded param boxes
-	ExpandedBox       bool        // UI: synthetic renderedMsgs entry rendered as an expanded dotted box
-	BoxTitle          string      // tview-tagged label for ExpandedBox or FullWidth box
-	FullWidth         bool        // UI: force box to terminal width with centered title (requires BoxTitle)
-	ContentTagged     bool        // UI: Content already contains tview tags; skip Escape in rendering
-	ToolUses          []ToolUse   // assistant turns only
-	ToolResult        *ToolResult // tool turns only
-	Partial           bool        // streaming in progress
-	Error             error       // set if the turn failed
-}
-
-// ToggleToolGroupExpanded flips the ToolGroupExpanded flag on an assistant message,
-// toggling whether the tool-call group is shown as expanded parameter boxes.
-func (s *Session) ToggleToolGroupExpanded(msgIdx int) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if msgIdx >= 0 && msgIdx < len(s.msgs) {
-		s.msgs[msgIdx].ToolGroupExpanded = !s.msgs[msgIdx].ToolGroupExpanded
-	}
+	Role             Role
+	Content          string
+	SentLabel        string        // frozen "[Sent: ...]" suffix for user messages; empty for all other roles
+	Thinking         string        // reasoning_content from CoT-capable models
+	ThinkingSecs     int           // UI: CoT duration in seconds; set once per turn on RoleStatus
+	StatusEvents     []StatusEvent // RoleStatus only: append-only op record from agent
+	ThinkingExpanded bool          // UI: whether the thoughts box is expanded (RoleStatus only)
+	ExpandedBox      bool          // UI: synthetic renderedMsgs entry rendered as an expanded dotted box
+	BoxTitle         string        // tview-tagged label for ExpandedBox or FullWidth box
+	FullWidth        bool          // UI: force box to terminal width with centered title (requires BoxTitle)
+	ContentTagged    bool          // UI: Content already contains tview tags; skip Escape in rendering
+	ToolUses         []ToolUse     // assistant turns only
+	ToolResult       *ToolResult   // tool turns only
+	Partial          bool          // streaming in progress
+	Error            error         // set if the turn failed
 }
 
 // ToggleThinkingExpanded flips the ThinkingExpanded flag on a RoleStatus message.
@@ -115,7 +119,6 @@ type Session struct {
 	PlanModeExited   bool // true for one turn after plan mode is disabled
 	ColdResumed      bool // true for one turn after session is loaded from DB
 	msgs             []Message
-	statusMsgIdx     int    // index of current turn's RoleStatus message; -1 if none
 	compactedSummary string // latest compact summary; empty = no compact
 	compactSeqs      []int  // all compact atSeqs in ascending order; nil = no compact
 }
@@ -164,24 +167,22 @@ func (s *Session) TakeColdResumed() bool {
 	return v
 }
 
-// UpdateStatus replaces the content of the current turn's status message.
-// Empty string hides it. No-op if no status message is set.
-func (s *Session) UpdateStatus(content string) {
+// AppendStatusEvent appends a structured op event to the status message at idx.
+// idx is the value returned by AddMessage when the RoleStatus message was created.
+func (s *Session) AppendStatusEvent(idx int, ev StatusEvent) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.statusMsgIdx >= 0 && s.statusMsgIdx < len(s.msgs) {
-		s.msgs[s.statusMsgIdx].Content = content
+	if idx >= 0 && idx < len(s.msgs) && s.msgs[idx].Role == RoleStatus {
+		s.msgs[idx].StatusEvents = append(s.msgs[idx].StatusEvents, ev)
 	}
 }
 
-// FinalizeThinkingStatus sets the status content and thinking duration together.
-// Called once per turn when CoT reasoning completes.
-func (s *Session) FinalizeThinkingStatus(content string, secs int) {
+// SetThinkingSecsAt records the thinking duration on the status message at idx.
+func (s *Session) SetThinkingSecsAt(idx, secs int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.statusMsgIdx >= 0 && s.statusMsgIdx < len(s.msgs) {
-		s.msgs[s.statusMsgIdx].Content = content
-		s.msgs[s.statusMsgIdx].ThinkingSecs = secs
+	if idx >= 0 && idx < len(s.msgs) && s.msgs[idx].Role == RoleStatus {
+		s.msgs[idx].ThinkingSecs = secs
 	}
 }
 
@@ -195,10 +196,9 @@ func (s *Session) GetStatus() Status {
 // NewSession creates an empty session.
 func NewSession(id, workDir string) *Session {
 	return &Session{
-		ID:           id,
-		WorkDir:      workDir,
-		Status:       StatusIdle,
-		statusMsgIdx: -1,
+		ID:      id,
+		WorkDir: workDir,
+		Status:  StatusIdle,
 	}
 }
 
@@ -243,9 +243,6 @@ func (s *Session) AddMessage(m Message) int {
 	defer s.mu.Unlock()
 	idx := len(s.msgs)
 	s.msgs = append(s.msgs, m)
-	if m.Role == RoleStatus {
-		s.statusMsgIdx = idx
-	}
 	// Use first user message as title
 	if s.Title == "" && m.Role == RoleUser && m.Content != "" {
 		t := m.Content
@@ -342,13 +339,12 @@ func (s *Session) SetStatus(st Status) {
 }
 
 // BulkLoad replaces the message history with loaded records (e.g. from DB).
-// Unlike AddMessage it does not derive the title or track status messages.
+// Unlike AddMessage it does not derive the title.
 func (s *Session) BulkLoad(msgs []Message) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.msgs = make([]Message, len(msgs))
 	copy(s.msgs, msgs)
-	s.statusMsgIdx = -1
 }
 
 // Snapshot returns a copy of messages and current status for rendering.

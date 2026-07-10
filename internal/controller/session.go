@@ -1,11 +1,11 @@
 package controller
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"sync"
 
-	"github.com/aleksanaa/hyphae/internal/agent"
 	"github.com/aleksanaa/hyphae/internal/session"
 	"github.com/aleksanaa/hyphae/internal/store"
 )
@@ -121,10 +121,19 @@ func (c *Controller) ResumeSession(id string) (*session.Session, SessionInfo, er
 			// memory layout (the agent always adds a status before each API call).
 			// Without this, non-thinking assistants shift all subsequent BulkLoad indices,
 			// causing PersistSession to create spurious duplicate DB rows.
-			msgs = append(msgs, session.Message{
+			sm := session.Message{
 				Role:         session.RoleStatus,
 				ThinkingSecs: lm.ThinkingSecs,
-			})
+			}
+			// status_label is stored as JSON-encoded []StatusEvent.
+			// Old sessions stored plain text; those are silently dropped.
+			if lm.StatusLabel != "" && lm.StatusLabel[0] == '[' {
+				var evs []session.StatusEvent
+				if json.Unmarshal([]byte(lm.StatusLabel), &evs) == nil {
+					sm.StatusEvents = evs
+				}
+			}
+			msgs = append(msgs, sm)
 		}
 		seqToMemIdx[lm.Seq] = len(msgs)
 		msg := session.Message{
@@ -144,15 +153,12 @@ func (c *Controller) ResumeSession(id string) (*session.Session, SessionInfo, er
 		if len(lm.ToolCalls) > 0 {
 			msg.ToolUses = make([]session.ToolUse, len(lm.ToolCalls))
 			for i, tc := range lm.ToolCalls {
-				_, params := agent.ParseToolDisplay(tc.Name, tc.Args)
 				msg.ToolUses[i] = session.ToolUse{
-					ID:            tc.CallID,
-					Name:          tc.Name,
-					DisplayKey:    tc.DisplayKey,
-					Input:         tc.Args,
-					Output:        tc.Result,
-					State:         tc.Status,
-					DisplayParams: params,
+					ID:     tc.CallID,
+					Name:   tc.Name,
+					Input:  tc.Args,
+					Output: tc.Result,
+					State:  tc.Status,
 				}
 			}
 		}
@@ -248,9 +254,16 @@ func (c *Controller) PersistSession(sess *session.Session, cost float64, promptT
 	c.st.UpdateSessionUsage(sess.ID, cost, promptTokens) //nolint:errcheck
 	c.st.UpdateSessionModel(sess.ID, model, ep)          //nolint:errcheck
 	var lastThinkingSecs int
+	var lastStatusLabel string
 	for seq, msg := range msgs {
 		if msg.Role == session.RoleStatus {
 			lastThinkingSecs = msg.ThinkingSecs
+			if len(msg.StatusEvents) > 0 {
+				b, _ := json.Marshal(msg.StatusEvents)
+				lastStatusLabel = string(b)
+			} else {
+				lastStatusLabel = msg.Content // old sessions or empty rounds
+			}
 			continue
 		}
 		if msg.Partial {
@@ -260,16 +273,19 @@ func (c *Controller) PersistSession(sess *session.Session, cost float64, promptT
 		callID := ""
 		isError := false
 		thinkingSecs := 0
+		statusLabel := ""
 		if msg.Role == session.RoleAssistant {
 			thinkingSecs = lastThinkingSecs
+			statusLabel = lastStatusLabel
 		}
 		lastThinkingSecs = 0
+		lastStatusLabel = ""
 		if msg.Role == session.RoleTool && msg.ToolResult != nil {
 			content = msg.ToolResult.Content
 			callID = msg.ToolResult.ID
 			isError = msg.ToolResult.IsError
 		}
-		msgID, err := c.st.InsertMessage(sess.ID, seq, string(msg.Role), content, msg.Thinking, thinkingSecs, callID, isError, msg.SentLabel)
+		msgID, err := c.st.InsertMessage(sess.ID, seq, string(msg.Role), content, msg.Thinking, thinkingSecs, callID, isError, msg.SentLabel, statusLabel)
 		if err != nil {
 			continue
 		}
@@ -280,7 +296,7 @@ func (c *Controller) PersistSession(sess *session.Session, cost float64, promptT
 			}
 		}
 		for _, tu := range msg.ToolUses {
-			c.st.InsertToolCall(msgID, tu.ID, tu.Name, tu.DisplayKey, tu.Input) //nolint:errcheck
+			c.st.InsertToolCall(msgID, tu.ID, tu.Name, tu.Input) //nolint:errcheck
 			if tu.State != "running" && tu.State != "pending" {
 				c.st.FinalizeToolCall(tu.ID, tu.Output, tu.State, tu.State == "error") //nolint:errcheck
 			}

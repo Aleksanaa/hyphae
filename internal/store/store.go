@@ -78,6 +78,7 @@ CREATE TABLE messages (
     call_id       TEXT    NOT NULL DEFAULT '',  -- for role='tool': the LLM tool call id
     is_error      INTEGER NOT NULL DEFAULT 0,   -- for role='tool': whether the call errored
     sent_label    TEXT    NOT NULL DEFAULT '',  -- frozen "[Sent: ...]" suffix for user messages
+    status_label  TEXT    NOT NULL DEFAULT '',  -- tool-progress summary saved from the preceding RoleStatus
     created_at    INTEGER NOT NULL,
     UNIQUE(session_id, seq)
 );
@@ -125,12 +126,17 @@ ALTER TABLE sessions ADD COLUMN model            TEXT NOT NULL DEFAULT '';
 ALTER TABLE sessions ADD COLUMN active_endpoint  TEXT NOT NULL DEFAULT '';
 `
 
+const sqlAddStatusLabel = `
+ALTER TABLE messages ADD COLUMN status_label TEXT NOT NULL DEFAULT '';
+`
+
 var migrations = []migration{
 	{1, "initial", sqlInitial},
 	{2, "compact_session_cols", sqlAddCompactCols},
 	{3, "compact_seqs_col", sqlAddCompactSeqs},
 	{4, "plan_mode_col", sqlAddPlanMode},
 	{5, "session_model_col", sqlAddSessionModel},
+	{6, "messages_status_label", sqlAddStatusLabel},
 }
 
 func (s *Store) migrate() error {
@@ -320,15 +326,16 @@ func (s *Store) UpdateSessionPricing(id string, contextWindow int64, inputPrice,
 // Returns (0, nil) if the row already exists (INSERT OR IGNORE).
 // If 0 is returned the caller may call MessageID to retrieve the existing id.
 // callID and isError are only meaningful for role='tool'.
-func (s *Store) InsertMessage(sessionID string, seq int, role, content, thinking string, thinkingSecs int, callID string, isError bool, sentLabel string) (int64, error) {
+// statusLabel is the tool-progress summary for role='assistant' (from the preceding RoleStatus).
+func (s *Store) InsertMessage(sessionID string, seq int, role, content, thinking string, thinkingSecs int, callID string, isError bool, sentLabel, statusLabel string) (int64, error) {
 	isErrorInt := 0
 	if isError {
 		isErrorInt = 1
 	}
 	res, err := s.db.Exec(
-		`INSERT OR IGNORE INTO messages (session_id, seq, role, content, thinking, thinking_secs, call_id, is_error, sent_label, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		sessionID, seq, role, content, thinking, thinkingSecs, callID, isErrorInt, sentLabel, now(),
+		`INSERT OR IGNORE INTO messages (session_id, seq, role, content, thinking, thinking_secs, call_id, is_error, sent_label, status_label, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		sessionID, seq, role, content, thinking, thinkingSecs, callID, isErrorInt, sentLabel, statusLabel, now(),
 	)
 	if err != nil {
 		return 0, err
@@ -347,13 +354,12 @@ func (s *Store) MessageID(sessionID string, seq int) (int64, error) {
 
 // LoadedToolCall is a tool call record as loaded from the DB.
 type LoadedToolCall struct {
-	CallID     string
-	Name       string
-	DisplayKey string
-	Args       string
-	Result     string
-	Status     string
-	IsError    bool
+	CallID  string
+	Name    string
+	Args    string
+	Result  string
+	Status  string
+	IsError bool
 }
 
 // LoadedMessage is a message record with its associated tool calls.
@@ -366,6 +372,7 @@ type LoadedMessage struct {
 	CallID       string // for role='tool': the tool call id
 	IsError      bool   // for role='tool'
 	SentLabel    string // frozen "[Sent: ...]" suffix for user messages
+	StatusLabel  string // tool-progress summary for role='assistant' (from preceding RoleStatus)
 	ToolCalls    []LoadedToolCall
 }
 
@@ -373,8 +380,8 @@ type LoadedMessage struct {
 // with tool calls nested under their assistant messages.
 func (s *Store) LoadSessionMessages(sessionID string) ([]LoadedMessage, error) {
 	rows, err := s.db.Query(`
-		SELECT m.seq, m.role, m.content, m.thinking, m.thinking_secs, m.call_id, m.is_error, m.sent_label,
-		       tc.call_id, tc.tool_name, tc.display_key, tc.args, tc.result, tc.status, tc.is_error
+		SELECT m.seq, m.role, m.content, m.thinking, m.thinking_secs, m.call_id, m.is_error, m.sent_label, m.status_label,
+		       tc.call_id, tc.tool_name, tc.args, tc.result, tc.status, tc.is_error
 		  FROM messages m
 		  LEFT JOIN tool_calls tc ON tc.message_id = m.id
 		 WHERE m.session_id = ?
@@ -388,12 +395,12 @@ func (s *Store) LoadSessionMessages(sessionID string) ([]LoadedMessage, error) {
 	curSeq := -1
 	for rows.Next() {
 		var seq, thinkingSecs, msgIsError int
-		var role, content, thinking, msgCallID, sentLabel string
-		var tcCallID, tcName, tcDisplayKey, tcArgs, tcResult, tcStatus sql.NullString
+		var role, content, thinking, msgCallID, sentLabel, statusLabel string
+		var tcCallID, tcName, tcArgs, tcResult, tcStatus sql.NullString
 		var tcIsError sql.NullInt64
 		if err := rows.Scan(
-			&seq, &role, &content, &thinking, &thinkingSecs, &msgCallID, &msgIsError, &sentLabel,
-			&tcCallID, &tcName, &tcDisplayKey, &tcArgs, &tcResult, &tcStatus, &tcIsError,
+			&seq, &role, &content, &thinking, &thinkingSecs, &msgCallID, &msgIsError, &sentLabel, &statusLabel,
+			&tcCallID, &tcName, &tcArgs, &tcResult, &tcStatus, &tcIsError,
 		); err != nil {
 			return nil, err
 		}
@@ -407,18 +414,18 @@ func (s *Store) LoadSessionMessages(sessionID string) ([]LoadedMessage, error) {
 				CallID:       msgCallID,
 				IsError:      msgIsError != 0,
 				SentLabel:    sentLabel,
+				StatusLabel:  statusLabel,
 			})
 			curSeq = seq
 		}
 		if tcCallID.Valid {
 			msgs[len(msgs)-1].ToolCalls = append(msgs[len(msgs)-1].ToolCalls, LoadedToolCall{
-				CallID:     tcCallID.String,
-				Name:       tcName.String,
-				DisplayKey: tcDisplayKey.String,
-				Args:       tcArgs.String,
-				Result:     tcResult.String,
-				Status:     tcStatus.String,
-				IsError:    tcIsError.Int64 != 0,
+				CallID:  tcCallID.String,
+				Name:    tcName.String,
+				Args:    tcArgs.String,
+				Result:  tcResult.String,
+				Status:  tcStatus.String,
+				IsError: tcIsError.Int64 != 0,
 			})
 		}
 	}
@@ -428,11 +435,11 @@ func (s *Store) LoadSessionMessages(sessionID string) ([]LoadedMessage, error) {
 // ── Tool calls ────────────────────────────────────────────────────────────────
 
 // InsertToolCall inserts a tool call record. No-ops if call_id already exists.
-func (s *Store) InsertToolCall(messageID int64, callID, name, displayKey, args string) error {
+func (s *Store) InsertToolCall(messageID int64, callID, name, args string) error {
 	_, err := s.db.Exec(
-		`INSERT OR IGNORE INTO tool_calls (message_id, call_id, tool_name, display_key, args)
-		 VALUES (?, ?, ?, ?, ?)`,
-		messageID, callID, name, displayKey, args,
+		`INSERT OR IGNORE INTO tool_calls (message_id, call_id, tool_name, args)
+		 VALUES (?, ?, ?, ?)`,
+		messageID, callID, name, args,
 	)
 	return err
 }

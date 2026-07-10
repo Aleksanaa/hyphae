@@ -17,6 +17,7 @@ type turnState struct {
 	thinkingStart   time.Time
 	thinkingFrozen  bool
 	statusCancel    context.CancelFunc
+	statusMsgIdx    int // index of the current round's RoleStatus message; set by EventRoundStart
 }
 
 func (ts *turnState) stopCountdown() {
@@ -72,7 +73,8 @@ func (c *Controller) startConnectingTimer(sessionID string, ts *turnState, retry
 }
 
 // finalizeStatus emits EvThinkingDone and stops the connecting timer.
-// No-op after the first call per turn.
+// No-op after the first call per turn. ts.statusMsgIdx was set by EventRoundStart
+// so it refers to this round's status message regardless of later rounds.
 func (c *Controller) finalizeStatus(sessionID string, ts *turnState) {
 	if ts.thinkingFrozen {
 		return
@@ -81,10 +83,10 @@ func (c *Controller) finalizeStatus(sessionID string, ts *turnState) {
 	ts.stopCountdown()
 	if ts.thinkingPending {
 		secs := int(time.Since(ts.thinkingStart).Seconds())
-		c.emit(Event{Kind: EvThinkingDone, SessionID: sessionID, ThinkingSecs: secs})
+		c.emit(Event{Kind: EvThinkingDone, SessionID: sessionID, ThinkingSecs: secs, StatusMsgIdx: ts.statusMsgIdx})
 		ts.thinkingPending = false
 	} else {
-		c.emit(Event{Kind: EvThinkingDone, SessionID: sessionID, ThinkingSecs: -1})
+		c.emit(Event{Kind: EvThinkingDone, SessionID: sessionID, ThinkingSecs: -1, StatusMsgIdx: ts.statusMsgIdx})
 	}
 }
 
@@ -220,6 +222,15 @@ func (c *Controller) processAgentEvents(sessionID string, agCh <-chan agent.Even
 				c.emit(Event{Kind: EvRedraw, SessionID: sessionID})
 			}
 
+		case agent.EventRoundStart:
+			ts.statusMsgIdx = agEv.StatusMsgIdx
+
+		case agent.EventStatusUpdate:
+			sess.AppendStatusEvent(ts.statusMsgIdx, agEv.StatusEvent)
+			if isActive {
+				c.emit(Event{Kind: EvRedraw, SessionID: sessionID})
+			}
+
 		case agent.EventUsageUpdate:
 			pt := agEv.PromptTokens
 			ct := agEv.CompletionTokens
@@ -261,18 +272,15 @@ func (c *Controller) processAgentEvents(sessionID string, agCh <-chan agent.Even
 				errStr = agEv.Err.Error()
 			}
 			ts.stopCountdown()
-			sess.UpdateStatus("")
 			c.emit(Event{Kind: EvError, SessionID: sessionID, Text: fmt.Sprintf("error: %s", errStr)})
 			return
 		}
 	}
 
 	// Channel closed without EventDone/EventError — agent was cancelled mid-flight.
-	// Ensure the status line reflects the stopped state.
 	if sess, ok := c.mgr.Get(sessionID); ok {
 		sess.SetStatus(session.StatusIdle)
 		ts.stopCountdown()
-		sess.UpdateStatus("")
 		c.emit(Event{Kind: EvRedraw, SessionID: sessionID})
 	}
 }

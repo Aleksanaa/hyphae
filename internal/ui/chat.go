@@ -77,9 +77,8 @@ type ChatView struct {
 	compactSeqs     []int        // all compact atSeqs in order; nil = no compact
 	compactExpanded map[int]bool // divider index → expanded state
 
-	// callbacks for double-clicking expandable items
-	onStatusExpand    func(sessionIdx int)
-	onToolGroupExpand func(sessionIdx int)
+	// callback for double-clicking expandable thinking status items
+	onStatusExpand func(sessionIdx int)
 
 	// drag-to-select state
 	selAnchor    selPoint
@@ -88,6 +87,10 @@ type ChatView struct {
 	dragging     bool
 	anchorBox    int // index into entries where drag started (-1 = none)
 	selCursorBox int // last entries index the cursor touched during drag
+
+	// liveStatus holds transient connecting/thinking text set by controller events.
+	// It is shown in the live status slot only when no StatusEvent provides live text.
+	liveStatus string
 
 	// mdCache stores parsed markdown blocks keyed by content string so that
 	// resize only re-wraps without re-running goldmark.
@@ -123,6 +126,10 @@ func NewChatView() *ChatView {
 	}
 }
 
+// SetLiveStatus sets the transient connecting/thinking text shown in the live
+// status slot when no StatusEvent provides a current operation to display.
+func (cv *ChatView) SetLiveStatus(text string) { cv.liveStatus = text }
+
 // SetCompact stores the compact state for rendering. Carries over expansion
 // state for unchanged dividers; new dividers start collapsed.
 func (cv *ChatView) SetCompact(summary string, seqs []int) {
@@ -140,10 +147,6 @@ func (cv *ChatView) SetCompact(summary string, seqs []int) {
 // SetStatusExpandCallback registers a function called when the user double-clicks
 // a RoleStatus message. The argument is the session-message index.
 func (cv *ChatView) SetStatusExpandCallback(fn func(sessionIdx int)) { cv.onStatusExpand = fn }
-
-// SetToolGroupExpandCallback registers a function called when the user double-clicks
-// a tool-group summary or an expanded tool box, toggling the whole group.
-func (cv *ChatView) SetToolGroupExpandCallback(fn func(sessionIdx int)) { cv.onToolGroupExpand = fn }
 
 // SetFocused is called by focus/blur hooks; no visible border to update.
 func (cv *ChatView) SetFocused(_ bool) {}
@@ -423,9 +426,7 @@ func (cv *ChatView) handleDoubleClick(docLine int) {
 		}
 		return
 	}
-	if (e.toolIdx >= 0 || e.toolIdx == -2) && cv.onToolGroupExpand != nil {
-		cv.onToolGroupExpand(e.sessIdx)
-	} else if ((e.msg.Role == session.RoleStatus && e.msg.Content != "") || e.msg.ExpandedBox) && cv.onStatusExpand != nil {
+	if ((e.msg.Role == session.RoleStatus && e.msg.Content != "") || e.msg.ExpandedBox) && cv.onStatusExpand != nil {
 		cv.onStatusExpand(e.sessIdx)
 	}
 }
@@ -522,8 +523,8 @@ func (cv *ChatView) renderWelcome(b *strings.Builder, width int) {
 
 // collRound holds the raw data from one completed tool-only agent round.
 type collRound struct {
-	thinking string
-	tools    []session.ToolUse
+	thinking     string
+	statusEvents []session.StatusEvent
 }
 
 type renderItemKind int
@@ -533,7 +534,6 @@ const (
 	riCollapsedRounds                       // ≥1 tool-only rounds with CoT collapsed into one apex entry
 	riLiveStatus                            // streaming status (live progress text)
 	riAssistant                             // assistant message with content or error
-	riToolGroup                             // tool-use summary for an assistant message
 )
 
 // renderItem is one logical unit to be rendered in the conversation.
@@ -550,17 +550,18 @@ type renderItem struct {
 	// riLiveStatus
 	liveMsg      session.Message
 	liveMsgIdx   int
+	liveContent  string // pre-computed from StatusEvents + ThinkingSecs; liveStatus fallback applied in buildText
 	liveThinking string // adjacent assistant's Thinking (for expanded view)
 	livePartial  bool
 
-	// riAssistant / riToolGroup
+	// riAssistant
 	msg    session.Message
 	msgIdx int
 }
 
 // groupMessages converts a flat message slice into ordered render items,
 // interleaving compact dividers and collapsing consecutive completed tool-only
-// rounds that include CoT reasoning into single entries.
+// rounds. Transient connecting/thinking text (liveStatus) is applied by buildText.
 func groupMessages(msgs []session.Message, compactSeqs []int) []renderItem {
 	var items []renderItem
 	mn := len(msgs)
@@ -607,30 +608,35 @@ func groupMessages(msgs []session.Message, compactSeqs []int) []renderItem {
 					j = roundStart
 					break
 				}
-				hasPendingOrError := false
+				stillRunning := false
 				for _, tu := range am.ToolUses {
-					if tu.State == "pending" || tu.State == "refused" || tu.State == "error" {
-						hasPendingOrError = true
+					if tu.State == "running" || tu.State == "pending" || tu.State == "refused" {
+						stillRunning = true
 						break
 					}
 				}
-				if hasPendingOrError {
+				if stillRunning {
 					j = roundStart
 					break
 				}
 				thinkSecs += sm.ThinkingSecs
-				rounds = append(rounds, collRound{thinking: am.Thinking, tools: am.ToolUses})
+				rounds = append(rounds, collRound{
+					thinking:     am.Thinking,
+					statusEvents: sm.StatusEvents,
+				})
 				j++
 			}
 
-			hasThinking := false
+			hasThinking, hasOps := false, false
 			for _, r := range rounds {
 				if r.thinking != "" {
 					hasThinking = true
-					break
+				}
+				if len(r.statusEvents) > 0 {
+					hasOps = true
 				}
 			}
-			if hasThinking {
+			if hasThinking || hasOps {
 				items = append(items, renderItem{
 					kind:           riCollapsedRounds,
 					firstStatusIdx: mi,
@@ -649,22 +655,40 @@ func groupMessages(msgs []session.Message, compactSeqs []int) []renderItem {
 					break
 				}
 			}
-			// DB-loaded statuses carry ThinkingSecs but no Content; reconstruct the label
-			// using the same format that EvThinkingDone produces in live sessions.
-			if msg.Content == "" && liveThinking != "" {
-				if msg.ThinkingSecs <= 0 {
-					msg.Content = fmt.Sprintf("[%s]apex[-][%s] thought for a moment[-]", TC.ApexDim, TC.Muted)
-				} else {
-					msg.Content = fmt.Sprintf("[%s]apex[-][%s] thought for %ds[-]", TC.ApexDim, TC.Muted, msg.ThinkingSecs)
+			var thinkText string
+			if msg.ThinkingSecs > 0 {
+				thinkText = fmt.Sprintf("thought for %ds", msg.ThinkingSecs)
+			}
+			var opsText string
+			for _, ev := range msg.StatusEvents {
+				switch ev.Kind {
+				case session.StatusEventDoing:
+					opsText = ev.Verb + " " + ev.Target
+				case session.StatusEventWants:
+					opsText = "wants to " + ev.Verb + " " + ev.Target
+				case session.StatusEventDone:
+					opsText = ev.Verb + " " + ev.Target
+				case session.StatusEventRefused:
+					opsText = "wanted to " + ev.Verb + " " + ev.Target
+				case session.StatusEventFailed:
+					opsText = "failed to " + ev.Verb + " " + ev.Target
 				}
 			}
-			if msg.Content == "" {
-				continue
+			var liveContent string
+			switch {
+			case thinkText != "" && opsText != "":
+				liveContent = thinkText + ", " + opsText
+			case thinkText != "":
+				liveContent = thinkText
+			default:
+				liveContent = opsText
 			}
+			// Always emit the item; buildText applies liveStatus if liveContent is empty.
 			items = append(items, renderItem{
 				kind:         riLiveStatus,
 				liveMsg:      msg,
 				liveMsgIdx:   mi,
+				liveContent:  liveContent,
 				liveThinking: liveThinking,
 				livePartial:  livePartial,
 			})
@@ -674,9 +698,6 @@ func groupMessages(msgs []session.Message, compactSeqs []int) []renderItem {
 		if msg.Role != session.RoleAssistant || msg.Content != "" || msg.Error != nil {
 			items = append(items, renderItem{kind: riAssistant, msg: msg, msgIdx: mi})
 		}
-		if msg.Role == session.RoleAssistant && len(msg.ToolUses) > 0 {
-			items = append(items, renderItem{kind: riToolGroup, msg: msg, msgIdx: mi})
-		}
 	}
 
 	// Flush any remaining dividers (e.g. compact just happened with no new messages yet).
@@ -685,6 +706,51 @@ func groupMessages(msgs []session.Message, compactSeqs []int) []renderItem {
 		nextDivider++
 	}
 	return items
+}
+
+// aggregateOps groups Done and Failed status events by (kind, verb, noun), sums counts,
+// and formats a summary. e.g. "read 2 files, failed to read 1 file, ran 3 functions"
+func aggregateOps(events []session.StatusEvent) string {
+	type key struct {
+		kind        session.StatusEventKind
+		verb, nounP string
+	}
+	type group struct {
+		count int
+		last  string
+	}
+	var order []key
+	groups := map[key]*group{}
+	for _, ev := range events {
+		if ev.Kind != session.StatusEventDone && ev.Kind != session.StatusEventFailed {
+			continue
+		}
+		k := key{ev.Kind, ev.Verb, ev.NounP}
+		if g, ok := groups[k]; ok {
+			g.count++
+			g.last = ev.Target
+		} else {
+			order = append(order, k)
+			groups[k] = &group{1, ev.Target}
+		}
+	}
+	if len(order) == 0 {
+		return ""
+	}
+	parts := make([]string, len(order))
+	for i, k := range order {
+		g := groups[k]
+		prefix := ""
+		if k.kind == session.StatusEventFailed {
+			prefix = "failed to "
+		}
+		if g.count == 1 {
+			parts[i] = prefix + k.verb + " " + g.last
+		} else {
+			parts[i] = fmt.Sprintf("%s%s %d %s", prefix, k.verb, g.count, k.nounP)
+		}
+	}
+	return strings.Join(parts, ", ")
 }
 
 func (cv *ChatView) buildText(width int) {
@@ -752,9 +818,9 @@ func (cv *ChatView) buildText(width int) {
 
 	lastDivider := len(cv.compactSeqs) - 1
 	for _, item := range groupMessages(msgs, cv.compactSeqs) {
-		sep()
 		switch item.kind {
 		case riCompactDivider:
+			sep()
 			divIdx := item.divIdx
 			if divIdx == lastDivider && cv.compactExpanded[divIdx] && cv.compactSummary != "" {
 				renderBox(session.Message{
@@ -777,23 +843,29 @@ func (cv *ChatView) buildText(width int) {
 			}
 
 		case riCollapsedRounds:
-			var allTools []session.ToolUse
+			sep()
 			var contentParts []string
+			var allEvents []session.StatusEvent
 			for _, r := range item.rounds {
 				if r.thinking != "" {
 					contentParts = append(contentParts, tview.Escape(r.thinking))
 				}
-				if len(r.tools) > 0 {
-					contentParts = append(contentParts, formatAllToolParams(r.tools))
-					allTools = append(allTools, r.tools...)
+				allEvents = append(allEvents, r.statusEvents...)
+			}
+			agg := aggregateOps(allEvents)
+			anyThinking := len(contentParts) > 0 || item.thinkSecs > 0
+			var desc string
+			if anyThinking {
+				if item.thinkSecs > 0 {
+					desc = fmt.Sprintf("thought for %ds", item.thinkSecs)
+				} else {
+					desc = "thought for a moment"
 				}
-			}
-			desc := "thought for a moment"
-			if item.thinkSecs > 0 {
-				desc = fmt.Sprintf("thought for %ds", item.thinkSecs)
-			}
-			if len(allTools) > 0 {
-				desc += ", " + toolGroupDesc(allTools)
+				if agg != "" {
+					desc += ", " + agg
+				}
+			} else {
+				desc = agg
 			}
 			if msgs[item.firstStatusIdx].ThinkingExpanded {
 				title := fmt.Sprintf("[%s]apex[-][%s] (thoughts)[-]", TC.ApexColor, TC.Muted)
@@ -810,42 +882,29 @@ func (cv *ChatView) buildText(width int) {
 
 		case riLiveStatus:
 			if item.liveMsg.ThinkingExpanded {
+				sep()
 				renderBox(session.Message{
 					Role: session.RoleAssistant, Content: item.liveThinking, Partial: item.livePartial,
 					ExpandedBox: true, BoxTitle: fmt.Sprintf("[%s]apex[-][%s] (thoughts)[-]", TC.ApexColor, TC.Muted),
 				}, item.liveMsgIdx, -1)
 			} else {
-				writeFlatLine(item.liveMsg.Content, item.liveMsgIdx, -1)
+				content := item.liveContent
+				if content == "" && item.livePartial {
+					content = cv.liveStatus
+				}
+				if content == "" {
+					continue
+				}
+				sep()
+				if len(content) > 0 && content[0] != '[' {
+					content = apexLabel(content)
+				}
+				writeFlatLine(content, item.liveMsgIdx, -1)
 			}
 
 		case riAssistant:
+			sep()
 			renderBox(item.msg, item.msgIdx, -1)
-
-		case riToolGroup:
-			if item.msg.ToolGroupExpanded {
-				renderBox(session.Message{
-					Role:          session.RoleAssistant,
-					ExpandedBox:   true,
-					BoxTitle:      toolGroupLabel(item.msg.ToolUses),
-					Content:       formatAllToolParams(item.msg.ToolUses),
-					ContentTagged: true,
-				}, item.msgIdx, -2)
-			} else {
-				var collapsible, individual []session.ToolUse
-				for _, tu := range item.msg.ToolUses {
-					if tu.State == "pending" || tu.State == "refused" || tu.State == "error" {
-						individual = append(individual, tu)
-					} else {
-						collapsible = append(collapsible, tu)
-					}
-				}
-				if len(collapsible) > 0 {
-					writeFlatLine(toolGroupLabel(collapsible), item.msgIdx, -2)
-				}
-				for _, tu := range individual {
-					writeFlatLine(toolSingleLabel(tu), item.msgIdx, -2)
-				}
-			}
 		}
 	}
 
@@ -1067,118 +1126,9 @@ func (cv *ChatView) renderMessageBox(b *strings.Builder, msg session.Message, wi
 	return
 }
 
-type toolCat struct{ verb, infin, noun, nouns string }
-
-var toolCats = map[string]toolCat{
-	"read_file":      {"read", "read", "file", "files"},
-	"write_file":     {"wrote", "write", "file", "files"},
-	"edit_file":      {"edited", "edit", "file", "files"},
-	"list_directory": {"listed", "list", "directory", "directories"},
-	"run_shell":      {"ran", "run", "command", "commands"},
-	"web_fetch":      {"fetched", "fetch", "URL", "URLs"},
-	"search_files":   {"searched for", "search for", "pattern", "patterns"},
-	"ask_user":       {"asked", "ask", "question", "questions"},
-	"web_search":     {"searched", "search", "website", "websites"},
-}
-
-// toolGroupDesc returns the plain-text action description for a set of tool uses,
-// without any "apex" prefix or tview tags.
-func toolGroupDesc(tools []session.ToolUse) string {
-	counts := map[string]int{}
-	var names []string
-	for _, tu := range tools {
-		if counts[tu.Name] == 0 {
-			names = append(names, tu.Name)
-		}
-		counts[tu.Name]++
-	}
-	parts := make([]string, len(names))
-	for i, name := range names {
-		cat, ok := toolCats[name]
-		if !ok {
-			cat = toolCat{verb: "called", noun: "tool", nouns: "tools"}
-		}
-		n := counts[name]
-		if n == 1 {
-			parts[i] = cat.verb + " 1 " + cat.noun
-		} else {
-			parts[i] = fmt.Sprintf("%s %d %s", cat.verb, n, cat.nouns)
-		}
-	}
-	switch len(parts) {
-	case 1:
-		return parts[0]
-	case 2:
-		return parts[0] + " and " + parts[1]
-	default:
-		return strings.Join(parts[:len(parts)-1], ", ") + ", and " + parts[len(parts)-1]
-	}
-}
-
 // apexLabel wraps desc in the dim "apex" prefix with muted text color.
 func apexLabel(desc string) string {
 	return fmt.Sprintf("[%s]apex[-][%s] %s[-]", TC.ApexDim, TC.Muted, desc)
-}
-
-// toolGroupLabel generates a tview-tagged summary for a set of tool uses.
-func toolGroupLabel(tools []session.ToolUse) string {
-	if len(tools) == 0 {
-		return ""
-	}
-	if len(tools) == 1 {
-		return toolSingleLabel(tools[0])
-	}
-	return apexLabel(toolGroupDesc(tools))
-}
-
-// toolSingleLabel generates a tview-tagged summary for one tool use.
-func toolSingleLabel(tu session.ToolUse) string {
-	cat, ok := toolCats[tu.Name]
-	key := tu.DisplayKey
-	if key == "" {
-		key = tu.Name
-	}
-	switch {
-	case !ok:
-		return apexLabel("used " + tu.Name)
-	case tu.State == "pending":
-		return apexLabel(fmt.Sprintf("wants to %s %s", cat.infin, key))
-	case tu.State == "refused":
-		return apexLabel(fmt.Sprintf("wanted to %s %s but was rejected", cat.infin, key))
-	case tu.State == "error":
-		return apexLabel(fmt.Sprintf("failed to %s %s", cat.infin, key))
-	default:
-		return apexLabel(fmt.Sprintf("%s %s", cat.verb, key))
-	}
-}
-
-// renderToolParams formats a tool use's pre-parsed params as highlighted key: value lines.
-func renderToolParams(tu session.ToolUse) string {
-	var sb strings.Builder
-	for i, p := range tu.DisplayParams {
-		if i > 0 {
-			sb.WriteByte('\n')
-		}
-		fmt.Fprintf(&sb, "[%s]%s:[-] %s", TC.ToolColor, p.Key, tview.Escape(p.Value))
-	}
-	return sb.String()
-}
-
-// formatAllToolParams formats all tool uses in a group into a single tagged string,
-// with a name header for each tool when there are multiple.
-func formatAllToolParams(tools []session.ToolUse) string {
-	if len(tools) == 1 {
-		return renderToolParams(tools[0])
-	}
-	var sb strings.Builder
-	for i, tu := range tools {
-		if i > 0 {
-			sb.WriteString("\n")
-		}
-		fmt.Fprintf(&sb, "[%s]%s[-]\n", TC.ToolColor, tview.Escape(tu.Name))
-		sb.WriteString(renderToolParams(tu))
-	}
-	return sb.String()
 }
 
 // ─── selection ───────────────────────────────────────────────────────────────

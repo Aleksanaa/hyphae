@@ -52,8 +52,11 @@ type Event struct {
 	ConnErr        error
 
 	// EvThinkingUpdate / EvThinkingDone — raw seconds; UI formats the display string
-	// ThinkingSecs < 0 in EvThinkingDone means no CoT occurred this turn
+	// ThinkingSecs < 0 in EvThinkingDone means no CoT occurred this turn.
+	// StatusMsgIdx is the session message index captured at emit time so the UI
+	// can call SetThinkingSecsAt without relying on the mutable statusMsgIdx.
 	ThinkingSecs int
+	StatusMsgIdx int
 
 	// EvToolApproval — forwarded from agent
 	Tool   *agent.ToolEvent

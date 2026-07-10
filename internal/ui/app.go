@@ -55,12 +55,6 @@ func (a *App) newTabContent() *TabContent {
 			a.redrawActive()
 		}
 	})
-	tc.Chat.SetToolGroupExpandCallback(func(sessionIdx int) {
-		if sess, ok := a.ctrl.ActiveSession(); ok {
-			sess.ToggleToolGroupExpanded(sessionIdx)
-			a.redrawActive()
-		}
-	})
 
 	tc.Chat.TextView.SetFocusFunc(func() { tc.Chat.SetFocused(true) })
 	tc.Chat.TextView.SetBlurFunc(func() { tc.Chat.SetFocused(false) })
@@ -243,35 +237,26 @@ func (a *App) handleControllerEvent(ev controller.Event) {
 				"[%s]connecting to [%s]apex[-][%s] model... (%ds)[-]",
 				TC.Muted, TC.ApexDim, TC.Muted, ev.Elapsed)
 		}
-		sess.UpdateStatus(text)
+		tc.Chat.SetLiveStatus(text)
 		a.redrawActive()
 
 	case controller.EvThinkingUpdate:
 		if !isActive || !hasSess || tc == nil {
 			break
 		}
-		secs := ev.ThinkingSecs
-		sess.UpdateStatus(fmt.Sprintf(
-			"[%s]apex[-][%s] is thinking... (%ds)[-]", TC.ApexDim, TC.Muted, secs))
+		tc.Chat.SetLiveStatus(fmt.Sprintf(
+			"[%s]apex[-][%s] is thinking... (%ds)[-]", TC.ApexDim, TC.Muted, ev.ThinkingSecs))
 		a.redrawActive()
 
 	case controller.EvThinkingDone:
 		if !hasSess {
 			break
 		}
-		if ev.ThinkingSecs < 0 {
-			sess.UpdateStatus("")
-		} else {
-			secs := ev.ThinkingSecs
-			var label string
-			if secs < 1 {
-				label = fmt.Sprintf("[%s]apex[-][%s] thought for a moment[-]", TC.ApexDim, TC.Muted)
-			} else {
-				label = fmt.Sprintf("[%s]apex[-][%s] thought for %ds[-]", TC.ApexDim, TC.Muted, secs)
-			}
-			sess.FinalizeThinkingStatus(label, secs)
+		if ev.ThinkingSecs >= 0 {
+			sess.SetThinkingSecsAt(ev.StatusMsgIdx, ev.ThinkingSecs)
 		}
-		if isActive {
+		if isActive && tc != nil {
+			tc.Chat.SetLiveStatus("")
 			a.redrawActive()
 		}
 

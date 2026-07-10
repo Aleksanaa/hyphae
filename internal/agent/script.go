@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync/atomic"
 
+	"github.com/aleksanaa/hyphae/internal/session"
 	starlarkjson "github.com/aleksanaa/hyphae/internal/third_party/starlark/lib/json"
 	starlarkmath "github.com/aleksanaa/hyphae/internal/third_party/starlark/lib/math"
 	starlarktime "github.com/aleksanaa/hyphae/internal/third_party/starlark/lib/time"
@@ -283,34 +284,57 @@ func starlarkSearchFiles(ctx context.Context, args map[string]any, workDir strin
 // ── Script execution ──────────────────────────────────────────────────────────
 
 // scriptTool pairs a Starlark built-in name with its Go implementation.
-// firstParam is the parameter name that maps to the first positional argument,
-// allowing natural call syntax like read_file("path") in addition to keyword form.
+// firstParam is the parameter name that maps to the first positional argument.
+// The verb/noun fields drive live status updates and the post-round summary.
 type scriptTool struct {
 	name       string
 	firstParam string
 	fn         func(context.Context, map[string]any, string) (starlark.Value, error)
+	activeVerb string // gerund shown during execution: "reading", "editing", "running"
+	wantVerb   string // infinitive shown before approval: "edit", "run"; empty = no approval
+	doneVerb   string // past tense for summary: "read", "edited", "ran"
+	doneNounP  string // plural noun for count>1: "files", "commands", "queries"
 }
 
 var scriptTools = []scriptTool{
-	{"read_file", "path", starlarkReadFile},
-	{"write_file", "path", starlarkWriteFile},
-	{"edit_file", "path", starlarkEditFile},
-	{"list_directory", "path", starlarkListDirectory},
-	{"run_shell", "command", starlarkRunShell},
-	{"web_fetch", "url", starlarkWebFetch},
-	{"web_search", "query", starlarkWebSearch},
-	{"search_files", "pattern", starlarkSearchFiles},
+	{"read_file", "path", starlarkReadFile, "is reading", "", "read", "files"},
+	{"write_file", "path", starlarkWriteFile, "is writing", "write", "wrote", "files"},
+	{"edit_file", "path", starlarkEditFile, "is editing", "edit", "edited", "files"},
+	{"list_directory", "path", starlarkListDirectory, "is listing", "", "listed", "dirs"},
+	{"run_shell", "command", starlarkRunShell, "is running", "run", "ran", "commands"},
+	{"web_fetch", "url", starlarkWebFetch, "is fetching", "fetch", "fetched", "URLs"},
+	{"web_search", "query", starlarkWebSearch, "is searching", "search", "searched", "queries"},
+	{"search_files", "pattern", starlarkSearchFiles, "is searching files", "", "searched", "patterns"},
+}
+
+// toolDisplayTarget extracts a short display string for the primary argument.
+// File paths are shortened to the base name; other values are truncated.
+func toolDisplayTarget(firstParam string, argsMap map[string]any) string {
+	raw := str(argsMap, firstParam)
+	if firstParam == "path" {
+		b := filepath.Base(raw)
+		if b == "" || b == "." {
+			return "."
+		}
+		return b
+	}
+	rr := []rune(raw)
+	if len(rr) > 30 {
+		return string(rr[:29]) + "…"
+	}
+	return raw
 }
 
 // runScript executes a Starlark program with all agent operations available as
 // built-in functions. The script's print() output is returned as the result.
 // Tools requiring user approval pause mid-script for confirmation.
-func runScript(ctx context.Context, ch chan<- Event, argsJSON, workDir string, ns starlark.StringDict) (string, bool) {
+// anyToolsRan reports whether any built-in tool was invoked during execution.
+func runScript(ctx context.Context, ch chan<- Event, argsJSON, workDir string, ns starlark.StringDict) (output string, isErr bool, anyToolsRan bool) {
 	var args struct {
 		Code string `json:"code"`
 	}
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil || args.Code == "" {
-		return "code is required", true
+		return "code is required", true, false
 	}
 
 	var sb strings.Builder
@@ -334,7 +358,8 @@ func runScript(ctx context.Context, ch chan<- Event, argsJSON, workDir string, n
 		}
 	}()
 
-	env := buildScriptEnv(ctx, ch, workDir, &counter)
+	var called atomic.Bool
+	env := buildScriptEnv(ctx, ch, workDir, &counter, &called)
 
 	// Merge persisted namespace into predeclared (built-ins win over namespace).
 	predeclared := make(starlark.StringDict, len(env)+len(ns))
@@ -367,14 +392,14 @@ func runScript(ctx context.Context, ch chan<- Event, argsJSON, workDir string, n
 		} else {
 			out += err.Error()
 		}
-		return strings.TrimRight(out, "\n"), true
+		return strings.TrimRight(out, "\n"), true, called.Load()
 	}
 
 	out := strings.TrimRight(sb.String(), "\n")
 	if out == "" {
-		return "(done)", false
+		return "(done)", false, called.Load()
 	}
-	return out, false
+	return out, false, called.Load()
 }
 
 // formatParseError formats a Starlark syntax.Error with the offending source line.
@@ -423,7 +448,15 @@ func formatEvalError(e *starlark.EvalError, src string) string {
 
 // buildScriptEnv builds the predeclared Starlark environment: math and time
 // modules plus every operation wrapped as a built-in function.
-func buildScriptEnv(ctx context.Context, ch chan<- Event, workDir string, counter *atomic.Int64) starlark.StringDict {
+// called is set to true the first time any status event is emitted (i.e. a tool was invoked).
+func buildScriptEnv(ctx context.Context, ch chan<- Event, workDir string, counter *atomic.Int64, called *atomic.Bool) starlark.StringDict {
+	emitStatusEvent := func(ev session.StatusEvent) {
+		called.Store(true)
+		select {
+		case ch <- Event{Type: EventStatusUpdate, StatusEvent: ev}:
+		case <-ctx.Done():
+		}
+	}
 	env := starlark.StringDict{
 		"json": starlarkjson.Module,
 		"math": starlarkmath.Module,
@@ -480,6 +513,10 @@ func buildScriptEnv(ctx context.Context, ch chan<- Event, workDir string, counte
 		toolName := t.name
 		toolFn := t.fn
 		firstParam := t.firstParam
+		activeVerb := t.activeVerb
+		wantVerb := t.wantVerb
+		doneVerb := t.doneVerb
+		doneNounP := t.doneNounP
 		env[toolName] = starlark.NewBuiltin(toolName, func(_ *starlark.Thread, _ *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 			argsMap := kwargsToMap(kwargs)
 			if len(args) > 0 && firstParam != "" {
@@ -487,6 +524,7 @@ func buildScriptEnv(ctx context.Context, ch chan<- Event, workDir string, counte
 					argsMap[firstParam] = starlarkToGo(args[0])
 				}
 			}
+			target := toolDisplayTarget(firstParam, argsMap)
 			if requiresApproval(toolName) {
 				if _, hasReasoning := argsMap["reasoning"]; !hasReasoning {
 					return nil, fmt.Errorf("%s: reasoning= is required — briefly explain to the user why you are performing this action", toolName)
@@ -504,6 +542,9 @@ func buildScriptEnv(ctx context.Context, ch chan<- Event, workDir string, counte
 				if diffErr != nil {
 					return nil, diffErr
 				}
+				if wantVerb != "" {
+					emitStatusEvent(session.StatusEvent{Kind: session.StatusEventWants, Verb: wantVerb, Target: target})
+				}
 				respCh := make(chan ApprovalResult, 1)
 				select {
 				case ch <- Event{Type: EventToolApproval, Tool: te, RespCh: respCh}:
@@ -517,6 +558,7 @@ func buildScriptEnv(ctx context.Context, ch chan<- Event, workDir string, counte
 					return nil, fmt.Errorf("cancelled")
 				}
 				if !approval.Allowed {
+					emitStatusEvent(session.StatusEvent{Kind: session.StatusEventRefused, Verb: wantVerb, Target: target})
 					msg := "denied by user"
 					if approval.DenyReason != "" {
 						msg += ": " + approval.DenyReason
@@ -524,7 +566,16 @@ func buildScriptEnv(ctx context.Context, ch chan<- Event, workDir string, counte
 					return nil, fmt.Errorf("%s", msg)
 				}
 			}
-			return toolFn(ctx, argsMap, workDir)
+			if activeVerb != "" {
+				emitStatusEvent(session.StatusEvent{Kind: session.StatusEventDoing, Verb: activeVerb, Target: target})
+			}
+			result, err := toolFn(ctx, argsMap, workDir)
+			if err == nil && doneVerb != "" {
+				emitStatusEvent(session.StatusEvent{Kind: session.StatusEventDone, Verb: doneVerb, NounP: doneNounP, Target: target})
+			} else if err != nil && doneVerb != "" {
+				emitStatusEvent(session.StatusEvent{Kind: session.StatusEventFailed, Verb: doneVerb, NounP: doneNounP, Target: target})
+			}
+			return result, err
 		})
 	}
 
@@ -537,6 +588,11 @@ func buildScriptEnv(ctx context.Context, ch chan<- Event, workDir string, counte
 			}
 		}
 		question, _ := m["question"].(string)
+		target := question
+		if rr := []rune(target); len(rr) > 30 {
+			target = string(rr[:29]) + "…"
+		}
+		emitStatusEvent(session.StatusEvent{Kind: session.StatusEventDoing, Verb: "is asking", Target: target})
 		te := &ToolEvent{
 			CallID:         fmt.Sprintf("script:%d", counter.Add(1)),
 			Name:           "ask_user",
@@ -555,6 +611,7 @@ func buildScriptEnv(ctx context.Context, ch chan<- Event, workDir string, counte
 		case <-ctx.Done():
 			return nil, fmt.Errorf("cancelled")
 		}
+		emitStatusEvent(session.StatusEvent{Kind: session.StatusEventDone, Verb: "asked", NounP: "questions", Target: target})
 		return starlark.String(answer), nil
 	})
 
