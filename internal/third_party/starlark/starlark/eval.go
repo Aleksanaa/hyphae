@@ -1623,48 +1623,66 @@ func interpolate(format string, x Value) (Value, error) {
 			}
 		}
 
-		// NOTE: Starlark does not support any of these optional Python features:
-		// - optional conversion flags: [#0- +], etc.
-		// - optional minimum field width (number or *).
-		// - optional precision (.123 or *)
-		// - optional length modifier
+		// Parse optional flags, width, and precision into a Go format spec.
+		spec := []byte{'%'}
+		for format != "" && strings.IndexByte("-+#0 ", format[0]) >= 0 {
+			spec = append(spec, format[0])
+			format = format[1:]
+		}
+		for format != "" && format[0] >= '0' && format[0] <= '9' {
+			spec = append(spec, format[0])
+			format = format[1:]
+		}
+		if format != "" && format[0] == '.' {
+			spec = append(spec, '.')
+			format = format[1:]
+			for format != "" && format[0] >= '0' && format[0] <= '9' {
+				spec = append(spec, format[0])
+				format = format[1:]
+			}
+		}
 
-		// conversion type
 		if format == "" {
 			return nil, fmt.Errorf("incomplete format")
 		}
-		switch c := format[0]; c {
+		c := format[0]
+		spec = append(spec, c)
+		fmtStr := string(spec)
+
+		switch c {
 		case 's', 'r':
+			var s string
 			if str, ok := AsString(arg); ok && c == 's' {
-				buf.WriteString(str)
+				s = str
 			} else {
-				writeValue(buf, arg, nil)
+				var tmp strings.Builder
+				writeValue(&tmp, arg, nil)
+				s = tmp.String()
 			}
-		case 'd', 'i', 'o', 'x', 'X':
+			spec[len(spec)-1] = 's'
+			fmt.Fprintf(buf, string(spec), s)
+		case 'd', 'i':
 			i, err := NumberToInt(arg)
 			if err != nil {
 				return nil, fmt.Errorf("%%%c format requires integer: %v", c, err)
 			}
-			switch c {
-			case 'd', 'i':
-				fmt.Fprintf(buf, "%d", i)
-			case 'o':
-				fmt.Fprintf(buf, "%o", i)
-			case 'x':
-				fmt.Fprintf(buf, "%x", i)
-			case 'X':
-				fmt.Fprintf(buf, "%X", i)
+			spec[len(spec)-1] = 'd'
+			fmt.Fprintf(buf, string(spec), i)
+		case 'o', 'x', 'X':
+			i, err := NumberToInt(arg)
+			if err != nil {
+				return nil, fmt.Errorf("%%%c format requires integer: %v", c, err)
 			}
+			fmt.Fprintf(buf, fmtStr, i)
 		case 'e', 'f', 'g', 'E', 'F', 'G':
 			f, ok := AsFloat(arg)
 			if !ok {
 				return nil, fmt.Errorf("%%%c format requires float, not %s", c, arg.Type())
 			}
-			Float(f).format(buf, c)
+			fmt.Fprintf(buf, fmtStr, f)
 		case 'c':
 			switch arg := arg.(type) {
 			case Int:
-				// chr(int)
 				r, err := AsInt32(arg)
 				if err != nil || r < 0 || r > unicode.MaxRune {
 					return nil, fmt.Errorf("%%c format requires a valid Unicode code point, got %s", arg)
