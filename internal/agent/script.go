@@ -359,8 +359,11 @@ func runScript(ctx context.Context, ch chan<- Event, argsJSON, workDir string, n
 	if err != nil {
 		out := sb.String()
 		var evalErr *starlark.EvalError
+		var parseErr syntax.Error
 		if errors.As(err, &evalErr) {
-			out += evalErr.Backtrace()
+			out += formatEvalError(evalErr, args.Code)
+		} else if errors.As(err, &parseErr) {
+			out += formatParseError(parseErr, args.Code)
 		} else {
 			out += err.Error()
 		}
@@ -372,6 +375,50 @@ func runScript(ctx context.Context, ch chan<- Event, argsJSON, workDir string, n
 		return "(done)", false
 	}
 	return out, false
+}
+
+// formatParseError formats a Starlark syntax.Error with the offending source line.
+func formatParseError(e syntax.Error, src string) string {
+	var buf strings.Builder
+	fmt.Fprintf(&buf, "Parse error at %s: %s", e.Pos, e.Msg)
+	srcLines := strings.Split(src, "\n")
+	line := int(e.Pos.Line)
+	if line > 0 && line <= len(srcLines) {
+		fmt.Fprintf(&buf, "\n    %s", srcLines[line-1])
+		if col := int(e.Pos.Col); col > 0 {
+			fmt.Fprintf(&buf, "\n    %s^", strings.Repeat(" ", col-1))
+		}
+	}
+	return buf.String()
+}
+
+// formatEvalError formats a Starlark EvalError with source lines and caret indicators.
+func formatEvalError(e *starlark.EvalError, src string) string {
+	srcLines := strings.Split(src, "\n")
+	var buf strings.Builder
+
+	stack := e.CallStack
+	suffix := ""
+	if n := len(stack); n > 0 && stack[n-1].Pos.Filename() == "<builtin>" {
+		suffix = " in " + stack[n-1].Name
+		stack = stack[:n-1]
+	}
+
+	if len(stack) > 0 {
+		buf.WriteString("Traceback (most recent call last):\n")
+	}
+	for _, fr := range stack {
+		fmt.Fprintf(&buf, "  %s: in %s\n", fr.Pos, fr.Name)
+		line := int(fr.Pos.Line)
+		if fr.Pos.Filename() == "<run>" && line > 0 && line <= len(srcLines) {
+			fmt.Fprintf(&buf, "    %s\n", srcLines[line-1])
+			if col := int(fr.Pos.Col); col > 0 {
+				fmt.Fprintf(&buf, "    %s^\n", strings.Repeat(" ", col-1))
+			}
+		}
+	}
+	fmt.Fprintf(&buf, "Error%s: %s", suffix, e.Msg)
+	return buf.String()
 }
 
 // buildScriptEnv builds the predeclared Starlark environment: math and time
