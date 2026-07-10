@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	openai "github.com/openai/openai-go/v3"
@@ -13,6 +14,7 @@ import (
 	"github.com/openai/openai-go/v3/packages/param"
 
 	"github.com/aleksanaa/hyphae/internal/session"
+	starlark "github.com/aleksanaa/hyphae/internal/third_party/starlark/starlark"
 )
 
 //go:embed plan_mode.md
@@ -20,7 +22,7 @@ var planModePrompt string
 
 const systemPrompt = `You are a skilled coding assistant. You help the user read, write, and reason about code.
 
-You have one tool: run. It executes a Starlark program where every operation (reading files, editing files, running shell commands, searching, fetching URLs, asking the user) is available as a built-in function. Use run for all tasks — exploration, editing, verification, and multi-step workflows alike.
+You have one tool: run. It executes a Starlark program where every operation (reading files, editing files, running shell commands, searching, fetching URLs, asking the user) is available as a built-in function. Use run for all tasks — exploration, editing, verification, and multi-step workflows alike. Variables and functions defined at the top level persist across run calls for the lifetime of this session — reuse them directly instead of redefining to save tokens.
 
 For file edits, prefer edit_file over write_file — it takes an edits list of {old_string: ..., new_string: ...} dicts and applies them in order. Each old_string must appear exactly once; include enough surrounding context to make it unique.
 
@@ -96,8 +98,14 @@ type Event struct {
 
 // Agent orchestrates the LLM ↔ tool loop.
 type Agent struct {
-	client openai.Client
-	model  string
+	client     openai.Client
+	model      string
+	namespaces sync.Map // session ID → starlark.StringDict
+}
+
+func (a *Agent) getNamespace(sessionID string) starlark.StringDict {
+	v, _ := a.namespaces.LoadOrStore(sessionID, make(starlark.StringDict))
+	return v.(starlark.StringDict)
 }
 
 // New creates an Agent using the provided OpenAI client and model name.
@@ -290,7 +298,7 @@ func (a *Agent) loop(ctx context.Context, sess *session.Session, ch chan<- Event
 				return
 			}
 
-			output, isErr := runScript(ctx, ch, tc.Function.Arguments, sess.WorkDir)
+			output, isErr := runScript(ctx, ch, tc.Function.Arguments, sess.WorkDir, a.getNamespace(sess.ID))
 			te.Output = output
 			te.IsError = isErr
 
@@ -376,6 +384,11 @@ func PlanModeLabel() string {
 // PlanModeExitLabel returns the system-reminder block to append when plan mode just ended.
 func PlanModeExitLabel() string {
 	return "<system-reminder>\nPlan mode has ended. You may now make changes freely.\n</system-reminder>"
+}
+
+// NamespaceClearedLabel returns the system-reminder block injected on cold session resume.
+func NamespaceClearedLabel() string {
+	return "<system-reminder>\nThis session was resumed from storage. The run namespace has been reset — any variables or functions defined in previous run calls are no longer available.\n</system-reminder>"
 }
 
 // isRetryable returns true for transient errors that warrant a retry.

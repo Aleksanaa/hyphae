@@ -111,6 +111,8 @@ func (c *Controller) SendMessage(text string) {
 	if sess.PlanModeExited {
 		sess.ClearPlanModeExited()
 		sentLabel = agent.PlanModeExitLabel() + "\n"
+	} else if sess.TakeColdResumed() {
+		sentLabel = agent.NamespaceClearedLabel() + "\n"
 	} else if sess.IsPlanMode() {
 		sentLabel = agent.PlanModeLabel() + "\n"
 	}

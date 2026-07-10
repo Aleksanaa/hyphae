@@ -305,7 +305,7 @@ var scriptTools = []scriptTool{
 // runScript executes a Starlark program with all agent operations available as
 // built-in functions. The script's print() output is returned as the result.
 // Tools requiring user approval pause mid-script for confirmation.
-func runScript(ctx context.Context, ch chan<- Event, argsJSON, workDir string) (string, bool) {
+func runScript(ctx context.Context, ch chan<- Event, argsJSON, workDir string, ns starlark.StringDict) (string, bool) {
 	var args struct {
 		Code string `json:"code"`
 	}
@@ -335,9 +335,27 @@ func runScript(ctx context.Context, ch chan<- Event, argsJSON, workDir string) (
 	}()
 
 	env := buildScriptEnv(ctx, ch, workDir, &counter)
+
+	// Merge persisted namespace into predeclared (built-ins win over namespace).
+	predeclared := make(starlark.StringDict, len(env)+len(ns))
+	for k, v := range ns {
+		predeclared[k] = v
+	}
+	for k, v := range env {
+		predeclared[k] = v
+	}
+
 	thread.SetMaxExecutionSteps(1_000_000_000)
 	opts := &syntax.FileOptions{TopLevelControl: true, GlobalReassign: true, While: true, Set: true, Recursion: true, REPL: true}
-	_, err := starlark.ExecFileOptions(opts, thread, "<run>", args.Code, env)
+	globals, err := starlark.ExecFileOptions(opts, thread, "<run>", args.Code, predeclared)
+
+	// Persist new globals back into the session namespace (skip built-in names).
+	for k, v := range globals {
+		if _, isBuiltin := env[k]; !isBuiltin {
+			ns[k] = v
+		}
+	}
+
 	if err != nil {
 		out := sb.String()
 		var evalErr *starlark.EvalError

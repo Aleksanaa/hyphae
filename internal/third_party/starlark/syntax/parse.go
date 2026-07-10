@@ -743,9 +743,9 @@ func (p *parser) parsePower() Expr {
 	return x
 }
 
-//	| primary '.' IDENT
-//	| primary slice_suffix
-//	| primary call_suffix
+// | primary '.' IDENT
+// | primary slice_suffix
+// | primary call_suffix
 func (p *parser) parsePrimaryWithSuffix() Expr {
 	x := p.parsePrimary()
 	for {

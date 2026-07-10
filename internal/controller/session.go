@@ -157,6 +157,7 @@ func (c *Controller) ResumeSession(id string) (*session.Session, SessionInfo, er
 		msgs = append(msgs, msg)
 	}
 	sess.BulkLoad(msgs)
+	sess.SetColdResumed()
 
 	for _, m := range msgs {
 		if m.Role == session.RoleUser && m.Content != "" {

@@ -113,6 +113,7 @@ type Session struct {
 	WorkDir          string
 	PlanMode         bool
 	PlanModeExited   bool // true for one turn after plan mode is disabled
+	ColdResumed      bool // true for one turn after session is loaded from DB
 	msgs             []Message
 	statusMsgIdx     int    // index of current turn's RoleStatus message; -1 if none
 	compactedSummary string // latest compact summary; empty = no compact
@@ -145,6 +146,22 @@ func (s *Session) ClearPlanModeExited() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.PlanModeExited = false
+}
+
+// SetColdResumed marks that this session was just loaded from DB.
+func (s *Session) SetColdResumed() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ColdResumed = true
+}
+
+// TakeColdResumed returns and clears the cold-resume flag.
+func (s *Session) TakeColdResumed() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	v := s.ColdResumed
+	s.ColdResumed = false
+	return v
 }
 
 // UpdateStatus replaces the content of the current turn's status message.
