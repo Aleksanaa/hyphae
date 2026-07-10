@@ -161,8 +161,12 @@ loop:
 			v := stack[sp-1]
 			sp--
 			if v != None {
+				s := v.String()
+				if len(s) > 100000 {
+					return nil, thread.evalError(fmt.Errorf("result is too large to display (%d bytes) — assign it to a variable and filter it, or change the approach to generate a more targeted result", len(s)))
+				}
 				if thread.Print != nil {
-					thread.Print(thread, v.String())
+					thread.Print(thread, s)
 				} else {
 					fmt.Println(v)
 				}
