@@ -32,7 +32,14 @@ Built-ins (first arg positional, rest keyword-only):
   search_files(pattern, path=?, glob=?, case_sensitive=?) → list of {file, line, content} dicts
   ask_user(question, options=) → string (selected option or free text)
 
-write_file, edit_file, run_shell, web_fetch, web_search require approval and pause for confirmation; denial raises an error. You must pass reasoning= to explain the action — omitting it is an error.`),
+write_file, edit_file, run_shell, web_fetch, web_search require approval and pause for confirmation; denial raises an error. You must pass reasoning= to explain the action — omitting it is an error.
+
+Starlark limitations (sandboxed Python subset):
+  no import       — modules can't be loaded; math/time/json are pre-loaded globals
+  no class        — use dicts or plain functions instead
+  no try/except   — errors abort the script; validate inputs before calling
+  no yield        — generators are not supported; use lists and comprehensions
+  no global/nonlocal — top-level variables are mutable globals by default`),
 			Parameters: openai.FunctionParameters{
 				"type": "object",
 				"properties": map[string]any{
