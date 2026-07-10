@@ -34,8 +34,7 @@ Three modules are pre-loaded as globals (no import statement needed or supported
   json  — json.encode(v), json.decode(s), json.indent(s)
 
 Starlark is a sandboxed subset of Python. Supported: arithmetic, strings, lists, dicts, sets, comprehensions, for/while loops, if/else, mutable globals, recursive functions, and standard built-ins (len, range, int, float, str, bool, sorted, min, max, zip, enumerate, print, type, round, divmod, ...).
-Not supported: import, class, try/except, yield, global/nonlocal.
-String formatting: f-strings work (f"hello {name}"). % also works (%s/%d/%f/%g), but not width/precision modifiers like %.6f — use round(x, 6) and str() instead.`
+Not supported: import, class, try/except, yield, global/nonlocal.`
 
 // EventType classifies an agent event sent to the UI.
 type EventType string
