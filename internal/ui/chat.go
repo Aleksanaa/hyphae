@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -524,6 +525,8 @@ func (cv *ChatView) renderWelcome(b *strings.Builder, width int) {
 // collRound holds the raw data from one completed tool-only agent round.
 type collRound struct {
 	thinking     string
+	toolInput    string // Starlark code extracted from the run tool call JSON args
+	toolOutput   string // output returned by the run tool call
 	statusEvents []session.StatusEvent
 }
 
@@ -620,14 +623,26 @@ func groupMessages(msgs []session.Message, compactSeqs []int) []renderItem {
 					break
 				}
 				thinkSecs += sm.ThinkingSecs
+				toolInput, toolOutput := "", ""
+				if len(am.ToolUses) > 0 {
+					var codeArgs struct {
+						Code string `json:"code"`
+					}
+					if json.Unmarshal([]byte(am.ToolUses[0].Input), &codeArgs) == nil {
+						toolInput = codeArgs.Code
+					}
+					toolOutput = am.ToolUses[0].Output
+				}
 				rounds = append(rounds, collRound{
 					thinking:     am.Thinking,
+					toolInput:    toolInput,
+					toolOutput:   toolOutput,
 					statusEvents: sm.StatusEvents,
 				})
 				j++
 			}
 
-			hasThinking, hasOps := false, false
+			hasThinking, hasOps, hasToolInput := false, false, false
 			for _, r := range rounds {
 				if r.thinking != "" {
 					hasThinking = true
@@ -635,8 +650,11 @@ func groupMessages(msgs []session.Message, compactSeqs []int) []renderItem {
 				if len(r.statusEvents) > 0 {
 					hasOps = true
 				}
+				if r.toolInput != "" {
+					hasToolInput = true
+				}
 			}
-			if hasThinking || hasOps {
+			if hasThinking || hasOps || hasToolInput {
 				items = append(items, renderItem{
 					kind:           riCollapsedRounds,
 					firstStatusIdx: mi,
@@ -753,6 +771,89 @@ func aggregateOps(events []session.StatusEvent) string {
 	return strings.Join(parts, ", ")
 }
 
+// renderCodeOutputLines produces a bordered box containing syntax-highlighted
+// Starlark code and its output for embedding inside an ExpandedBox.
+// maxW is the inner content width of the containing ExpandedBox.
+// Code is capped at 20 lines; output at 10 lines.
+func renderCodeOutputLines(code, output string, maxW int) []renderedLine {
+	const codeMaxLines = 20
+	const outputMaxLines = 10
+
+	bc := TC.Border
+	mc := TC.Muted
+
+	innerW := max(1, maxW-4)
+	fill := func(n int) string { return strings.Repeat("─", max(0, n)) }
+
+	wrapLine := func(rl renderedLine) renderedLine {
+		visW := tview.TaggedStringWidth(rl.text)
+		pad := max(0, innerW-visW)
+		text := fmt.Sprintf("[%s]│[-:-:-] %s%s [%s]│[-:-:-]", bc, rl.text, strings.Repeat(" ", pad), bc)
+		totalW := 2 + visW + pad + 2
+		mask := make([]bool, totalW)
+		for col := 2; col < 2+visW; col++ {
+			mask[col] = true
+		}
+		return renderedLine{text: text, copyMask: mask, softWrap: rl.softWrap}
+	}
+
+	var out []renderedLine
+
+	// Top border: ┌──────────────────── input ─┐ (right-aligned)
+	{
+		inLabel := "input"
+		leftFill := max(0, maxW-len([]rune(inLabel))-5)
+		top := fmt.Sprintf("[%s]┌%s [%s]%s [%s]─┐[-:-:-]", bc, fill(leftFill), mc, inLabel, bc)
+		out = append(out, renderedLine{text: top, copyMask: make([]bool, tview.TaggedStringWidth(top))})
+	}
+
+	// Code lines with python highlighting
+	allCodeLines := strings.Split(code, "\n")
+	truncatedCode := len(allCodeLines) > codeMaxLines
+	codeLines := allCodeLines
+	if truncatedCode {
+		codeLines = allCodeLines[:codeMaxLines]
+	}
+	cb := &codeBlock{lang: "python", lines: codeLines}
+	for _, rl := range cb.renderHighlighted(innerW) {
+		out = append(out, wrapLine(rl))
+	}
+	if truncatedCode {
+		trunc := fmt.Sprintf("[%s]… %d more lines[-:-:-]", mc, len(allCodeLines)-codeMaxLines)
+		out = append(out, wrapLine(renderedLine{text: trunc}))
+	}
+
+	// Output section (omit trivial placeholder)
+	if output != "" && output != "(done)" {
+		// Middle separator: ├──────────────────── output ─┤ (right-aligned)
+		outLabel := "output"
+		leftFill := max(0, maxW-len([]rune(outLabel))-5)
+		mid := fmt.Sprintf("[%s]├%s [%s]%s [%s]─┤[-:-:-]", bc, fill(leftFill), mc, outLabel, bc)
+		out = append(out, renderedLine{text: mid, copyMask: make([]bool, tview.TaggedStringWidth(mid))})
+
+		allOutLines := strings.Split(output, "\n")
+		truncatedOut := len(allOutLines) > outputMaxLines
+		outLines := allOutLines
+		if truncatedOut {
+			outLines = allOutLines[:outputMaxLines]
+		}
+		cb2 := &codeBlock{lines: outLines}
+		for _, rl := range cb2.renderPlain(innerW) {
+			out = append(out, wrapLine(rl))
+		}
+		if truncatedOut {
+			trunc := fmt.Sprintf("[%s]… %d more lines[-:-:-]", mc, len(allOutLines)-outputMaxLines)
+			out = append(out, wrapLine(renderedLine{text: trunc}))
+		}
+	}
+
+	// Bottom border: └────────────────────────────────────────────┘
+	bot := fmt.Sprintf("[%s]└%s┘[-:-:-]", bc, fill(maxW-2))
+	out = append(out, renderedLine{text: bot, copyMask: make([]bool, tview.TaggedStringWidth(bot))})
+
+	return out
+}
+
 func (cv *ChatView) buildText(width int) {
 	// Doc lines shift whenever text is rebuilt, so any live selection is invalid.
 	cv.selActive = false
@@ -844,16 +945,20 @@ func (cv *ChatView) buildText(width int) {
 
 		case riCollapsedRounds:
 			sep()
-			var contentParts []string
 			var allEvents []session.StatusEvent
 			for _, r := range item.rounds {
-				if r.thinking != "" {
-					contentParts = append(contentParts, tview.Escape(r.thinking))
-				}
 				allEvents = append(allEvents, r.statusEvents...)
 			}
 			agg := aggregateOps(allEvents)
-			anyThinking := len(contentParts) > 0 || item.thinkSecs > 0
+			anyThinking := item.thinkSecs > 0
+			if !anyThinking {
+				for _, r := range item.rounds {
+					if r.thinking != "" {
+						anyThinking = true
+						break
+					}
+				}
+			}
 			var desc string
 			if anyThinking {
 				if item.thinkSecs > 0 {
@@ -872,9 +977,27 @@ func (cv *ChatView) buildText(width int) {
 				if item.thinkSecs > 0 {
 					title = fmt.Sprintf("[%s]apex[-][%s] (thoughts, %ds)[-]", TC.ApexColor, TC.Muted, item.thinkSecs)
 				}
+				contentW := maxW - 4
+				var contentLines []string
+				for i, r := range item.rounds {
+					if i > 0 {
+						contentLines = append(contentLines, "")
+					}
+					if r.thinking != "" {
+						contentLines = append(contentLines, tview.Escape(r.thinking))
+					}
+					if r.toolInput != "" {
+						if r.thinking != "" {
+							contentLines = append(contentLines, "")
+						}
+						for _, rl := range renderCodeOutputLines(r.toolInput, r.toolOutput, contentW) {
+							contentLines = append(contentLines, rl.text)
+						}
+					}
+				}
 				renderBox(session.Message{
 					Role: session.RoleAssistant, ExpandedBox: true,
-					BoxTitle: title, Content: strings.Join(contentParts, "\n\n"), ContentTagged: true,
+					BoxTitle: title, Content: strings.Join(contentLines, "\n"), ContentTagged: true,
 				}, item.firstStatusIdx, -1)
 			} else {
 				writeFlatLine(apexLabel(desc), item.firstStatusIdx, -1)
