@@ -1006,8 +1006,39 @@ func (cv *ChatView) buildText(width int) {
 		case riLiveStatus:
 			if item.liveMsg.ThinkingExpanded {
 				sep()
+				thinking := item.liveThinking
+				partial := item.livePartial
+				var toolInput, toolOutput string
+				// For a postStatus (preceded by a mixed-round assistant), the adjacent assistant
+				// is behind us, not ahead — look backward for thinking and tool code.
+				if item.liveMsgIdx > 0 && msgs[item.liveMsgIdx-1].Role == session.RoleAssistant && msgs[item.liveMsgIdx-1].Content != "" {
+					prevAm := msgs[item.liveMsgIdx-1]
+					thinking = prevAm.Thinking
+					partial = prevAm.Partial
+					if len(prevAm.ToolUses) > 0 {
+						var codeArgs struct{ Code string `json:"code"` }
+						if json.Unmarshal([]byte(prevAm.ToolUses[0].Input), &codeArgs) == nil {
+							toolInput = codeArgs.Code
+						}
+						toolOutput = prevAm.ToolUses[0].Output
+					}
+				}
+				contentW := maxW - 4
+				var contentLines []string
+				if thinking != "" {
+					contentLines = append(contentLines, tview.Escape(thinking))
+				}
+				if toolInput != "" {
+					if thinking != "" {
+						contentLines = append(contentLines, "")
+					}
+					for _, rl := range renderCodeOutputLines(toolInput, toolOutput, contentW) {
+						contentLines = append(contentLines, rl.text)
+					}
+				}
 				renderBox(session.Message{
-					Role: session.RoleAssistant, Content: item.liveThinking, Partial: item.livePartial,
+					Role: session.RoleAssistant, Content: strings.Join(contentLines, "\n"),
+					ContentTagged: true, Partial: partial,
 					ExpandedBox: true, BoxTitle: fmt.Sprintf("[%s]apex[-][%s] (thoughts)[-]", TC.ApexColor, TC.Muted),
 				}, item.liveMsgIdx, -1)
 			} else {
@@ -1248,6 +1279,7 @@ func (cv *ChatView) renderMessageBox(b *strings.Builder, msg session.Message, wi
 	}
 	return
 }
+
 
 // apexLabel wraps desc in the dim "apex" prefix with muted text color.
 func apexLabel(desc string) string {
