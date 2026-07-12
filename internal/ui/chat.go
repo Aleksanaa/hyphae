@@ -17,9 +17,24 @@ type selPoint struct {
 	screenX int
 }
 
+// renderMsg is the UI's view of one rendered entry, decoupled from session.Message
+// (which no longer carries box-styling fields). role reuses session.Role values;
+// a status role (RoleThinking/RoleTool) marks a flat status line, while expandedBox
+// marks a status box. This keeps the box renderer and selection code role-driven.
+type renderMsg struct {
+	role          session.Role
+	content       string
+	err           error
+	partial       bool
+	expandedBox   bool
+	boxTitle      string
+	fullWidth     bool
+	contentTagged bool
+}
+
 // renderedEntry records one displayed item with its session origin and screen geometry.
 type renderedEntry struct {
-	msg       session.Message
+	msg       renderMsg
 	sessIdx   int
 	toolIdx   int
 	lineStart int // doc-line of the item's top border
@@ -146,7 +161,7 @@ func (cv *ChatView) SetCompact(summary string, seqs []int) {
 }
 
 // SetStatusExpandCallback registers a function called when the user double-clicks
-// a RoleStatus message. The argument is the session-message index.
+// a status (thinking/tool) item. The argument is the session-message index.
 func (cv *ChatView) SetStatusExpandCallback(fn func(sessionIdx int)) { cv.onStatusExpand = fn }
 
 // SetFocused is called by focus/blur hooks; no visible border to update.
@@ -337,7 +352,7 @@ func (cv *ChatView) HoveredContent() string {
 	if cv.hoverIdx < 0 || cv.hoverIdx >= len(cv.entries) {
 		return ""
 	}
-	return cv.entries[cv.hoverIdx].msg.Content
+	return cv.entries[cv.hoverIdx].msg.content
 }
 
 // MouseHandler wraps TextView's handler to track hover and drag-to-select.
@@ -427,7 +442,7 @@ func (cv *ChatView) handleDoubleClick(docLine int) {
 		}
 		return
 	}
-	if ((e.msg.Role == session.RoleStatus && e.msg.Content != "") || e.msg.ExpandedBox) && cv.onStatusExpand != nil {
+	if ((e.msg.role.IsStatus() && e.msg.content != "") || e.msg.expandedBox) && cv.onStatusExpand != nil {
 		cv.onStatusExpand(e.sessIdx)
 	}
 }
@@ -522,21 +537,13 @@ func (cv *ChatView) renderWelcome(b *strings.Builder, width int) {
 
 // ─── message grouping ────────────────────────────────────────────────────────
 
-// collRound holds the raw data from one completed tool-only agent round.
-type collRound struct {
-	thinking     string
-	toolInput    string // Starlark code extracted from the run tool call JSON args
-	toolOutput   string // output returned by the run tool call
-	statusEvents []session.StatusEvent
-}
-
 type renderItemKind int
 
 const (
 	riCompactDivider  renderItemKind = iota // compact separator line or summary box
-	riCollapsedRounds                       // ≥1 tool-only rounds with CoT collapsed into one apex entry
-	riLiveStatus                            // streaming status (live progress text)
-	riAssistant                             // assistant message with content or error
+	riCollapsedRounds                       // ≥1 consecutive settled status items collapsed into one apex entry
+	riLiveStatus                            // in-progress status (streaming thinking / running tool)
+	riMessage                               // user or assistant message with content or error
 )
 
 // renderItem is one logical unit to be rendered in the conversation.
@@ -545,26 +552,148 @@ type renderItem struct {
 
 	divIdx int // riCompactDivider: index into compactSeqs
 
-	// riCollapsedRounds
+	// riCollapsedRounds: the run of consecutive settled status items.
 	firstStatusIdx int
-	thinkSecs      int
-	rounds         []collRound
+	statuses       []session.Message
 
 	// riLiveStatus
-	liveMsg      session.Message
-	liveMsgIdx   int
-	liveContent  string // pre-computed from StatusEvents + ThinkingSecs; liveStatus fallback applied in buildText
-	liveThinking string // adjacent assistant's Thinking (for expanded view)
-	livePartial  bool
+	liveMsgIdx  int
+	liveContent string // from the status's own events/secs; liveStatus fallback applied in buildText
 
-	// riAssistant
+	// riMessage
 	msg    session.Message
 	msgIdx int
 }
 
-// groupMessages converts a flat message slice into ordered render items,
-// interleaving compact dividers and collapsing consecutive completed tool-only
-// rounds. Transient connecting/thinking text (liveStatus) is applied by buildText.
+// statusInProgress reports whether a status item is still live: thinking that is
+// streaming, or a tool call awaiting approval or running.
+func statusInProgress(m session.Message) bool {
+	if m.Partial {
+		return true
+	}
+	for _, tu := range m.ToolUses {
+		if tu.State == "running" || tu.State == "pending" {
+			return true
+		}
+	}
+	return false
+}
+
+// formatStatusEvent renders a single op event as live progress text.
+func formatStatusEvent(ev session.StatusEvent) string {
+	switch ev.Kind {
+	case session.StatusEventDoing:
+		return ev.Verb + " " + ev.Target
+	case session.StatusEventWants:
+		return "wants to " + ev.Verb + " " + ev.Target
+	case session.StatusEventDone:
+		return ev.Verb + " " + ev.Target
+	case session.StatusEventRefused:
+		return "wanted to " + ev.Verb + " " + ev.Target
+	case session.StatusEventFailed:
+		return "failed to " + ev.Verb + " " + ev.Target
+	}
+	return ""
+}
+
+// liveStatusText builds the progress line for an in-progress status from its own
+// thinking duration and latest op event. Empty when there is nothing yet — the
+// caller falls back to the transient liveStatus label.
+func liveStatusText(m session.Message) string {
+	var thinkText string
+	if m.Role == session.RoleThinking && m.ThinkingSecs > 0 {
+		thinkText = fmt.Sprintf("thought for %ds", m.ThinkingSecs)
+	}
+	var opsText string
+	for _, ev := range m.StatusEvents {
+		opsText = formatStatusEvent(ev)
+	}
+	switch {
+	case thinkText != "" && opsText != "":
+		return thinkText + ", " + opsText
+	case thinkText != "":
+		return thinkText
+	default:
+		return opsText
+	}
+}
+
+// toolCode extracts the Starlark code and output from a tool status item.
+func toolCode(m session.Message) (code, output string) {
+	if len(m.ToolUses) == 0 {
+		return "", ""
+	}
+	var args struct {
+		Code string `json:"code"`
+	}
+	if json.Unmarshal([]byte(m.ToolUses[0].Input), &args) == nil {
+		code = args.Code
+	}
+	return code, m.ToolUses[0].Output
+}
+
+// collapseStatuses summarizes a run of settled status items into a one-line
+// description ("thought for 3s, read 2 files") and the total thinking duration
+// used for the expanded-box title.
+func collapseStatuses(statuses []session.Message) (desc string, thinkSecs int) {
+	anyThinking := false
+	var allEvents []session.StatusEvent
+	for _, s := range statuses {
+		if s.Role == session.RoleThinking {
+			thinkSecs += s.ThinkingSecs
+			if s.Thinking != "" || s.ThinkingSecs > 0 {
+				anyThinking = true
+			}
+		} else {
+			allEvents = append(allEvents, s.StatusEvents...)
+		}
+	}
+	agg := aggregateOps(allEvents)
+	if !anyThinking {
+		return agg, 0
+	}
+	if thinkSecs > 0 {
+		desc = fmt.Sprintf("thought for %ds", thinkSecs)
+	} else {
+		desc = "thought for a moment"
+	}
+	if agg != "" {
+		desc += ", " + agg
+	}
+	return desc, thinkSecs
+}
+
+// collapsedDetail renders the expanded-box body for a run of statuses: each
+// thinking status's text and each tool status's code/output box, blank-separated.
+func collapsedDetail(statuses []session.Message, contentW int) string {
+	var lines []string
+	firstBlock := true
+	blank := func() {
+		if !firstBlock {
+			lines = append(lines, "")
+		}
+		firstBlock = false
+	}
+	for _, s := range statuses {
+		if s.Role == session.RoleThinking {
+			if s.Thinking != "" {
+				blank()
+				lines = append(lines, tview.Escape(s.Thinking))
+			}
+		} else if code, output := toolCode(s); code != "" {
+			blank()
+			for _, rl := range renderCodeOutputLines(code, output, contentW) {
+				lines = append(lines, rl.text)
+			}
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+// groupMessages converts the flat message list into ordered render items,
+// interleaving compact dividers and collapsing consecutive settled status
+// (thinking/tool) items into one apex entry. Because each round is already its
+// own peer item, this is a single forward scan — no re-pairing of roles.
 func groupMessages(msgs []session.Message, compactSeqs []int) []renderItem {
 	var items []renderItem
 	mn := len(msgs)
@@ -580,141 +709,35 @@ func groupMessages(msgs []session.Message, compactSeqs []int) []renderItem {
 	for mi := 0; mi < mn; mi++ {
 		flushDividers(mi)
 		msg := msgs[mi]
-		if msg.Role == session.RoleTool {
-			continue
-		}
 
-		if msg.Role == session.RoleStatus {
-			// Forward-scan consecutive completed tool-only rounds. Stops when any
-			// round has content, an error, a partial response, or pending/refused/error tools.
-			var rounds []collRound
-			var thinkSecs int
-			j := mi
-			for j < mn {
-				for j < mn && msgs[j].Role == session.RoleTool {
-					j++
-				}
-				if j >= mn || msgs[j].Role != session.RoleStatus {
-					break
-				}
-				roundStart := j
-				sm := msgs[j]
-				j++
-				for j < mn && msgs[j].Role == session.RoleTool {
-					j++
-				}
-				if j >= mn || msgs[j].Role != session.RoleAssistant {
-					break
-				}
-				am := msgs[j]
-				if am.Content != "" || am.Error != nil || am.Partial {
-					j = roundStart
-					break
-				}
-				stillRunning := false
-				for _, tu := range am.ToolUses {
-					if tu.State == "running" || tu.State == "pending" || tu.State == "refused" {
-						stillRunning = true
-						break
-					}
-				}
-				if stillRunning {
-					j = roundStart
-					break
-				}
-				thinkSecs += sm.ThinkingSecs
-				toolInput, toolOutput := "", ""
-				if len(am.ToolUses) > 0 {
-					var codeArgs struct {
-						Code string `json:"code"`
-					}
-					if json.Unmarshal([]byte(am.ToolUses[0].Input), &codeArgs) == nil {
-						toolInput = codeArgs.Code
-					}
-					toolOutput = am.ToolUses[0].Output
-				}
-				rounds = append(rounds, collRound{
-					thinking:     am.Thinking,
-					toolInput:    toolInput,
-					toolOutput:   toolOutput,
-					statusEvents: sm.StatusEvents,
-				})
-				j++
-			}
-
-			hasThinking, hasOps, hasToolInput := false, false, false
-			for _, r := range rounds {
-				if r.thinking != "" {
-					hasThinking = true
-				}
-				if len(r.statusEvents) > 0 {
-					hasOps = true
-				}
-				if r.toolInput != "" {
-					hasToolInput = true
-				}
-			}
-			if hasThinking || hasOps || hasToolInput {
+		if msg.Role.IsStatus() {
+			// An in-progress status renders live, not collapsed.
+			if statusInProgress(msg) {
 				items = append(items, renderItem{
-					kind:           riCollapsedRounds,
-					firstStatusIdx: mi,
-					thinkSecs:      thinkSecs,
-					rounds:         rounds,
+					kind:        riLiveStatus,
+					liveMsgIdx:  mi,
+					liveContent: liveStatusText(msg),
 				})
-				mi = j - 1
 				continue
 			}
-
-			liveThinking, livePartial := "", false
-			for jj := mi + 1; jj < mn; jj++ {
-				if msgs[jj].Role == session.RoleAssistant {
-					liveThinking = msgs[jj].Thinking
-					livePartial = msgs[jj].Partial
-					break
-				}
+			// Collect the run of consecutive settled status items.
+			start := mi
+			var statuses []session.Message
+			for mi < mn && msgs[mi].Role.IsStatus() && !statusInProgress(msgs[mi]) {
+				statuses = append(statuses, msgs[mi])
+				mi++
 			}
-			var thinkText string
-			if msg.ThinkingSecs > 0 {
-				thinkText = fmt.Sprintf("thought for %ds", msg.ThinkingSecs)
-			}
-			var opsText string
-			for _, ev := range msg.StatusEvents {
-				switch ev.Kind {
-				case session.StatusEventDoing:
-					opsText = ev.Verb + " " + ev.Target
-				case session.StatusEventWants:
-					opsText = "wants to " + ev.Verb + " " + ev.Target
-				case session.StatusEventDone:
-					opsText = ev.Verb + " " + ev.Target
-				case session.StatusEventRefused:
-					opsText = "wanted to " + ev.Verb + " " + ev.Target
-				case session.StatusEventFailed:
-					opsText = "failed to " + ev.Verb + " " + ev.Target
-				}
-			}
-			var liveContent string
-			switch {
-			case thinkText != "" && opsText != "":
-				liveContent = thinkText + ", " + opsText
-			case thinkText != "":
-				liveContent = thinkText
-			default:
-				liveContent = opsText
-			}
-			// Always emit the item; buildText applies liveStatus if liveContent is empty.
+			mi-- // outer loop will re-increment
 			items = append(items, renderItem{
-				kind:         riLiveStatus,
-				liveMsg:      msg,
-				liveMsgIdx:   mi,
-				liveContent:  liveContent,
-				liveThinking: liveThinking,
-				livePartial:  livePartial,
+				kind:           riCollapsedRounds,
+				firstStatusIdx: start,
+				statuses:       statuses,
 			})
 			continue
 		}
 
-		if msg.Role != session.RoleAssistant || msg.Content != "" || msg.Error != nil {
-			items = append(items, renderItem{kind: riAssistant, msg: msg, msgIdx: mi})
+		if msg.Role == session.RoleUser || msg.Content != "" || msg.Error != nil {
+			items = append(items, renderItem{kind: riMessage, msg: msg, msgIdx: mi})
 		}
 	}
 
@@ -889,7 +912,7 @@ func (cv *ChatView) buildText(width int) {
 	first := true
 	lineCount := 0
 
-	addEntry := func(entry session.Message, sessIdx, toolIdx, lp, bw, lines int) {
+	addEntry := func(entry renderMsg, sessIdx, toolIdx, lp, bw, lines int) {
 		entries = append(entries, renderedEntry{
 			msg: entry, sessIdx: sessIdx, toolIdx: toolIdx,
 			lineStart: lineCount, boxLeft: lp, boxRight: lp + bw,
@@ -905,13 +928,16 @@ func (cv *ChatView) buildText(width int) {
 		}
 		first = false
 	}
+	// writeFlatLine renders a one-line status (collapsed rounds / live progress).
+	// The entry is marked with a status role so double-click and selection treat it
+	// as an expandable status.
 	writeFlatLine := func(line string, sessIdx, toolIdx int) {
 		b.WriteString("  ")
 		b.WriteString(line)
 		b.WriteString("\n")
-		addEntry(session.Message{Role: session.RoleStatus, Content: line}, sessIdx, toolIdx, 2, tview.TaggedStringWidth(line), 1)
+		addEntry(renderMsg{role: session.RoleTool, content: line}, sessIdx, toolIdx, 2, tview.TaggedStringWidth(line), 1)
 	}
-	renderBox := func(entry session.Message, sessIdx, toolIdx int) {
+	renderBox := func(entry renderMsg, sessIdx, toolIdx int) {
 		prev := b.Len()
 		lp, bw := cv.renderMessageBox(&b, entry, width, maxW, len(entries) == cv.selectedIdx)
 		addEntry(entry, sessIdx, toolIdx, lp, bw, strings.Count(b.String()[prev:], "\n"))
@@ -924,11 +950,11 @@ func (cv *ChatView) buildText(width int) {
 			sep()
 			divIdx := item.divIdx
 			if divIdx == lastDivider && cv.compactExpanded[divIdx] && cv.compactSummary != "" {
-				renderBox(session.Message{
-					Role:      session.RoleAssistant,
-					BoxTitle:  fmt.Sprintf("[%s]compacted conversation[-]", TC.Muted),
-					Content:   cv.compactSummary,
-					FullWidth: true,
+				renderBox(renderMsg{
+					role:      session.RoleAssistant,
+					boxTitle:  fmt.Sprintf("[%s]compacted conversation[-]", TC.Muted),
+					content:   cv.compactSummary,
+					fullWidth: true,
 				}, divIdx, toolIdxCompact)
 			} else {
 				label := "compacted conversation"
@@ -940,125 +966,44 @@ func (cv *ChatView) buildText(width int) {
 					strings.Repeat("─", leftN), label, strings.Repeat("─", rightN))
 				b.WriteString(line)
 				b.WriteString("\n")
-				addEntry(session.Message{Role: session.RoleStatus}, divIdx, toolIdxCompact, 0, width, 1)
+				addEntry(renderMsg{}, divIdx, toolIdxCompact, 0, width, 1)
 			}
 
 		case riCollapsedRounds:
 			sep()
-			var allEvents []session.StatusEvent
-			for _, r := range item.rounds {
-				allEvents = append(allEvents, r.statusEvents...)
-			}
-			agg := aggregateOps(allEvents)
-			anyThinking := item.thinkSecs > 0
-			if !anyThinking {
-				for _, r := range item.rounds {
-					if r.thinking != "" {
-						anyThinking = true
-						break
-					}
-				}
-			}
-			var desc string
-			if anyThinking {
-				if item.thinkSecs > 0 {
-					desc = fmt.Sprintf("thought for %ds", item.thinkSecs)
-				} else {
-					desc = "thought for a moment"
-				}
-				if agg != "" {
-					desc += ", " + agg
-				}
-			} else {
-				desc = agg
-			}
-			if msgs[item.firstStatusIdx].ThinkingExpanded {
-				title := fmt.Sprintf("[%s]apex[-][%s] (thoughts)[-]", TC.ApexColor, TC.Muted)
-				if item.thinkSecs > 0 {
-					title = fmt.Sprintf("[%s]apex[-][%s] (thoughts, %ds)[-]", TC.ApexColor, TC.Muted, item.thinkSecs)
-				}
-				contentW := maxW - 4
-				var contentLines []string
-				for i, r := range item.rounds {
-					if i > 0 {
-						contentLines = append(contentLines, "")
-					}
-					if r.thinking != "" {
-						contentLines = append(contentLines, tview.Escape(r.thinking))
-					}
-					if r.toolInput != "" {
-						if r.thinking != "" {
-							contentLines = append(contentLines, "")
-						}
-						for _, rl := range renderCodeOutputLines(r.toolInput, r.toolOutput, contentW) {
-							contentLines = append(contentLines, rl.text)
-						}
-					}
-				}
-				renderBox(session.Message{
-					Role: session.RoleAssistant, ExpandedBox: true,
-					BoxTitle: title, Content: strings.Join(contentLines, "\n"), ContentTagged: true,
-				}, item.firstStatusIdx, -1)
-			} else {
+			desc, thinkSecs := collapseStatuses(item.statuses)
+			if !msgs[item.firstStatusIdx].Expanded {
 				writeFlatLine(apexLabel(desc), item.firstStatusIdx, -1)
+				break
 			}
+			title := fmt.Sprintf("[%s]apex[-][%s] (thoughts)[-]", TC.ApexColor, TC.Muted)
+			if thinkSecs > 0 {
+				title = fmt.Sprintf("[%s]apex[-][%s] (thoughts, %ds)[-]", TC.ApexColor, TC.Muted, thinkSecs)
+			}
+			renderBox(renderMsg{
+				role: session.RoleAssistant, expandedBox: true,
+				boxTitle: title, content: collapsedDetail(item.statuses, maxW-4), contentTagged: true,
+			}, item.firstStatusIdx, -1)
 
 		case riLiveStatus:
-			if item.liveMsg.ThinkingExpanded {
-				sep()
-				thinking := item.liveThinking
-				partial := item.livePartial
-				var toolInput, toolOutput string
-				// For a postStatus (preceded by a mixed-round assistant), the adjacent assistant
-				// is behind us, not ahead — look backward for thinking and tool code.
-				if item.liveMsgIdx > 0 && msgs[item.liveMsgIdx-1].Role == session.RoleAssistant && msgs[item.liveMsgIdx-1].Content != "" {
-					prevAm := msgs[item.liveMsgIdx-1]
-					thinking = prevAm.Thinking
-					partial = prevAm.Partial
-					if len(prevAm.ToolUses) > 0 {
-						var codeArgs struct{ Code string `json:"code"` }
-						if json.Unmarshal([]byte(prevAm.ToolUses[0].Input), &codeArgs) == nil {
-							toolInput = codeArgs.Code
-						}
-						toolOutput = prevAm.ToolUses[0].Output
-					}
-				}
-				contentW := maxW - 4
-				var contentLines []string
-				if thinking != "" {
-					contentLines = append(contentLines, tview.Escape(thinking))
-				}
-				if toolInput != "" {
-					if thinking != "" {
-						contentLines = append(contentLines, "")
-					}
-					for _, rl := range renderCodeOutputLines(toolInput, toolOutput, contentW) {
-						contentLines = append(contentLines, rl.text)
-					}
-				}
-				renderBox(session.Message{
-					Role: session.RoleAssistant, Content: strings.Join(contentLines, "\n"),
-					ContentTagged: true, Partial: partial,
-					ExpandedBox: true, BoxTitle: fmt.Sprintf("[%s]apex[-][%s] (thoughts)[-]", TC.ApexColor, TC.Muted),
-				}, item.liveMsgIdx, -1)
-			} else {
-				content := item.liveContent
-				if content == "" && item.livePartial {
-					content = cv.liveStatus
-				}
-				if content == "" {
-					continue
-				}
-				sep()
-				if len(content) > 0 && content[0] != '[' {
-					content = apexLabel(content)
-				}
-				writeFlatLine(content, item.liveMsgIdx, -1)
+			content := item.liveContent
+			if content == "" {
+				content = cv.liveStatus
 			}
-
-		case riAssistant:
+			if content == "" {
+				continue
+			}
 			sep()
-			renderBox(item.msg, item.msgIdx, -1)
+			if len(content) > 0 && content[0] != '[' {
+				content = apexLabel(content)
+			}
+			writeFlatLine(content, item.liveMsgIdx, -1)
+
+		case riMessage:
+			sep()
+			renderBox(renderMsg{
+				role: item.msg.Role, content: item.msg.Content, err: item.msg.Error, partial: item.msg.Partial,
+			}, item.msgIdx, -1)
 		}
 	}
 
@@ -1098,26 +1043,26 @@ func (cv *ChatView) buildCopyMasks(entries []renderedEntry, maxW int) {
 
 	for _, e := range entries {
 		start, msg := e.lineStart, e.msg
-		switch msg.Role {
+		switch msg.role {
 		case session.RoleUser:
-			maskWordWrap(start, 4, tview.Escape(msg.Content))
+			maskWordWrap(start, 4, tview.Escape(msg.content))
 		case session.RoleAssistant:
 			switch {
-			case msg.ExpandedBox:
-				content := msg.Content
-				if !msg.ContentTagged {
+			case msg.expandedBox:
+				content := msg.content
+				if !msg.contentTagged {
 					content = tview.Escape(content)
 				}
 				maskWordWrap(start, 1, content)
-			case msg.Error != nil:
-				maskWordWrap(start, 6, tview.Escape(msg.Error.Error()))
-			case msg.Content != "":
-				blocks := cv.mdCache[msg.Content]
+			case msg.err != nil:
+				maskWordWrap(start, 6, tview.Escape(msg.err.Error()))
+			case msg.content != "":
+				blocks := cv.mdCache[msg.content]
 				if blocks == nil {
 					break
 				}
 				contentCW := cw
-				if msg.FullWidth {
+				if msg.fullWidth {
 					contentCW = (e.boxRight - e.boxLeft) - 4
 				}
 				rls := renderBlocksAnnotated(blocks, contentCW)
@@ -1128,10 +1073,10 @@ func (cv *ChatView) buildCopyMasks(entries []renderedEntry, maxW int) {
 					}
 				}
 				minBW := 9
-				if msg.Partial {
+				if msg.partial {
 					minBW = 11
-				} else if msg.BoxTitle != "" {
-					minBW = tview.TaggedStringWidth(msg.BoxTitle) + 5
+				} else if msg.boxTitle != "" {
+					minBW = tview.TaggedStringWidth(msg.boxTitle) + 5
 				}
 				boxCW := max(minBW-4, actualW)
 				for j, rl := range rls {
@@ -1168,16 +1113,16 @@ func maxTaggedWidth(lines []string) int {
 
 // renderMessageBox writes a compact bordered box into b and returns leftPad and boxW.
 // Box anatomy:  ┌─ label ───┐ / │ content │ / └───────────┘
-// ExpandedBox uses dotted borders (╌/╎) with BoxTitle; BoxTitle alone uses solid borders
+// expandedBox uses dotted borders (╌/╎) with boxTitle; boxTitle alone uses solid borders
 // with a centered title; otherwise solid borders with the "apex" label.
-func (cv *ChatView) renderMessageBox(b *strings.Builder, msg session.Message, width, maxW int, isHovered bool) (leftPad, boxW int) {
+func (cv *ChatView) renderMessageBox(b *strings.Builder, msg renderMsg, width, maxW int, isHovered bool) (leftPad, boxW int) {
 	bc := Theme.Border.CSS()
 	if isHovered {
 		bc = Theme.BorderFocus.CSS()
 	}
 
 	hChar, vChar := "─", "│"
-	if msg.ExpandedBox {
+	if msg.expandedBox {
 		hChar, vChar = "╌", "╎"
 	}
 	fill := func(n int) string { return strings.Repeat(hChar, max(0, n)) }
@@ -1191,9 +1136,9 @@ func (cv *ChatView) renderMessageBox(b *strings.Builder, msg session.Message, wi
 
 	maxContentW := maxW - 4
 
-	switch msg.Role {
+	switch msg.role {
 	case session.RoleUser:
-		lines := tview.WordWrap(tview.Escape(msg.Content), maxContentW)
+		lines := tview.WordWrap(tview.Escape(msg.content), maxContentW)
 		boxW = max(8, maxTaggedWidth(lines)+4)
 		leftPad = max(0, width-boxW)
 		p := strings.Repeat(" ", leftPad)
@@ -1205,8 +1150,8 @@ func (cv *ChatView) renderMessageBox(b *strings.Builder, msg session.Message, wi
 		fmt.Fprintf(b, "%s[%s]└%s┘[-]\n", p, bc, fill(boxW-2))
 
 	case session.RoleAssistant:
-		if msg.Error != nil {
-			lines := tview.WordWrap(tview.Escape(msg.Error.Error()), maxContentW)
+		if msg.err != nil {
+			lines := tview.WordWrap(tview.Escape(msg.err.Error()), maxContentW)
 			boxW = max(10, maxTaggedWidth(lines)+4)
 			boxLine := mkLine(boxW - 4)
 			fmt.Fprintf(b, "[%s]┌─ [%s]error [%s]%s┐[-]\n", bc, TC.ErrorColor, bc, fill(boxW-10))
@@ -1218,56 +1163,56 @@ func (cv *ChatView) renderMessageBox(b *strings.Builder, msg session.Message, wi
 		}
 
 		var lines []string
-		if msg.ExpandedBox {
-			content := msg.Content
-			if !msg.ContentTagged {
+		if msg.expandedBox {
+			content := msg.content
+			if !msg.contentTagged {
 				content = tview.Escape(content)
 			}
 			lines = tview.WordWrap(content, maxContentW)
 		} else {
 			contentW := maxContentW
-			if msg.FullWidth {
+			if msg.fullWidth {
 				contentW = width - 4
 			}
-			blocks, ok := cv.mdCache[msg.Content]
+			blocks, ok := cv.mdCache[msg.content]
 			if !ok {
-				blocks = parseMarkdown(msg.Content)
-				cv.mdCache[msg.Content] = blocks
+				blocks = parseMarkdown(msg.content)
+				cv.mdCache[msg.content] = blocks
 			}
 			lines = renderBlocks(blocks, contentW)
 		}
 
 		partialFrag, extraW := "", 0
-		if msg.Partial {
+		if msg.partial {
 			partialFrag = fmt.Sprintf("[%s]… [-]", TC.Muted)
 			extraW = 2
 		}
 		minBoxW := 9
-		if msg.BoxTitle != "" {
-			minBoxW = tview.TaggedStringWidth(msg.BoxTitle) + 5
-		} else if msg.Partial {
+		if msg.boxTitle != "" {
+			minBoxW = tview.TaggedStringWidth(msg.boxTitle) + 5
+		} else if msg.partial {
 			minBoxW = 11
 		}
-		if msg.FullWidth {
+		if msg.fullWidth {
 			boxW = width
 		} else {
 			boxW = max(minBoxW+extraW, maxTaggedWidth(lines)+4)
 		}
 		boxLine := mkLine(boxW - 4)
 
-		if msg.ExpandedBox {
+		if msg.expandedBox {
 			fmt.Fprintf(b, "[%s]┌╌ %s %s[%s]%s┐[-]\n",
-				bc, msg.BoxTitle, partialFrag, bc, fill(boxW-tview.TaggedStringWidth(msg.BoxTitle)-5-extraW))
+				bc, msg.boxTitle, partialFrag, bc, fill(boxW-tview.TaggedStringWidth(msg.boxTitle)-5-extraW))
 			if len(lines) == 0 {
 				fmt.Fprintf(b, "%s\n", boxLine("", 0))
 			}
-		} else if msg.BoxTitle != "" {
-			titleTagW := tview.TaggedStringWidth(msg.BoxTitle)
+		} else if msg.boxTitle != "" {
+			titleTagW := tview.TaggedStringWidth(msg.boxTitle)
 			inner := boxW - titleTagW - 4 // total dash space
 			leftF := inner / 2
 			rightF := inner - leftF
 			fmt.Fprintf(b, "[%s]┌%s %s [%s]%s┐[-]\n",
-				bc, fill(leftF), msg.BoxTitle, bc, fill(rightF))
+				bc, fill(leftF), msg.boxTitle, bc, fill(rightF))
 		} else {
 			fmt.Fprintf(b, "[%s]┌─ [%s]apex [%s]%s[%s]%s┐[-]\n",
 				bc, TC.ApexColor, bc, partialFrag, bc, fill(boxW-9-extraW))
@@ -1279,7 +1224,6 @@ func (cv *ChatView) renderMessageBox(b *strings.Builder, msg session.Message, wi
 	}
 	return
 }
-
 
 // apexLabel wraps desc in the dim "apex" prefix with muted text color.
 func apexLabel(desc string) string {
@@ -1393,14 +1337,14 @@ func (cv *ChatView) selectedTextWhole() string {
 		e := cv.entries[i]
 		msg := e.msg
 		var content string
-		switch msg.Role {
+		switch msg.role {
 		case session.RoleUser:
-			content = msg.Content
+			content = msg.content
 		case session.RoleAssistant:
-			if msg.Error != nil {
-				content = msg.Error.Error()
+			if msg.err != nil {
+				content = msg.err.Error()
 			} else {
-				content = msg.Content
+				content = msg.content
 			}
 		}
 		if content == "" {
@@ -1408,9 +1352,9 @@ func (cv *ChatView) selectedTextWhole() string {
 		}
 		if multi {
 			role := "assistant"
-			if msg.Role == session.RoleUser {
+			if msg.role == session.RoleUser {
 				role = "you"
-			} else if msg.ExpandedBox {
+			} else if msg.expandedBox {
 				role = "thoughts"
 			} else if e.toolIdx == toolIdxCompact {
 				role = "compact"
@@ -1423,31 +1367,31 @@ func (cv *ChatView) selectedTextWhole() string {
 	return strings.Join(parts, "\n\n")
 }
 
-// computeMsgContent returns the plain-text content lines for a message and the
-// screen-column left padding of its box (non-zero only for right-aligned user boxes).
-func computeMsgContent(msg session.Message, width, maxW int) ([]string, int) {
+// computeMsgContent returns the plain-text content lines for a rendered entry and
+// the screen-column left padding of its box (non-zero only for right-aligned user boxes).
+func computeMsgContent(msg renderMsg, width, maxW int) ([]string, int) {
 	cw := maxW - 4
-	switch msg.Role {
-	case session.RoleUser:
-		lines := tview.WordWrap(tview.Escape(msg.Content), cw)
+	switch {
+	case msg.role == session.RoleUser:
+		lines := tview.WordWrap(tview.Escape(msg.content), cw)
 		boxW := max(8, maxTaggedWidth(lines)+4)
 		for i, l := range lines {
 			lines[i] = tview.Unescape(l)
 		}
 		return lines, max(0, width-boxW)
-	case session.RoleAssistant:
+	case msg.role == session.RoleAssistant:
 		var plain string
 		switch {
-		case msg.ExpandedBox:
-			plain = msg.Content
-		case msg.Error != nil:
-			plain = msg.Error.Error()
+		case msg.expandedBox:
+			plain = msg.content
+		case msg.err != nil:
+			plain = msg.err.Error()
 		default:
 			contentCW := cw
-			if msg.FullWidth {
+			if msg.fullWidth {
 				contentCW = width - 4
 			}
-			raw := renderMarkdown(msg.Content, contentCW)
+			raw := renderMarkdown(msg.content, contentCW)
 			out := make([]string, len(raw))
 			for i, l := range raw {
 				out[i] = stripTags(l)
@@ -1459,8 +1403,8 @@ func computeMsgContent(msg session.Message, width, maxW int) ([]string, int) {
 			lines[i] = tview.Unescape(l)
 		}
 		return lines, 0
-	case session.RoleStatus:
-		return []string{stripTags(msg.Content)}, 2
+	case msg.role.IsStatus():
+		return []string{stripTags(msg.content)}, 2
 	}
 	return nil, 0
 }

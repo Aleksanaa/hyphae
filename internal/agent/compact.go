@@ -14,9 +14,26 @@ import (
 var compactPrompt string
 
 // appendHistory appends messages from history[startIdx:] to msgs, skipping
-// status, partial, and errored messages. Returns whether any user message was added.
+// thinking, partial, and errored items. Returns whether any user message was added.
+//
+// A model response's preamble text and its tool call are stored as separate peer
+// items (RoleAssistant then RoleTool). Assistant text is buffered in pendingText:
+// a following tool call reveals it was a preamble and drops it (an assistant
+// message carrying both content and tool_calls is rejected by some providers);
+// otherwise it flushes on its own as a final answer. The result therefore only
+// ever contains assistant{tool_calls}, tool results, and standalone
+// assistant{content} — never both together, and never two assistants in a row.
 func appendHistory(msgs []openai.ChatCompletionMessageParamUnion, history []session.Message, startIdx int) ([]openai.ChatCompletionMessageParamUnion, bool) {
 	hasContent := false
+	pendingText := ""
+	flushText := func() {
+		if pendingText != "" {
+			var p openai.ChatCompletionAssistantMessageParam
+			p.Content.OfString = openai.String(pendingText)
+			msgs = append(msgs, openai.ChatCompletionMessageParamUnion{OfAssistant: &p})
+			pendingText = ""
+		}
+	}
 	for i, m := range history {
 		if i < startIdx {
 			continue
@@ -25,9 +42,10 @@ func appendHistory(msgs []openai.ChatCompletionMessageParamUnion, history []sess
 			continue
 		}
 		switch m.Role {
-		case session.RoleStatus:
-			// UI-only; skip
+		case session.RoleThinking:
+			// reasoning is not replayed to the model
 		case session.RoleUser:
+			flushText()
 			content := m.Content
 			if m.SentLabel != "" {
 				content += "\n\n" + m.SentLabel
@@ -35,17 +53,14 @@ func appendHistory(msgs []openai.ChatCompletionMessageParamUnion, history []sess
 			msgs = append(msgs, openai.UserMessage(content))
 			hasContent = true
 		case session.RoleAssistant:
-			// Skip turns with neither content nor tool calls — some providers
-			// (e.g. deepseek) only populate CoT and leave content empty; sending
-			// an empty assistant message causes an "invalid request" error.
-			if m.Content == "" && len(m.ToolUses) == 0 {
-				continue
-			}
-			var p openai.ChatCompletionAssistantMessageParam
-			if m.Content != "" {
-				p.Content.OfString = openai.String(m.Content)
-			}
+			flushText()
+			pendingText = m.Content
+		case session.RoleTool:
+			// Preamble text (if any) belongs to these calls; drop it rather than
+			// emit an assistant message with both content and tool_calls.
+			pendingText = ""
 			for _, tu := range m.ToolUses {
+				var p openai.ChatCompletionAssistantMessageParam
 				p.ToolCalls = append(p.ToolCalls, openai.ChatCompletionMessageToolCallUnionParam{
 					OfFunction: &openai.ChatCompletionMessageFunctionToolCallParam{
 						ID: tu.ID,
@@ -55,18 +70,16 @@ func appendHistory(msgs []openai.ChatCompletionMessageParamUnion, history []sess
 						},
 					},
 				})
-			}
-			msgs = append(msgs, openai.ChatCompletionMessageParamUnion{OfAssistant: &p})
-		case session.RoleTool:
-			if m.ToolResult != nil {
-				content := m.ToolResult.Content
-				if m.ToolResult.IsError {
+				msgs = append(msgs, openai.ChatCompletionMessageParamUnion{OfAssistant: &p})
+				content := tu.Output
+				if tu.State == "error" {
 					content = fmt.Sprintf("[error] %s", content)
 				}
-				msgs = append(msgs, openai.ToolMessage(content, m.ToolResult.ID))
+				msgs = append(msgs, openai.ToolMessage(content, tu.ID))
 			}
 		}
 	}
+	flushText()
 	return msgs, hasContent
 }
 

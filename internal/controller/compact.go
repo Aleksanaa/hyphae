@@ -89,11 +89,8 @@ func (c *Controller) Compact() error {
 			_, allMemSeqs := sess.GetCompact()
 			seqParts := make([]string, len(allMemSeqs))
 			for j, memSeq := range allMemSeqs {
-				dbS := memSeq
-				for dbS >= 0 && currentMsgs[dbS].Role == session.RoleStatus {
-					dbS--
-				}
-				seqParts[j] = strconv.Itoa(dbS)
+				// Every item persists as its own row, so memory index == DB seq.
+				seqParts[j] = strconv.Itoa(memSeq)
 			}
 			lastDBSeq, _ := strconv.Atoi(seqParts[len(seqParts)-1])
 			go c.st.UpdateSessionCompact(sess.ID, summary, int64(lastDBSeq), strings.Join(seqParts, ",")) //nolint:errcheck

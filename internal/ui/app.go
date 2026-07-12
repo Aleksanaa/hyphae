@@ -51,7 +51,7 @@ func (a *App) newTabContent() *TabContent {
 
 	tc.Chat.SetStatusExpandCallback(func(sessionIdx int) {
 		if sess, ok := a.ctrl.ActiveSession(); ok {
-			sess.ToggleThinkingExpanded(sessionIdx)
+			sess.ToggleExpanded(sessionIdx)
 			a.redrawActive()
 		}
 	})
@@ -249,12 +249,6 @@ func (a *App) handleControllerEvent(ev controller.Event) {
 		a.redrawActive()
 
 	case controller.EvThinkingDone:
-		if !hasSess {
-			break
-		}
-		if ev.ThinkingSecs >= 0 {
-			sess.SetThinkingSecsAt(ev.StatusMsgIdx, ev.ThinkingSecs)
-		}
 		if isActive && tc != nil {
 			tc.Chat.SetLiveStatus("")
 			a.redrawActive()

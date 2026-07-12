@@ -78,7 +78,7 @@ CREATE TABLE messages (
     call_id       TEXT    NOT NULL DEFAULT '',  -- for role='tool': the LLM tool call id
     is_error      INTEGER NOT NULL DEFAULT 0,   -- for role='tool': whether the call errored
     sent_label    TEXT    NOT NULL DEFAULT '',  -- frozen "[Sent: ...]" suffix for user messages
-    status_label  TEXT    NOT NULL DEFAULT '',  -- tool-progress summary saved from the preceding RoleStatus
+    status_label  TEXT    NOT NULL DEFAULT '',  -- for role='tool': JSON-encoded []StatusEvent for op aggregation
     created_at    INTEGER NOT NULL,
     UNIQUE(session_id, seq)
 );
@@ -326,7 +326,7 @@ func (s *Store) UpdateSessionPricing(id string, contextWindow int64, inputPrice,
 // Returns (0, nil) if the row already exists (INSERT OR IGNORE).
 // If 0 is returned the caller may call MessageID to retrieve the existing id.
 // callID and isError are only meaningful for role='tool'.
-// statusLabel is the tool-progress summary for role='assistant' (from the preceding RoleStatus).
+// statusLabel holds JSON-encoded []StatusEvent for role='tool' (op aggregation).
 func (s *Store) InsertMessage(sessionID string, seq int, role, content, thinking string, thinkingSecs int, callID string, isError bool, sentLabel, statusLabel string) (int64, error) {
 	isErrorInt := 0
 	if isError {
@@ -372,7 +372,7 @@ type LoadedMessage struct {
 	CallID       string // for role='tool': the tool call id
 	IsError      bool   // for role='tool'
 	SentLabel    string // frozen "[Sent: ...]" suffix for user messages
-	StatusLabel  string // tool-progress summary for role='assistant' (from preceding RoleStatus)
+	StatusLabel  string // for role='tool': JSON-encoded []StatusEvent (op aggregation)
 	ToolCalls    []LoadedToolCall
 }
 

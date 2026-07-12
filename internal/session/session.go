@@ -14,15 +14,23 @@ func newID() string {
 	return fmt.Sprintf("%x", b)
 }
 
-// Role is the speaker of a message.
+// Role identifies the kind of conversation item.
 type Role string
 
+// The conversation is a plain list of items at one level. A message is spoken
+// text (RoleUser / RoleAssistant); a status is a step the assistant took —
+// either RoleThinking (chain-of-thought) or RoleTool (one tool call and its
+// result). Statuses render as expandable boxes and may be aggregated by the UI.
 const (
 	RoleUser      Role = "user"
 	RoleAssistant Role = "assistant"
-	RoleTool      Role = "tool"
-	RoleStatus    Role = "status" // UI-only status message; empty content = hidden
+	RoleThinking  Role = "thinking" // status: chain-of-thought reasoning
+	RoleTool      Role = "tool"     // status: one tool call with its result
 )
+
+// IsStatus reports whether the role is a status step (thinking or tool call)
+// rather than a spoken message.
+func (r Role) IsStatus() bool { return r == RoleThinking || r == RoleTool }
 
 // Status mirrors the agent's current state.
 type Status string
@@ -73,38 +81,34 @@ type ToolUse struct {
 	State  string // "running" | "done" | "error"
 }
 
-// ToolResult is the response to a tool call.
-type ToolResult struct {
-	ID      string
-	Content string
-	IsError bool
-}
-
-// Message is one turn in the conversation.
+// Message is one item in the conversation. Its Role selects which fields apply:
+//
+//	RoleUser      — Content, SentLabel
+//	RoleAssistant — Content (final text), or Error
+//	RoleThinking  — Thinking text, ThinkingSecs
+//	RoleTool      — ToolUses[0] (the call + its result in Output/State), StatusEvents
+//
+// Thinking and tool items are "statuses" (Role.IsStatus): expandable boxes the
+// UI may aggregate. Expanded and Partial are UI/stream state on any item.
 type Message struct {
-	Role             Role
-	Content          string
-	SentLabel        string        // frozen "[Sent: ...]" suffix for user messages; empty for all other roles
-	Thinking         string        // reasoning_content from CoT-capable models
-	ThinkingSecs     int           // UI: CoT duration in seconds; set once per turn on RoleStatus
-	StatusEvents     []StatusEvent // RoleStatus only: append-only op record from agent
-	ThinkingExpanded bool          // UI: whether the thoughts box is expanded (RoleStatus only)
-	ExpandedBox      bool          // UI: synthetic renderedMsgs entry rendered as an expanded dotted box
-	BoxTitle         string        // tview-tagged label for ExpandedBox or FullWidth box
-	FullWidth        bool          // UI: force box to terminal width with centered title (requires BoxTitle)
-	ContentTagged    bool          // UI: Content already contains tview tags; skip Escape in rendering
-	ToolUses         []ToolUse     // assistant turns only
-	ToolResult       *ToolResult   // tool turns only
-	Partial          bool          // streaming in progress
-	Error            error         // set if the turn failed
+	Role         Role
+	Content      string        // RoleUser / RoleAssistant text
+	SentLabel    string        // RoleUser: frozen "[Sent: ...]" suffix
+	Thinking     string        // RoleThinking: reasoning_content
+	ThinkingSecs int           // RoleThinking: CoT duration in seconds
+	StatusEvents []StatusEvent // RoleTool: append-only op record for aggregation
+	ToolUses     []ToolUse     // RoleTool: the single tool call, carrying its own result
+	Expanded     bool          // UI: status box expanded to show detail
+	Partial      bool          // streaming in progress
+	Error        error         // RoleAssistant: set if the turn failed
 }
 
-// ToggleThinkingExpanded flips the ThinkingExpanded flag on a RoleStatus message.
-func (s *Session) ToggleThinkingExpanded(idx int) {
+// ToggleExpanded flips the Expanded flag on a status (thinking or tool) item.
+func (s *Session) ToggleExpanded(idx int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if idx >= 0 && idx < len(s.msgs) && s.msgs[idx].Role == RoleStatus {
-		s.msgs[idx].ThinkingExpanded = !s.msgs[idx].ThinkingExpanded
+	if idx >= 0 && idx < len(s.msgs) && s.msgs[idx].Role.IsStatus() {
+		s.msgs[idx].Expanded = !s.msgs[idx].Expanded
 	}
 }
 
@@ -167,22 +171,13 @@ func (s *Session) TakeColdResumed() bool {
 	return v
 }
 
-// AppendStatusEvent appends a structured op event to the status message at idx.
-// idx is the value returned by AddMessage when the RoleStatus message was created.
+// AppendStatusEvent appends a structured op event to the tool status at idx.
+// idx is the value returned by AddMessage when the tool item was created.
 func (s *Session) AppendStatusEvent(idx int, ev StatusEvent) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if idx >= 0 && idx < len(s.msgs) && s.msgs[idx].Role == RoleStatus {
+	if idx >= 0 && idx < len(s.msgs) && s.msgs[idx].Role == RoleTool {
 		s.msgs[idx].StatusEvents = append(s.msgs[idx].StatusEvents, ev)
-	}
-}
-
-// SetThinkingSecsAt records the thinking duration on the status message at idx.
-func (s *Session) SetThinkingSecsAt(idx, secs int) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if idx >= 0 && idx < len(s.msgs) && s.msgs[idx].Role == RoleStatus {
-		s.msgs[idx].ThinkingSecs = secs
 	}
 }
 
@@ -272,21 +267,27 @@ func (s *Session) AppendThinkingDelta(idx int, delta string) {
 	}
 }
 
-// FinalizeMessage marks a message as complete with its final content and tool uses.
-func (s *Session) FinalizeMessage(idx int, content string, toolUses []ToolUse) {
+// FinalizeMessage marks an assistant message complete with its final text.
+func (s *Session) FinalizeMessage(idx int, content string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if idx < len(s.msgs) {
 		s.msgs[idx].Content = content
-		s.msgs[idx].ToolUses = toolUses
 		s.msgs[idx].Partial = false
-		for i := range s.msgs[idx].ToolUses {
-			s.msgs[idx].ToolUses[i].State = "running"
-		}
 	}
 }
 
-// SetToolResult updates the tool use state within an assistant message.
+// FinalizeThinking marks a thinking status complete and records its duration.
+func (s *Session) FinalizeThinking(idx, secs int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if idx < len(s.msgs) {
+		s.msgs[idx].ThinkingSecs = secs
+		s.msgs[idx].Partial = false
+	}
+}
+
+// SetToolResult updates the tool use state within a tool status message.
 func (s *Session) SetToolResult(msgIdx int, callID, output string, isError bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -301,21 +302,6 @@ func (s *Session) SetToolResult(msgIdx int, callID, output string, isError bool)
 			} else {
 				s.msgs[msgIdx].ToolUses[i].State = "done"
 			}
-			return
-		}
-	}
-}
-
-// SetToolState sets the State field of a specific tool use within an assistant message.
-func (s *Session) SetToolState(msgIdx int, callID, state string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if msgIdx >= len(s.msgs) {
-		return
-	}
-	for i, tu := range s.msgs[msgIdx].ToolUses {
-		if tu.ID == callID {
-			s.msgs[msgIdx].ToolUses[i].State = state
 			return
 		}
 	}

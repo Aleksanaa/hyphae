@@ -17,7 +17,7 @@ type turnState struct {
 	thinkingStart   time.Time
 	thinkingFrozen  bool
 	statusCancel    context.CancelFunc
-	statusMsgIdx    int // index of the current round's RoleStatus message; set by EventRoundStart
+	statusMsgIdx    int // index of the current tool status; set by EventToolStart
 }
 
 func (ts *turnState) stopCountdown() {
@@ -72,22 +72,17 @@ func (c *Controller) startConnectingTimer(sessionID string, ts *turnState, retry
 	}()
 }
 
-// finalizeStatus emits EvThinkingDone and stops the connecting timer.
-// No-op after the first call per turn. ts.statusMsgIdx was set by EventRoundStart
-// so it refers to this round's status message regardless of later rounds.
+// finalizeStatus clears the transient thinking/connecting label and stops the
+// connecting timer. No-op after the first call per turn. The thinking duration
+// itself is recorded on the thinking status by the agent, not here.
 func (c *Controller) finalizeStatus(sessionID string, ts *turnState) {
 	if ts.thinkingFrozen {
 		return
 	}
 	ts.thinkingFrozen = true
+	ts.thinkingPending = false
 	ts.stopCountdown()
-	if ts.thinkingPending {
-		secs := int(time.Since(ts.thinkingStart).Seconds())
-		c.emit(Event{Kind: EvThinkingDone, SessionID: sessionID, ThinkingSecs: secs, StatusMsgIdx: ts.statusMsgIdx})
-		ts.thinkingPending = false
-	} else {
-		c.emit(Event{Kind: EvThinkingDone, SessionID: sessionID, ThinkingSecs: -1, StatusMsgIdx: ts.statusMsgIdx})
-	}
+	c.emit(Event{Kind: EvThinkingDone, SessionID: sessionID})
 }
 
 // SendMessage adds a user message to the active (or new) session and starts the
@@ -216,14 +211,18 @@ func (c *Controller) processAgentEvents(sessionID string, agCh <-chan agent.Even
 				c.emit(Event{Kind: EvRedraw, SessionID: sessionID})
 			}
 
-		case agent.EventToolStart, agent.EventToolDone:
+		case agent.EventToolStart:
 			sess.SetStatus(session.StatusRunning)
+			ts.statusMsgIdx = agEv.StatusMsgIdx
 			if isActive {
 				c.emit(Event{Kind: EvRedraw, SessionID: sessionID})
 			}
 
-		case agent.EventRoundStart:
-			ts.statusMsgIdx = agEv.StatusMsgIdx
+		case agent.EventToolDone:
+			sess.SetStatus(session.StatusRunning)
+			if isActive {
+				c.emit(Event{Kind: EvRedraw, SessionID: sessionID})
+			}
 
 		case agent.EventStatusUpdate:
 			sess.AppendStatusEvent(ts.statusMsgIdx, agEv.StatusEvent)

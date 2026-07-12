@@ -113,56 +113,48 @@ func (c *Controller) ResumeSession(id string) (*session.Session, SessionInfo, er
 	workDir, _ := os.Getwd()
 	sess := session.NewSession(id, workDir)
 
+	// Each row becomes one peer item (user, thinking, tool, or assistant). seqToMemIdx
+	// maps a DB seq to its primary memory index so compact points can be remapped.
 	seqToMemIdx := make(map[int]int, len(loaded))
-	msgs := make([]session.Message, 0, len(loaded))
+	var msgs []session.Message
 	for _, lm := range loaded {
-		if lm.Role == string(session.RoleAssistant) {
-			// Insert a bare status row before every assistant to match the live-session
-			// memory layout (the agent always adds a status before each API call).
-			// Without this, non-thinking assistants shift all subsequent BulkLoad indices,
-			// causing PersistSession to create spurious duplicate DB rows.
-			sm := session.Message{
-				Role:         session.RoleStatus,
-				ThinkingSecs: lm.ThinkingSecs,
+		switch lm.Role {
+		case string(session.RoleUser):
+			seqToMemIdx[lm.Seq] = len(msgs)
+			msgs = append(msgs, session.Message{Role: session.RoleUser, Content: lm.Content, SentLabel: lm.SentLabel})
+
+		case string(session.RoleThinking):
+			seqToMemIdx[lm.Seq] = len(msgs)
+			msgs = append(msgs, session.Message{Role: session.RoleThinking, Thinking: lm.Thinking, ThinkingSecs: lm.ThinkingSecs})
+
+		case string(session.RoleTool):
+			// New tool status rows carry their own tool_calls. Legacy bare result
+			// rows (result folded under the assistant) have none — drop them.
+			if len(lm.ToolCalls) == 0 {
+				continue
 			}
-			// status_label is stored as JSON-encoded []StatusEvent.
-			// Old sessions stored plain text; those are silently dropped.
-			if lm.StatusLabel != "" && lm.StatusLabel[0] == '[' {
-				var evs []session.StatusEvent
-				if json.Unmarshal([]byte(lm.StatusLabel), &evs) == nil {
-					sm.StatusEvents = evs
-				}
+			seqToMemIdx[lm.Seq] = len(msgs)
+			msgs = append(msgs, toolStatusFromLoaded(lm))
+
+		case string(session.RoleAssistant):
+			// New assistant rows are plain text. Legacy rows fold a round's thinking
+			// + tool calls onto the assistant; split those into preceding peers.
+			split := lm.Thinking != "" || lm.ThinkingSecs > 0 || len(lm.ToolCalls) > 0
+			if lm.Thinking != "" || lm.ThinkingSecs > 0 {
+				msgs = append(msgs, session.Message{Role: session.RoleThinking, Thinking: lm.Thinking, ThinkingSecs: lm.ThinkingSecs})
 			}
-			msgs = append(msgs, sm)
-		}
-		seqToMemIdx[lm.Seq] = len(msgs)
-		msg := session.Message{
-			Role:      session.Role(lm.Role),
-			Content:   lm.Content,
-			Thinking:  lm.Thinking,
-			SentLabel: lm.SentLabel,
-		}
-		if lm.Role == string(session.RoleTool) {
-			msg.ToolResult = &session.ToolResult{
-				ID:      lm.CallID,
-				Content: lm.Content,
-				IsError: lm.IsError,
+			if len(lm.ToolCalls) > 0 {
+				msgs = append(msgs, toolStatusFromLoaded(lm))
 			}
-			msg.Content = ""
-		}
-		if len(lm.ToolCalls) > 0 {
-			msg.ToolUses = make([]session.ToolUse, len(lm.ToolCalls))
-			for i, tc := range lm.ToolCalls {
-				msg.ToolUses[i] = session.ToolUse{
-					ID:     tc.CallID,
-					Name:   tc.Name,
-					Input:  tc.Args,
-					Output: tc.Result,
-					State:  tc.Status,
-				}
+			if lm.Content != "" || !split {
+				// Emit the message for real text, or a genuinely empty new-format row.
+				seqToMemIdx[lm.Seq] = len(msgs)
+				msgs = append(msgs, session.Message{Role: session.RoleAssistant, Content: lm.Content})
+			} else {
+				// Legacy tool-only round with no final text: seq maps to the last status.
+				seqToMemIdx[lm.Seq] = len(msgs) - 1
 			}
 		}
-		msgs = append(msgs, msg)
 	}
 	sess.BulkLoad(msgs)
 	sess.SetColdResumed()
@@ -221,8 +213,26 @@ func (c *Controller) ResumeSession(id string) (*session.Session, SessionInfo, er
 	return sess, info, nil
 }
 
-// PersistSession writes all non-status, non-partial messages for sess to the store.
-// Safe to call from a goroutine; store errors are silently ignored.
+// toolStatusFromLoaded builds a RoleTool status item from a loaded row's tool
+// calls and its status_label (JSON-encoded []StatusEvent).
+func toolStatusFromLoaded(lm store.LoadedMessage) session.Message {
+	m := session.Message{Role: session.RoleTool}
+	if lm.StatusLabel != "" && lm.StatusLabel[0] == '[' {
+		var evs []session.StatusEvent
+		if json.Unmarshal([]byte(lm.StatusLabel), &evs) == nil {
+			m.StatusEvents = evs
+		}
+	}
+	for _, tc := range lm.ToolCalls {
+		m.ToolUses = append(m.ToolUses, session.ToolUse{
+			ID: tc.CallID, Name: tc.Name, Input: tc.Args, Output: tc.Result, State: tc.Status,
+		})
+	}
+	return m
+}
+
+// PersistSession writes all non-partial items for sess to the store, one row per
+// item. Safe to call from a goroutine; store errors are silently ignored.
 // At most one persist runs per session at a time to prevent seq-number races.
 func (c *Controller) PersistSession(sess *session.Session, cost float64, promptTokens int64) {
 	if c.st == nil {
@@ -232,14 +242,14 @@ func (c *Controller) PersistSession(sess *session.Session, cost float64, promptT
 	mu.(*sync.Mutex).Lock()
 	defer mu.(*sync.Mutex).Unlock()
 	msgs, _ := sess.Snapshot()
-	hasContent := false
+	persistable := false
 	for _, msg := range msgs {
-		if msg.Role != session.RoleStatus && !msg.Partial {
-			hasContent = true
+		if !msg.Partial {
+			persistable = true
 			break
 		}
 	}
-	if !hasContent {
+	if !persistable {
 		return
 	}
 	c.mu.Lock()
@@ -253,39 +263,24 @@ func (c *Controller) PersistSession(sess *session.Session, cost float64, promptT
 	c.st.CreateSession(sess.ID, workDir)                 //nolint:errcheck
 	c.st.UpdateSessionUsage(sess.ID, cost, promptTokens) //nolint:errcheck
 	c.st.UpdateSessionModel(sess.ID, model, ep)          //nolint:errcheck
-	var lastThinkingSecs int
-	var lastStatusLabel string
 	for seq, msg := range msgs {
-		if msg.Role == session.RoleStatus {
-			lastThinkingSecs = msg.ThinkingSecs
-			if len(msg.StatusEvents) > 0 {
-				b, _ := json.Marshal(msg.StatusEvents)
-				lastStatusLabel = string(b)
-			} else {
-				lastStatusLabel = msg.Content // old sessions or empty rounds
-			}
-			continue
-		}
 		if msg.Partial {
 			continue
 		}
-		content := msg.Content
 		callID := ""
 		isError := false
-		thinkingSecs := 0
 		statusLabel := ""
-		if msg.Role == session.RoleAssistant {
-			thinkingSecs = lastThinkingSecs
-			statusLabel = lastStatusLabel
+		if msg.Role == session.RoleTool {
+			if len(msg.StatusEvents) > 0 {
+				b, _ := json.Marshal(msg.StatusEvents)
+				statusLabel = string(b)
+			}
+			if len(msg.ToolUses) > 0 {
+				callID = msg.ToolUses[0].ID
+				isError = msg.ToolUses[0].State == "error"
+			}
 		}
-		lastThinkingSecs = 0
-		lastStatusLabel = ""
-		if msg.Role == session.RoleTool && msg.ToolResult != nil {
-			content = msg.ToolResult.Content
-			callID = msg.ToolResult.ID
-			isError = msg.ToolResult.IsError
-		}
-		msgID, err := c.st.InsertMessage(sess.ID, seq, string(msg.Role), content, msg.Thinking, thinkingSecs, callID, isError, msg.SentLabel, statusLabel)
+		msgID, err := c.st.InsertMessage(sess.ID, seq, string(msg.Role), msg.Content, msg.Thinking, msg.ThinkingSecs, callID, isError, msg.SentLabel, statusLabel)
 		if err != nil {
 			continue
 		}

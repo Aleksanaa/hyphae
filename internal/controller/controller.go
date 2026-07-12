@@ -51,12 +51,9 @@ type Event struct {
 	RetryRemaining int
 	ConnErr        error
 
-	// EvThinkingUpdate / EvThinkingDone — raw seconds; UI formats the display string
-	// ThinkingSecs < 0 in EvThinkingDone means no CoT occurred this turn.
-	// StatusMsgIdx is the session message index captured at emit time so the UI
-	// can call SetThinkingSecsAt without relying on the mutable statusMsgIdx.
+	// EvThinkingUpdate — elapsed CoT seconds for the live "thinking… (Ns)" label.
+	// (The final duration is recorded on the thinking status by the agent.)
 	ThinkingSecs int
-	StatusMsgIdx int
 
 	// EvToolApproval — forwarded from agent
 	Tool   *agent.ToolEvent
