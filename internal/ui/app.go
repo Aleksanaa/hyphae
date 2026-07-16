@@ -14,18 +14,49 @@ import (
 )
 
 // App is the root application coordinator.
+//
+// Tabs are owned entirely by the UI: the App keeps the ordered tab list and
+// which tab is shown. The session manager is an unordered set and knows nothing
+// about tab arrangement. activeTabID is the shown tab; for a session tab it is
+// kept in sync with the controller's active session (which routes events), and
+// for a non-session tab the controller has no active session.
 type App struct {
 	tapp        *tview.Application
 	layout      *Layout
 	ctrl        *controller.Controller
 	cfg         *config.Config
 	shutdown    func() // cancels the controller context and closes the store
-	tabContents map[string]*TabContent
+	tabs        []*Tab // ordered tab strip; UI-owned arrangement
+	tabByID     map[string]*Tab
+	activeTabID string
 }
 
-// activeContent returns the TabContent for the currently active session, or nil.
+// activeContent returns the TabContent for the active tab, or nil if the active
+// tab is not backed by a session.
 func (a *App) activeContent() *TabContent {
-	return a.tabContents[a.ctrl.ActiveID()]
+	return a.sessionContent(a.activeTabID)
+}
+
+// sessionContent returns the TabContent for tab id if it is a session tab, else nil.
+func (a *App) sessionContent(id string) *TabContent {
+	t := a.tabByID[id]
+	if t == nil {
+		return nil
+	}
+	if st, ok := t.body.(*sessionTab); ok {
+		return st.tc
+	}
+	return nil
+}
+
+// tabIndex returns the position of tab id in the ordered list, or -1.
+func (a *App) tabIndex(id string) int {
+	for i, t := range a.tabs {
+		if t.id == id {
+			return i
+		}
+	}
+	return -1
 }
 
 // newTabContent creates a fully wired TabContent for a new session tab.
@@ -89,12 +120,18 @@ func (a *App) persistActive() {
 	}
 }
 
-// registerTab wires a TabContent for an existing session ID and registers it
-// in both the app map and the layout. Callers set status and switch to the tab.
-func (a *App) registerTab(id string) *TabContent {
+// addTab inserts a tab at the front of the strip and registers its body page.
+func (a *App) addTab(t *Tab) {
+	a.tabs = append([]*Tab{t}, a.tabs...)
+	a.tabByID[t.id] = t
+	a.layout.AddTab(t.id, t.body.Root())
+}
+
+// registerSessionTab wires a TabContent for a session and adds it as a tab.
+// Callers set status and switch to the tab.
+func (a *App) registerSessionTab(sess *session.Session) *TabContent {
 	tc := a.newTabContent()
-	a.tabContents[id] = tc
-	a.layout.AddTabContent(id, tc)
+	a.addTab(&Tab{id: sess.ID, body: &sessionTab{sess: sess, tc: tc}})
 	return tc
 }
 
@@ -102,7 +139,7 @@ func (a *App) registerTab(id string) *TabContent {
 // and returns the new session ID. The caller is responsible for switching to it.
 func (a *App) openNewTab() string {
 	sess := a.ctrl.NewSession()
-	tc := a.registerTab(sess.ID)
+	tc := a.registerSessionTab(sess)
 	tc.Status.SetDefault(a.cfg.Model, session.StatusIdle)
 	return sess.ID
 }
@@ -112,11 +149,11 @@ func New(cfg *config.Config) *App {
 	ctrl, shutdown := controller.NewFromConfig(cfg)
 
 	a := &App{
-		tapp:        tview.NewApplication(),
-		cfg:         cfg,
-		ctrl:        ctrl,
-		shutdown:    shutdown,
-		tabContents: make(map[string]*TabContent),
+		tapp:     tview.NewApplication(),
+		cfg:      cfg,
+		ctrl:     ctrl,
+		shutdown: shutdown,
+		tabByID:  make(map[string]*Tab),
 	}
 
 	palette := NewCommandPalette()
@@ -124,7 +161,7 @@ func New(cfg *config.Config) *App {
 		func(id string) { a.switchTab(id) },
 		func(id string) { a.closeTab(id) },
 		func() { a.newSession() },
-		func(id string, insertAt int) { a.ctrl.ReorderSession(id, insertAt); a.syncTabs() },
+		func(id string, insertAt int) { a.reorderTab(id, insertAt); a.syncTabs() },
 	)
 	layout := NewLayout(tabs, palette)
 	a.layout = layout
@@ -132,6 +169,7 @@ func New(cfg *config.Config) *App {
 	a.setupPalette()
 
 	id := a.openNewTab()
+	a.activeTabID = id
 	layout.ShowTab(id)
 	a.syncTabs()
 
@@ -153,7 +191,7 @@ func New(cfg *config.Config) *App {
 		return event, action
 	})
 	a.tapp.SetInputCapture(a.handleGlobalKey)
-	a.tapp.SetRoot(layout.Root, true).SetFocus(a.tabContents[id].Input.TextArea)
+	a.tapp.SetRoot(layout.Root, true).SetFocus(a.sessionContent(id).Input.TextArea)
 
 	go func() {
 		for ev := range ctrl.Events() {
@@ -546,7 +584,7 @@ func (a *App) resumeSession(id string) {
 	a.persistActive()
 
 	// If already open, just switch to its existing tab.
-	if _, exists := a.tabContents[id]; exists {
+	if _, exists := a.tabByID[id]; exists {
 		a.switchTab(id)
 		return
 	}
@@ -563,7 +601,7 @@ func (a *App) resumeSession(id string) {
 		model = info.Model
 	}
 
-	tc := a.registerTab(sess.ID)
+	tc := a.registerSessionTab(sess)
 	tc.Status.SetDefault(model, session.StatusIdle)
 	cw := info.ContextWindow
 	if cw == 0 {
@@ -755,68 +793,111 @@ func (a *App) openPalette() {
 	a.tapp.SetFocus(p)
 }
 
-// syncTabs refreshes the tab bar from the current in-memory session list.
+// syncTabs refreshes the tab bar from the UI-owned tab list and active tab.
 func (a *App) syncTabs() {
-	sessions := a.ctrl.OpenSessions()
-	activeID := a.ctrl.ActiveID()
-	tabs := make([]TabInfo, len(sessions))
-	for i, s := range sessions {
+	tabs := make([]TabInfo, len(a.tabs))
+	for i, t := range a.tabs {
 		tabs[i] = TabInfo{
-			ID:      s.ID,
-			Title:   s.Title,
-			Running: s.GetStatus().IsActive(),
+			ID:      t.id,
+			Title:   t.body.Title(),
+			Running: t.body.Running(),
 		}
 	}
-	a.layout.Tabs.Sync(tabs, activeID)
+	a.layout.Tabs.Sync(tabs, a.activeTabID)
 }
 
-// switchTab switches to an already-open session tab and redraws.
+// switchTab shows tab id and redraws. For a session tab it also makes the
+// session active in the controller so events route to it; a non-session tab
+// clears the controller's active session.
 func (a *App) switchTab(id string) {
-	if !a.ctrl.SwitchSession(id) {
+	t := a.tabByID[id]
+	if t == nil {
 		return
 	}
-	tc := a.tabContents[id]
-	if tc == nil {
-		return
-	}
+	a.activeTabID = id
 	a.layout.ShowTab(id)
-	tc.Status.SetSessionCost(a.ctrl.SessionCost(id))
-	tc.Status.SetPromptTokens(a.ctrl.LastPromptTokens(id))
-	a.tapp.SetFocus(tc.Input.TextArea)
+
+	if st, ok := t.body.(*sessionTab); ok {
+		a.ctrl.SwitchSession(id)
+		st.tc.Status.SetSessionCost(a.ctrl.SessionCost(id))
+		st.tc.Status.SetPromptTokens(a.ctrl.LastPromptTokens(id))
+		a.tapp.SetFocus(st.tc.Input.TextArea)
+	} else {
+		a.ctrl.ClearActive()
+		a.tapp.SetFocus(t.body.Root())
+	}
 	a.redrawActive()
 }
 
-// closeTab persists and removes a session tab. If it was active and no other
-// session remains, a new one is created automatically.
-func (a *App) closeTab(id string) {
-	wasActive := a.ctrl.ActiveID() == id
-	a.ctrl.CloseSession(id)
-	a.layout.RemoveTab(id)
-	delete(a.tabContents, id)
-	if wasActive {
-		if _, ok := a.ctrl.ActiveSession(); !ok {
-			a.openNewTab()
-		}
-		a.switchTab(a.ctrl.ActiveID())
-	} else {
-		a.redrawActive()
-	}
-}
-
-// cycleTab moves to the next (+1) or previous (-1) tab.
-func (a *App) cycleTab(delta int) {
-	sessions := a.ctrl.OpenSessions()
-	if len(sessions) < 2 {
+// reorderTab moves tab id before position insertAt in the UI tab list. This is a
+// purely visual rearrangement; the session manager is unaffected.
+func (a *App) reorderTab(id string, insertAt int) {
+	from := a.tabIndex(id)
+	if from < 0 {
 		return
 	}
-	activeID := a.ctrl.ActiveID()
-	for i, s := range sessions {
-		if s.ID == activeID {
-			next := sessions[(i+delta+len(sessions))%len(sessions)]
-			a.switchTab(next.ID)
-			return
-		}
+	if insertAt < 0 {
+		insertAt = 0
 	}
+	if insertAt > len(a.tabs) {
+		insertAt = len(a.tabs)
+	}
+	t := a.tabs[from]
+	a.tabs = append(a.tabs[:from], a.tabs[from+1:]...)
+	if insertAt > from {
+		insertAt--
+	}
+	a.tabs = append(a.tabs[:insertAt], append([]*Tab{t}, a.tabs[insertAt:]...)...)
+}
+
+// removeTab drops tab id from the UI list, map, and layout.
+func (a *App) removeTab(id string) {
+	if i := a.tabIndex(id); i >= 0 {
+		a.tabs = append(a.tabs[:i], a.tabs[i+1:]...)
+	}
+	delete(a.tabByID, id)
+	a.layout.RemoveTab(id)
+}
+
+// closeTab persists and removes a session tab, then focuses a neighbouring tab.
+// If it was active and no tab remains, a fresh session is opened automatically.
+func (a *App) closeTab(id string) {
+	t := a.tabByID[id]
+	if t == nil {
+		return
+	}
+	wasActive := a.activeTabID == id
+	idx := a.tabIndex(id)
+	if st, ok := t.body.(*sessionTab); ok {
+		a.ctrl.CloseSession(st.sess.ID)
+	}
+	a.removeTab(id)
+
+	if !wasActive {
+		a.redrawActive()
+		return
+	}
+	if len(a.tabs) == 0 {
+		a.switchTab(a.openNewTab())
+		return
+	}
+	if idx >= len(a.tabs) {
+		idx = len(a.tabs) - 1
+	}
+	a.switchTab(a.tabs[idx].id)
+}
+
+// cycleTab moves to the next (+1) or previous (-1) tab in visual order.
+func (a *App) cycleTab(delta int) {
+	if len(a.tabs) < 2 {
+		return
+	}
+	i := a.tabIndex(a.activeTabID)
+	if i < 0 {
+		return
+	}
+	next := a.tabs[(i+delta+len(a.tabs))%len(a.tabs)]
+	a.switchTab(next.id)
 }
 
 // redrawActive refreshes the chat and status for the current session.

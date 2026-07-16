@@ -22,8 +22,9 @@ type SessionInfo struct {
 	ActiveEndpoint string
 }
 
-// CloseSession persists a session and removes it from memory. If it was active,
-// the manager switches to any remaining session, or clears the active ID if none remain.
+// CloseSession persists a session and removes it from memory. Choosing which tab
+// to focus next is the UI's job (tabs are a UI concern), so this only clears the
+// active ID when the closed session was active; it does not pick a replacement.
 func (c *Controller) CloseSession(id string) {
 	sess, ok := c.mgr.Get(id)
 	if !ok {
@@ -36,14 +37,7 @@ func (c *Controller) CloseSession(id string) {
 	go c.PersistSession(sess, cost, pt)
 
 	if c.mgr.ActiveID() == id {
-		newActive := ""
-		for _, s := range c.mgr.All() {
-			if s.ID != id {
-				newActive = s.ID
-				break
-			}
-		}
-		c.mgr.SetActive(newActive)
+		c.mgr.SetActive("")
 	}
 	c.mgr.Remove(id)
 }
@@ -57,22 +51,11 @@ func (c *Controller) SwitchSession(id string) bool {
 	return true
 }
 
-// ReorderSession moves a session to a new display position. insertAt is the
-// index before which the session should appear (or end if >= len).
-func (c *Controller) ReorderSession(id string, insertAt int) {
-	c.mgr.Reorder(id, insertAt)
-}
-
 // SaveSessionPlanMode persists the plan mode flag to the store.
 func (c *Controller) SaveSessionPlanMode(id string, on bool) {
 	if c.st != nil {
 		go c.st.UpdateSessionPlanMode(id, on) //nolint:errcheck
 	}
-}
-
-// OpenSessions returns all in-memory sessions in display order.
-func (c *Controller) OpenSessions() []*session.Session {
-	return c.mgr.All()
 }
 
 // NewSession creates a fresh session, registers it in storage, and makes it active.

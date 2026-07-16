@@ -342,11 +342,12 @@ func (s *Session) Snapshot() ([]Message, Status) {
 	return msgs, s.Status
 }
 
-// Manager tracks all sessions and which is active.
+// Manager tracks all sessions and which is active. It is an unordered set:
+// tab ordering and arrangement are a UI-only concern (see the UI's tab list),
+// so the manager deliberately keeps no display order of its own.
 type Manager struct {
 	mu       sync.RWMutex
 	sessions map[string]*Session
-	order    []string
 	activeID string
 	workDir  string
 }
@@ -364,14 +365,13 @@ func (m *Manager) WorkDir() string {
 	return m.workDir
 }
 
-// New creates a fresh session and adds it to the front.
+// New creates a fresh session and registers it.
 func (m *Manager) New() *Session {
 	id := newID()
 	s := NewSession(id, m.workDir)
 
 	m.mu.Lock()
 	m.sessions[id] = s
-	m.order = append([]string{id}, m.order...)
 	m.mu.Unlock()
 
 	return s
@@ -417,7 +417,6 @@ func (m *Manager) AddExisting(s *Session) {
 		return
 	}
 	m.sessions[s.ID] = s
-	m.order = append([]string{s.ID}, m.order...)
 }
 
 // Remove deletes a session from the manager.
@@ -425,71 +424,17 @@ func (m *Manager) Remove(id string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.sessions, id)
-	for i, oid := range m.order {
-		if oid == id {
-			m.order = append(m.order[:i], m.order[i+1:]...)
-			break
-		}
-	}
 }
 
-// Reorder moves session id so it appears before the session currently at insertAt
-// in the display order, or at the end if insertAt >= len. No-op if id not found
-// or the position would not change.
-func (m *Manager) Reorder(id string, insertAt int) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	from := -1
-	for i, oid := range m.order {
-		if oid == id {
-			from = i
-			break
-		}
-	}
-	if from < 0 {
-		return
-	}
-
-	n := len(m.order)
-	if insertAt < 0 {
-		insertAt = 0
-	}
-	if insertAt > n {
-		insertAt = n
-	}
-
-	// After removing the element at from, the insertion point shifts left by one
-	// for any target past the removed position.
-	effectiveInsert := insertAt
-	if insertAt > from {
-		effectiveInsert--
-	}
-	if from == effectiveInsert {
-		return
-	}
-
-	newOrder := make([]string, 0, n)
-	for i, oid := range m.order {
-		if i != from {
-			newOrder = append(newOrder, oid)
-		}
-	}
-	newOrder = append(newOrder, "")
-	copy(newOrder[effectiveInsert+1:], newOrder[effectiveInsert:])
-	newOrder[effectiveInsert] = id
-	m.order = newOrder
-}
-
-// All returns sessions in display order.
-func (m *Manager) All() []*Session {
+// AnyOther returns some session whose ID differs from exceptID, or nil if none.
+// Order is unspecified — the UI decides which tab to focus after a close.
+func (m *Manager) AnyOther(exceptID string) *Session {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	out := make([]*Session, 0, len(m.order))
-	for _, id := range m.order {
-		if s, ok := m.sessions[id]; ok {
-			out = append(out, s)
+	for id, s := range m.sessions {
+		if id != exceptID {
+			return s
 		}
 	}
-	return out
+	return nil
 }

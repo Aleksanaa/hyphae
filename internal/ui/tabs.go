@@ -6,6 +6,8 @@ import (
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
+
+	"github.com/aleksanaa/hyphae/internal/session"
 )
 
 // scrollIndW is the screen width of the "…" scroll indicator on either side.
@@ -17,6 +19,40 @@ type TabInfo struct {
 	Title   string
 	Running bool
 }
+
+// TabBody is the content shown inside one tab. A tab need not be a session:
+// any body (a session view, a welcome screen, a settings pane, …) can be placed
+// in a tab as long as it can render itself and describe its label. Tabs and
+// their ordering are a purely UI concern.
+type TabBody interface {
+	// Root returns the primitive shown in the body area when this tab is active.
+	Root() tview.Primitive
+	// Title is the label drawn on the tab; may change over the tab's life.
+	Title() string
+	// Running reports whether the tab shows the "busy" indicator dot.
+	Running() bool
+	// Session returns the backing session, or nil for a non-session tab.
+	Session() *session.Session
+}
+
+// Tab is one entry in the tab strip: a stable id plus its body. The id is used
+// as the layout page key and for tab lookups; for a session tab it is the
+// session ID, but that is an implementation detail of sessionTab, not a contract.
+type Tab struct {
+	id   string
+	body TabBody
+}
+
+// sessionTab is a TabBody backed by a live session and its per-session views.
+type sessionTab struct {
+	sess *session.Session
+	tc   *TabContent
+}
+
+func (t *sessionTab) Root() tview.Primitive     { return t.tc.Root }
+func (t *sessionTab) Title() string             { return t.sess.Title }
+func (t *sessionTab) Running() bool             { return t.sess.GetStatus().IsActive() }
+func (t *sessionTab) Session() *session.Session { return t.sess }
 
 type tabRange struct {
 	id     string

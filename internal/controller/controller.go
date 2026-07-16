@@ -211,6 +211,10 @@ func (c *Controller) ActiveSession() (*session.Session, bool) { return c.mgr.Act
 // ActiveID returns the active session ID.
 func (c *Controller) ActiveID() string { return c.mgr.ActiveID() }
 
+// ClearActive marks no session as active. The UI calls this when it shows a tab
+// that is not backed by a session, so session events are treated as background.
+func (c *Controller) ClearActive() { c.mgr.SetActive("") }
+
 // IsRunning reports whether the active session has any in-progress operation.
 func (c *Controller) IsRunning() bool {
 	if sess, ok := c.mgr.Active(); ok {

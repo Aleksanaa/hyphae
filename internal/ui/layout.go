@@ -32,17 +32,17 @@ func NewLayout(tabs *TabBar, palette *CommandPalette) *Layout {
 	}
 }
 
-// AddTabContent registers a tab's content as a named page.
-func (l *Layout) AddTabContent(id string, tc *TabContent) {
-	l.BodyPages.AddPage(id, tc.Root, true, false)
+// AddTab registers a tab's body as a named page.
+func (l *Layout) AddTab(id string, root tview.Primitive) {
+	l.BodyPages.AddPage(id, root, true, false)
 }
 
-// ShowTab switches the body to display the given session's content.
+// ShowTab switches the body to display the given tab's content.
 func (l *Layout) ShowTab(id string) {
 	l.BodyPages.SwitchToPage(id)
 }
 
-// RemoveTab removes a session's content page.
+// RemoveTab removes a tab's content page.
 func (l *Layout) RemoveTab(id string) {
 	l.BodyPages.RemovePage(id)
 }
