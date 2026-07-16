@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
@@ -82,6 +83,8 @@ type ChatView struct {
 	*tview.TextView
 	messages        []session.Message
 	lastWidth       int
+	lastHeight      int             // inner height at last buildText; welcome recenters on change
+	welcomeShown    bool            // last buildText rendered the (vertically-centred) welcome screen
 	TotalLines      int             // read by Scrollbar
 	hoverIdx        int             // index into renderedMsgs; -1 = none
 	selectedIdx     int             // box highlighted by last click; -1 = none
@@ -108,6 +111,12 @@ type ChatView struct {
 	// It is shown in the live status slot only when no StatusEvent provides live text.
 	liveStatus string
 
+	// welcomeArt is this view's mycelium banner, generated once per ChatView so
+	// every new session tab shows a different network. welcomeFocal is the
+	// wordmark's centre column, used to centre the art.
+	welcomeArt   []string
+	welcomeFocal int
+
 	// mdCache stores parsed markdown blocks keyed by content string so that
 	// resize only re-wraps without re-running goldmark.
 	mdCache map[string][]mdBlock
@@ -130,6 +139,7 @@ func NewChatView() *ChatView {
 	tv.SetWordWrap(false) // we manage layout manually
 	tv.SetBorder(false)   // no outer frame; messages have their own boxes
 	tv.SetBackgroundColor(Theme.Background)
+	art, focal := buildHyphaeArt(time.Now().UnixNano())
 	return &ChatView{
 		TextView:        tv,
 		hoverIdx:        -1,
@@ -139,6 +149,8 @@ func NewChatView() *ChatView {
 		selCursorBox:    -1,
 		mdCache:         make(map[string][]mdBlock),
 		compactExpanded: make(map[int]bool),
+		welcomeArt:      art,
+		welcomeFocal:    focal,
 	}
 }
 
@@ -170,11 +182,18 @@ func (cv *ChatView) SetFocused(_ bool) {}
 // Draw rebuilds text when width, selection, or ephemeral status changes.
 // Activity items from the session are updated via Render; no extra check needed.
 func (cv *ChatView) Draw(screen tcell.Screen) {
-	_, _, w, _ := cv.GetInnerRect()
-	if w > 0 && (w != cv.lastWidth || cv.selectedIdx != cv.lastSelectedIdx) {
+	_, _, w, h := cv.GetInnerRect()
+	// The welcome screen is vertically centred via leading padding derived from
+	// the view height, so it must rebuild on height change too — otherwise the
+	// stale padding leaves it stuck to the top or overflowing into a scrollbar.
+	if w > 0 && (w != cv.lastWidth || cv.selectedIdx != cv.lastSelectedIdx || (cv.welcomeShown && h != cv.lastHeight)) {
 		cv.lastWidth = w
+		cv.lastHeight = h
 		cv.lastSelectedIdx = cv.selectedIdx
 		cv.buildText(w)
+		if cv.welcomeShown {
+			cv.TextView.ScrollToBeginning()
+		}
 	}
 	cv.TextView.Draw(screen)
 	cv.drawSelectionOverlay(screen)
@@ -339,6 +358,7 @@ func (cv *ChatView) Render(messages []session.Message) {
 	scrollY, _ := cv.GetScrollOffset()
 	atBottom := h <= 0 || scrollY+h >= cv.TotalLines
 	cv.lastWidth = w
+	cv.lastHeight = h
 	cv.buildText(w)
 	if atBottom {
 		cv.TextView.ScrollToEnd()
@@ -485,55 +505,6 @@ func (cv *ChatView) updateSelCursorBox(docLine int) {
 }
 
 // ─── text construction ───────────────────────────────────────────────────────
-
-var hyphaeArt = []string{
-	`                   /`,
-	`             .---'`,
-	`            /`,
-	`       .---+----.`,
-	`      /          \`,
-	`     /            '---.`,
-	`    +                  \`,
-	`     \              .---+---.`,
-	`      '----.       /         \`,
-	`            \     /           '`,
-	`         .---+---+`,
-	`        /        \`,
-	`       /          '----.`,
-	`  .---+                 \`,
-	` /     \                 +---.`,
-	`/       '---.           /     \`,
-	`+              \         +      '`,
-	` \              +-------+`,
-	`  '----.       /         \`,
-	`        \     /           '----.`,
-	`         '---+                  \`,
-	`              \                  +`,
-	`               '----.            |`,
-	`                     \           |`,
-}
-
-func (cv *ChatView) renderWelcome(b *strings.Builder, width int) {
-	_, _, _, viewH := cv.GetInnerRect()
-	const subtitle = "terminal coding agent"
-
-	artW := 0
-	for _, line := range hyphaeArt {
-		if w := len(line); w > artW {
-			artW = w
-		}
-	}
-
-	for range max(0, (viewH-len(hyphaeArt)-2)/2) {
-		b.WriteByte('\n')
-	}
-	pad := strings.Repeat(" ", max(0, (width-artW)/2))
-	for _, line := range hyphaeArt {
-		fmt.Fprintf(b, "[%s]%s%s[-]\n", TC.Accent, pad, tview.Escape(line))
-	}
-	b.WriteByte('\n')
-	fmt.Fprintf(b, "[%s]%s%s[-]\n", TC.Muted, strings.Repeat(" ", max(0, (width-len(subtitle))/2)), subtitle)
-}
 
 // ─── message grouping ────────────────────────────────────────────────────────
 
@@ -897,6 +868,7 @@ func (cv *ChatView) buildText(width int) {
 		}
 	}
 
+	cv.welcomeShown = !hasDisplayable
 	if !hasDisplayable {
 		var b strings.Builder
 		cv.renderWelcome(&b, width)
