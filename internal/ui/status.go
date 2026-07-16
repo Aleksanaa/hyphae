@@ -197,7 +197,7 @@ func (sb *StatusBar) Draw(screen tcell.Screen) {
 	paletteW := tview.TaggedStringWidth(paletteHint)
 	pctW := tview.TaggedStringWidth(sb.pctText)
 	costW := tview.TaggedStringWidth(sb.costText)
-	hasBar := sb.barPct > 0 || (sb.promptTokens > 0 && sb.contextWindow > 0)
+	hasBar := sb.promptTokens > 0 && sb.contextWindow > 0
 	rightW := paletteW + costW + pctW
 	if hasBar {
 		rightW += barWidth

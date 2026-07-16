@@ -141,7 +141,26 @@ func (a *App) openNewTab() string {
 	sess := a.ctrl.NewSession()
 	tc := a.registerSessionTab(sess)
 	tc.Status.SetDefault(a.cfg.Model, session.StatusIdle)
+	a.seedContextWindow(tc, 0)
 	return sess.ID
+}
+
+// seedContextWindow applies the best-known context window to a freshly created
+// tab's status bar so the usage bar appears immediately: the session's stored
+// value (stored), falling back to the controller's current-model value. This
+// matters because EvContextWindow only fires when the value changes, so a tab
+// opened after the initial models.dev fetch would otherwise never receive it.
+// Returns true if a value was applied.
+func (a *App) seedContextWindow(tc *TabContent, stored int64) bool {
+	cw := stored
+	if cw == 0 {
+		cw = a.ctrl.ContextWindow()
+	}
+	if cw > 0 {
+		tc.Status.SetContextWindow(cw)
+		return true
+	}
+	return false
 }
 
 // New wires up and returns a ready-to-run App.
@@ -603,14 +622,8 @@ func (a *App) resumeSession(id string) {
 
 	tc := a.registerSessionTab(sess)
 	tc.Status.SetDefault(model, session.StatusIdle)
-	cw := info.ContextWindow
-	if cw == 0 {
-		cw = a.ctrl.ContextWindow()
-	}
-	if cw > 0 {
-		tc.Status.SetContextWindow(cw)
-	} else if info.Model == "" && model != "" {
-		// Old session with no stored model; ensure CW is available for the current model.
+	if !a.seedContextWindow(tc, info.ContextWindow) && info.Model == "" && model != "" {
+		// Old session with no stored model and no known CW yet; fetch it for the current model.
 		go a.ctrl.FetchModelDevInfoAsync(a.ctrl.Context(), model)
 	}
 	if info.PlanMode {
