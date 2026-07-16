@@ -423,7 +423,11 @@ func parseCodeLines(segs *goldtext.Segments, source []byte, lang string) *codeBl
 	lines := make([]string, segs.Len())
 	for i := 0; i < segs.Len(); i++ {
 		seg := segs.At(i)
-		lines[i] = strings.TrimRight(string(seg.Value(source)), "\n")
+		// Expand tabs to spaces: tview measures a tab as zero width but draws it
+		// advancing to the next tab stop, so tab-indented lines would wrap/pad as
+		// if narrower than they render and spill past the code block's border.
+		line := strings.TrimRight(string(seg.Value(source)), "\n")
+		lines[i] = strings.ReplaceAll(line, "\t", strings.Repeat(" ", tview.TabSize))
 	}
 	return &codeBlock{lines: lines, lang: lang}
 }
