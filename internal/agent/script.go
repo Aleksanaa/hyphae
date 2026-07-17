@@ -57,9 +57,9 @@ func starlarkReadFile(_ context.Context, args map[string]any, workDir string) (s
 	}
 
 	var sb strings.Builder
-	width := len(fmt.Sprintf("%d", total))
-	for i, line := range lines[idx:end] {
-		fmt.Fprintf(&sb, "%*d\t%s\n", width, idx+i+1, line)
+	for _, line := range lines[idx:end] {
+		sb.WriteString(line)
+		sb.WriteByte('\n')
 	}
 	if end < total {
 		fmt.Fprintf(&sb, "\n(%d more lines — use offset=%d to continue)", total-end, end+1)
