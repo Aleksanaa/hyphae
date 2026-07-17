@@ -67,3 +67,18 @@ func (g *minSizeGate) InputHandler() func(*tcell.EventKey, func(tview.Primitive)
 		}
 	}
 }
+
+// Focus, Blur, and HasFocus delegate to the wrapped primitive. tview only routes
+// keyboard events to the root when root.HasFocus() is true, so without this the
+// gate (being the root) would swallow all input even at a valid size.
+func (g *minSizeGate) Focus(delegate func(p tview.Primitive)) {
+	g.inner.Focus(delegate)
+}
+
+func (g *minSizeGate) Blur() {
+	g.inner.Blur()
+}
+
+func (g *minSizeGate) HasFocus() bool {
+	return g.inner.HasFocus()
+}
