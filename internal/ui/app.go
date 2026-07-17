@@ -105,7 +105,7 @@ func (a *App) newTabContent() *TabContent {
 		AddItem(tc.DiffView, 0, 0, false).
 		AddItem(tc.SelectView, 0, 0, false).
 		AddItem(tc.PlanMode, 0, 0, false).
-		AddItem(tc.Input, 6, 0, true)
+		AddItem(tc.Input, InputHeightNormal, 0, true)
 
 	tc.Root = tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(tc.body, 0, 1, true).
@@ -212,6 +212,14 @@ func New(cfg *config.Config) *App {
 		return event, action
 	})
 	a.tapp.SetInputCapture(a.handleGlobalKey)
+	// Adapt the input box height to the terminal height each frame.
+	a.tapp.SetBeforeDrawFunc(func(screen tcell.Screen) bool {
+		_, h := screen.Size()
+		if tc := a.activeContent(); tc != nil {
+			tc.SetInputHeightForScreen(h)
+		}
+		return false
+	})
 	a.tapp.SetRoot(newMinSizeGate(layout.Root), true).SetFocus(a.sessionContent(id).Input.TextArea)
 
 	go func() {

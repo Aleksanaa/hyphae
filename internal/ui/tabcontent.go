@@ -4,6 +4,17 @@ import (
 	"github.com/rivo/tview"
 )
 
+// Input box heights (including the 1-line top+bottom border), stepped down on
+// shorter terminals so the conversation keeps usable vertical space: normal
+// leaves 4 inner lines (height ≥ 50), medium 3 (35–49), compact 2 (< 35).
+const (
+	InputHeightNormal  = 6
+	InputHeightMedium  = 5
+	InputHeightCompact = 4
+	mediumInputBelowH  = 50
+	compactInputBelowH = 35
+)
+
 // TabContent holds all per-session UI components for one tab.
 type TabContent struct {
 	Chat       *ChatView
@@ -16,6 +27,19 @@ type TabContent struct {
 	PlanMode   *PlanModeView
 	body       *tview.Flex // retained for ResizeItem calls
 	Root       *tview.Flex // the full content flex for this tab
+}
+
+// SetInputHeightForScreen steps the input box height down on shorter terminals
+// so the conversation keeps usable vertical space.
+func (tc *TabContent) SetInputHeightForScreen(screenH int) {
+	h := InputHeightNormal
+	switch {
+	case screenH < compactInputBelowH:
+		h = InputHeightCompact
+	case screenH < mediumInputBelowH:
+		h = InputHeightMedium
+	}
+	tc.body.ResizeItem(tc.Input, h, 0)
 }
 
 func (tc *TabContent) ShowApproval() {
