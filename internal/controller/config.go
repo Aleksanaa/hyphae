@@ -29,56 +29,76 @@ func (c *Controller) RemoveEndpoint(name string) error {
 	return c.cfg.Save()
 }
 
-// SwitchModel updates the active endpoint and model, recreates the agent, and
-// saves the config. inputPrice and outputPrice restore previously known pricing
-// (pass 0 on a fresh switch; they will be fetched from models.dev in the background).
-func (c *Controller) SwitchModel(epName, modelID string, cw int64, inputPrice, outputPrice float64) {
-	c.cfg.ActiveEndpointName = epName
-	c.cfg.Model = modelID
+// SwitchModel makes m the active model: it recreates the agent, updates config
+// identity, records the model for the active session, and saves. Pricing/context
+// carried by m seed the display immediately; any gaps are filled from models.dev
+// in the background.
+func (c *Controller) SwitchModel(m Model) {
+	c.cfg.ActiveEndpointName = m.Endpoint
+	c.cfg.Model = m.ID
 	var ep config.Endpoint
 	for _, e := range c.cfg.Endpoints {
-		if e.Name == epName {
+		if e.Name == m.Endpoint {
 			ep = e
 			break
 		}
 	}
 	activeID := c.mgr.ActiveID()
 	c.mu.Lock()
-	c.ag = agent.New(ep.BaseURL, ep.APIKey, modelID)
-	c.contextWindow = cw
-	c.inputPrice = inputPrice
-	c.outputPrice = outputPrice
+	c.ag = agent.New(ep.BaseURL, ep.APIKey, m.ID)
+	c.current = m
 	if activeID != "" {
-		c.sessionModels[activeID] = [2]string{modelID, epName}
+		c.sessionModels[activeID] = m
 	}
 	c.mu.Unlock()
 
-	if cw > 0 {
-		c.emit(Event{Kind: EvContextWindow, ContextWindow: cw})
+	if m.ContextWindow > 0 {
+		c.emit(Event{Kind: EvContextWindow, ContextWindow: m.ContextWindow})
 	}
-	go c.FetchModelDevInfoAsync(c.ctx, modelID)
+	go c.FetchModelDevInfoAsync(c.ctx, m.ID)
 
 	if c.st != nil {
 		if sess, ok := c.mgr.Active(); ok {
-			go c.st.UpdateSessionModel(sess.ID, modelID, epName)               //nolint:errcheck
-			go c.st.UpdateSessionPricing(sess.ID, cw, inputPrice, outputPrice) //nolint:errcheck
+			go c.st.UpdateSessionModel(sess.ID, m.ID, m.Endpoint)                               //nolint:errcheck
+			go c.st.UpdateSessionPricing(sess.ID, m.ContextWindow, m.InputPrice, m.OutputPrice) //nolint:errcheck
 		}
 	}
 	c.cfg.Save() //nolint:errcheck
 }
 
-// ListModels returns models available at a given endpoint.
-func (c *Controller) ListModels(ctx context.Context, ep config.Endpoint) ([]ModelInfo, error) {
+// ListModels returns the models available at a given endpoint. Pricing is left
+// zero; call EnrichPricing to fill context window and pricing from models.dev.
+func (c *Controller) ListModels(ctx context.Context, ep config.Endpoint) ([]Model, error) {
 	ag := agent.New(ep.BaseURL, ep.APIKey, "")
 	raw, err := ag.ListModels(ctx)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]ModelInfo, len(raw))
+	out := make([]Model, len(raw))
 	for i, m := range raw {
-		out[i] = ModelInfo{ID: m.ID, ContextWindow: m.ContextWindow}
+		out[i] = Model{Endpoint: ep.Name, ID: m.ID, ContextWindow: m.ContextWindow}
 	}
 	return out, nil
+}
+
+// EnrichPricing fills context window and pricing for models from the models.dev
+// catalog (fetched once). Existing non-zero context windows are kept; pricing is
+// filled where the catalog has it. Returns models for chaining.
+func (c *Controller) EnrichPricing(ctx context.Context, models []Model) []Model {
+	cat := agent.FetchModelDevCatalog(ctx)
+	for i := range models {
+		info := cat.Lookup(models[i].ID)
+		if models[i].ContextWindow <= 0 {
+			models[i].ContextWindow = info.ContextWindow
+		}
+		if info.InputPrice > 0 {
+			models[i].InputPrice = info.InputPrice
+		}
+		if info.OutputPrice > 0 {
+			models[i].OutputPrice = info.OutputPrice
+		}
+	}
+	return models
 }
 
 // ListSessions returns a lightweight summary of sessions for the controller's work directory.
@@ -97,23 +117,9 @@ func (c *Controller) ListSessions() ([]SessionSummary, error) {
 	return out, nil
 }
 
-// ModelPricingLookup fetches the models.dev catalog once and returns a lookup
-// closure for a model's context window and pricing, safe to call for each model
-// in a list without refetching. Missing models yield a zero ModelPricing.
-func (c *Controller) ModelPricingLookup(ctx context.Context) func(modelID string) ModelPricing {
-	cat := agent.FetchModelDevCatalog(ctx)
-	return func(id string) ModelPricing {
-		info := cat.Lookup(id)
-		return ModelPricing{
-			ContextWindow: info.ContextWindow,
-			InputPrice:    info.InputPrice,
-			OutputPrice:   info.OutputPrice,
-		}
-	}
-}
-
-// FetchModelDevInfoAsync fetches context window and pricing for modelID from
-// models.dev and emits EvContextWindow when data is available.
+// FetchModelDevInfoAsync fills any missing context window / pricing for modelID
+// from models.dev, updating the current model (and the active session's record)
+// and emitting EvContextWindow when the context window becomes known.
 func (c *Controller) FetchModelDevInfoAsync(ctx context.Context, modelID string) {
 	info := agent.FetchModelDevInfo(ctx, modelID)
 	if info.ContextWindow <= 0 && info.InputPrice == 0 && info.OutputPrice == 0 {
@@ -121,19 +127,22 @@ func (c *Controller) FetchModelDevInfoAsync(ctx context.Context, modelID string)
 	}
 	c.mu.Lock()
 	changed := false
-	if info.ContextWindow > 0 && c.contextWindow != info.ContextWindow {
-		c.contextWindow = info.ContextWindow
+	if info.ContextWindow > 0 && c.current.ContextWindow != info.ContextWindow {
+		c.current.ContextWindow = info.ContextWindow
 		changed = true
 	}
-	if info.InputPrice > 0 && c.inputPrice != info.InputPrice {
-		c.inputPrice = info.InputPrice
+	if info.InputPrice > 0 && c.current.InputPrice != info.InputPrice {
+		c.current.InputPrice = info.InputPrice
 		changed = true
 	}
-	if info.OutputPrice > 0 && c.outputPrice != info.OutputPrice {
-		c.outputPrice = info.OutputPrice
+	if info.OutputPrice > 0 && c.current.OutputPrice != info.OutputPrice {
+		c.current.OutputPrice = info.OutputPrice
 		changed = true
 	}
-	cw, ip, op := c.contextWindow, c.inputPrice, c.outputPrice
+	m := c.current
+	if activeID := c.mgr.ActiveID(); activeID != "" {
+		c.sessionModels[activeID] = m
+	}
 	c.mu.Unlock()
 
 	if !changed {
@@ -144,7 +153,7 @@ func (c *Controller) FetchModelDevInfoAsync(ctx context.Context, modelID string)
 	}
 	if c.st != nil {
 		if sess, ok := c.mgr.Active(); ok {
-			go c.st.UpdateSessionPricing(sess.ID, cw, ip, op) //nolint:errcheck
+			go c.st.UpdateSessionPricing(sess.ID, m.ContextWindow, m.InputPrice, m.OutputPrice) //nolint:errcheck
 		}
 	}
 }

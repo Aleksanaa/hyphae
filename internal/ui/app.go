@@ -22,14 +22,15 @@ import (
 // kept in sync with the controller's active session (which routes events), and
 // for a non-session tab the controller has no active session.
 type App struct {
-	tapp        *tview.Application
-	layout      *Layout
-	ctrl        *controller.Controller
-	cfg         *config.Config
-	shutdown    func() // cancels the controller context and closes the store
-	tabs        []*Tab // ordered tab strip; UI-owned arrangement
-	tabByID     map[string]*Tab
-	activeTabID string
+	tapp         *tview.Application
+	layout       *Layout
+	ctrl         *controller.Controller
+	cfg          *config.Config
+	shutdown     func() // cancels the controller context and closes the store
+	tabs         []*Tab // ordered tab strip; UI-owned arrangement
+	tabByID      map[string]*Tab
+	activeTabID  string
+	modelChoices []controller.Model // models shown in the last select-model listing
 }
 
 // activeContent returns the TabContent for the active tab, or nil if the active
@@ -621,14 +622,14 @@ func (a *App) resumeSession(id string) {
 
 	// Restore per-session model if it differs from the current default.
 	model := a.cfg.Model
-	if info.Model != "" {
-		a.ctrl.SwitchModel(info.ActiveEndpoint, info.Model, info.ContextWindow, info.InputPrice, info.OutputPrice)
-		model = info.Model
+	if info.Model.ID != "" {
+		a.ctrl.SwitchModel(info.Model)
+		model = info.Model.ID
 	}
 
 	tc := a.registerSessionTab(sess)
 	tc.Status.SetDefault(model, session.StatusIdle)
-	if !a.seedContextWindow(tc, info.ContextWindow) && info.Model == "" && model != "" {
+	if !a.seedContextWindow(tc, info.Model.ContextWindow) && info.Model.ID == "" && model != "" {
 		// Old session with no stored model and no known CW yet; fetch it for the current model.
 		go a.ctrl.FetchModelDevInfoAsync(a.ctrl.Context(), model)
 	}
@@ -680,20 +681,23 @@ func (a *App) setupPalette() {
 				}
 			}
 		},
-		// onSelectModel — value is "endpointName\x00modelName\x00contextWindow"
+		// onSelectModel — value is "endpointName\x00modelID", resolved to the
+		// full Model (with context window and pricing) from the last listing.
 		func(val string) {
-			parts := strings.SplitN(val, "\x00", 3)
-			if len(parts) < 2 {
+			epName, modelID, ok := strings.Cut(val, "\x00")
+			if !ok {
 				return
 			}
-			epName, model := parts[0], parts[1]
-			var cw int64
-			if len(parts) == 3 {
-				fmt.Sscanf(parts[2], "%d", &cw)
+			m := controller.Model{Endpoint: epName, ID: modelID}
+			for _, c := range a.modelChoices {
+				if c.Endpoint == epName && c.ID == modelID {
+					m = c
+					break
+				}
 			}
-			a.ctrl.SwitchModel(epName, model, cw, 0, 0)
+			a.ctrl.SwitchModel(m)
 			if tc := a.activeContent(); tc != nil {
-				tc.Status.SetDefault(model, session.StatusIdle)
+				tc.Status.SetDefault(modelID, session.StatusIdle)
 			}
 		},
 		// onResumeSession
@@ -798,28 +802,27 @@ func (a *App) openPalette() {
 func (a *App) enterSelectModel() {
 	a.layout.Palette.switchMode(paletteModeSelectModel)
 	go func() {
-		lookup := a.ctrl.ModelPricingLookup(a.ctrl.Context())
-		var items []PaletteItem
+		var models []controller.Model
 		for _, ep := range a.cfg.Endpoints {
-			models, _ := a.ctrl.ListModels(a.ctrl.Context(), ep)
-			for _, m := range models {
-				pr := lookup(m.ID)
-				cw := m.ContextWindow
-				if cw <= 0 {
-					cw = pr.ContextWindow
-				}
-				items = append(items, PaletteItem{
-					Label:  fmt.Sprintf("[%s]%s/[-]%s", TC.StatusText, ep.Name, m.ID),
-					Sub:    formatContextWindow(cw),
-					Detail: formatModelPricing(pr.InputPrice, pr.OutputPrice),
-					Value:  fmt.Sprintf("%s\x00%s\x00%d", ep.Name, m.ID, cw),
-				})
-			}
+			ms, _ := a.ctrl.ListModels(a.ctrl.Context(), ep)
+			models = append(models, ms...)
+		}
+		models = a.ctrl.EnrichPricing(a.ctrl.Context(), models)
+
+		items := make([]PaletteItem, 0, len(models))
+		for _, m := range models {
+			items = append(items, PaletteItem{
+				Label:  fmt.Sprintf("[%s]%s/[-]%s", TC.StatusText, m.Endpoint, m.ID),
+				Sub:    formatContextWindow(m.ContextWindow),
+				Detail: formatModelPricing(m.InputPrice, m.OutputPrice),
+				Value:  m.Endpoint + "\x00" + m.ID,
+			})
 		}
 		if len(items) == 0 {
 			items = []PaletteItem{{Label: "no models found"}}
 		}
 		a.tapp.QueueUpdateDraw(func() {
+			a.modelChoices = models
 			a.layout.Palette.SetModelItems(items)
 		})
 	}()

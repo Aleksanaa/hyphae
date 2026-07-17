@@ -69,18 +69,22 @@ type (
 	ToolEvent      = agent.ToolEvent
 )
 
-// ModelInfo describes a model available at an endpoint.
-type ModelInfo struct {
-	ID            string
-	ContextWindow int64
+// Model is the uniform description of a chat model — the single value the
+// controller uses for display, cost calculation, and persistence. Zero-valued
+// numeric fields mean "unknown" (e.g. before models.dev has been consulted).
+type Model struct {
+	Endpoint      string  // endpoint name that serves the model
+	ID            string  // model identifier
+	ContextWindow int64   // max context tokens, 0 if unknown
+	InputPrice    float64 // USD per 1M input tokens, 0 if unknown
+	OutputPrice   float64 // USD per 1M output tokens, 0 if unknown
 }
 
-// ModelPricing holds context window and per-1M-token pricing for a model, as
-// reported by models.dev (0 when unknown).
-type ModelPricing struct {
-	ContextWindow int64
-	InputPrice    float64
-	OutputPrice   float64
+// Cost returns the USD cost of a turn with the given prompt/completion token
+// counts, using the model's per-1M-token pricing.
+func (m Model) Cost(promptTokens, completionTokens int64) float64 {
+	return float64(promptTokens)*m.InputPrice/1_000_000 +
+		float64(completionTokens)*m.OutputPrice/1_000_000
 }
 
 // SessionSummary is a lightweight session record for listing.
@@ -106,13 +110,12 @@ type Controller struct {
 
 	sessionCosts     map[string]float64
 	lastPromptTokens map[string]int64
-	sessionModels    map[string][2]string // sessionID → {modelID, endpointName}
+	sessionModels    map[string]Model // sessionID → its model (identity, context, pricing)
 	sendCancel       context.CancelFunc
 
-	// Pricing/context-window for the current model; not persisted in config.
-	contextWindow int64
-	inputPrice    float64
-	outputPrice   float64
+	// current is the active model driving new turns: its identity, context
+	// window, and pricing. Not persisted in config (config holds only identity).
+	current Model
 }
 
 // New creates a Controller. ctx is the application-lifetime context; when it is
@@ -128,7 +131,8 @@ func New(ag *agent.Agent, mgr *session.Manager, cfg *config.Config, st *store.St
 		ch:               make(chan Event),
 		sessionCosts:     make(map[string]float64),
 		lastPromptTokens: make(map[string]int64),
-		sessionModels:    make(map[string][2]string),
+		sessionModels:    make(map[string]Model),
+		current:          Model{Endpoint: cfg.ActiveEndpointName, ID: cfg.Model},
 	}
 	go c.eventForwarder()
 	return c
@@ -187,11 +191,18 @@ func (c *Controller) Events() <-chan Event { return c.ch }
 // Context returns the application-lifetime context.
 func (c *Controller) Context() context.Context { return c.ctx }
 
+// CurrentModel returns the active model (identity, context window, pricing).
+func (c *Controller) CurrentModel() Model {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.current
+}
+
 // ContextWindow returns the in-memory context window for the current model.
 func (c *Controller) ContextWindow() int64 {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.contextWindow
+	return c.current.ContextWindow
 }
 
 // emit enqueues an event for delivery. Never blocks; returns immediately once

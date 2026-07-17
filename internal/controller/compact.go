@@ -100,8 +100,7 @@ func (c *Controller) Compact() error {
 		// Use CompletionTokens as the new prompt-token baseline.
 		c.mu.Lock()
 		c.lastPromptTokens[sess.ID] = usage.CompletionTokens
-		cost := float64(usage.PromptTokens)*c.inputPrice/1_000_000 +
-			float64(usage.CompletionTokens)*c.outputPrice/1_000_000
+		cost := c.sessionModels[sess.ID].Cost(usage.PromptTokens, usage.CompletionTokens)
 		if cost > 0 {
 			c.sessionCosts[sess.ID] += cost
 		}

@@ -12,14 +12,10 @@ import (
 
 // SessionInfo carries the billing and display metadata for a resumed session.
 type SessionInfo struct {
-	TotalCost      float64
-	PromptTokens   int64
-	ContextWindow  int64
-	InputPrice     float64
-	OutputPrice    float64
-	PlanMode       bool
-	Model          string
-	ActiveEndpoint string
+	Model        Model // identity, context window, and pricing for the session
+	TotalCost    float64
+	PromptTokens int64
+	PlanMode     bool
 }
 
 // CloseSession persists a session and removes it from memory. Choosing which tab
@@ -63,7 +59,7 @@ func (c *Controller) NewSession() *session.Session {
 	sess := c.mgr.New()
 	c.mgr.SetActive(sess.ID)
 	c.mu.Lock()
-	c.sessionModels[sess.ID] = [2]string{c.cfg.Model, c.cfg.ActiveEndpointName}
+	c.sessionModels[sess.ID] = c.current
 	c.mu.Unlock()
 	return sess
 }
@@ -160,12 +156,14 @@ func (c *Controller) ResumeSession(id string) (*session.Session, SessionInfo, er
 	if row, err := c.st.GetSession(id); err == nil {
 		info.TotalCost = row.TotalCost
 		info.PromptTokens = row.LastPromptTokens
-		info.ContextWindow = row.ContextWindow
-		info.InputPrice = row.InputPrice
-		info.OutputPrice = row.OutputPrice
 		info.PlanMode = row.PlanMode
-		info.Model = row.Model
-		info.ActiveEndpoint = row.ActiveEndpoint
+		info.Model = Model{
+			Endpoint:      row.ActiveEndpoint,
+			ID:            row.Model,
+			ContextWindow: row.ContextWindow,
+			InputPrice:    row.InputPrice,
+			OutputPrice:   row.OutputPrice,
+		}
 		if row.PlanMode {
 			sess.SetPlanMode(true)
 		}
@@ -173,7 +171,7 @@ func (c *Controller) ResumeSession(id string) (*session.Session, SessionInfo, er
 		c.mu.Lock()
 		c.sessionCosts[id] = row.TotalCost
 		c.lastPromptTokens[id] = row.LastPromptTokens
-		c.sessionModels[id] = [2]string{row.Model, row.ActiveEndpoint}
+		c.sessionModels[id] = info.Model
 		c.mu.Unlock()
 
 		if row.CompactedSummary != "" {
@@ -238,7 +236,7 @@ func (c *Controller) PersistSession(sess *session.Session, cost float64, promptT
 	c.mu.Lock()
 	sm := c.sessionModels[sess.ID]
 	c.mu.Unlock()
-	model, ep := sm[0], sm[1]
+	model, ep := sm.ID, sm.Endpoint
 	if model == "" {
 		model, ep = c.cfg.Model, c.cfg.ActiveEndpointName
 	}
