@@ -62,6 +62,7 @@ type CommandPalette struct {
 
 	// callbacks wired by App
 	onClose         func()
+	onBack          func() // step back a level (like Esc); backdrop click
 	onAddEndpoint   func(name, baseURL, apiKey string)
 	onDelEndpoint   func(name string)
 	onSelectModel   func(model string)
@@ -143,6 +144,10 @@ func (cp *CommandPalette) Close() {
 	}
 }
 
+// SetBackFunc registers a callback that steps the palette back one level (the
+// same behaviour as Esc), invoked when the dimmed backdrop is clicked.
+func (cp *CommandPalette) SetBackFunc(fn func()) { cp.onBack = fn }
+
 // SwitchMode is the public entry point; called from app.go closures and
 // handleGlobalKey.
 func (cp *CommandPalette) SwitchMode(m paletteMode) { cp.switchMode(m) }
@@ -221,8 +226,16 @@ func (cp *CommandPalette) MouseHandler() func(tview.MouseAction, *tcell.EventMou
 		if !cp.visible {
 			return false, nil
 		}
-		_, my := event.Position()
-		_, y, _, h := cp.GetRect()
+		mx, my := event.Position()
+		x, y, w, h := cp.GetRect()
+
+		// A click on the dimmed backdrop outside the box steps back, like Esc.
+		if mx < x || mx >= x+w || my < y || my >= y+h {
+			if action == tview.MouseLeftClick && cp.onBack != nil {
+				cp.onBack()
+			}
+			return true, nil
+		}
 
 		contentY := y + 3 // after: top border, query/hint row, divider
 		if my < contentY || my >= y+h-1 {
@@ -289,6 +302,18 @@ func (cp *CommandPalette) Draw(screen tcell.Screen) {
 		return
 	}
 	sw, sh := screen.Size()
+
+	// Dim the content behind the overlay (drawn by the page underneath) so the
+	// palette stands out. Recolour every cell toward a dark slate in place.
+	for row := range sh {
+		for col := range sw {
+			r, combc, st, _ := screen.GetContent(col, row)
+			if r == 0 { // continuation cell of a wide rune; styled via its primary
+				continue
+			}
+			screen.SetContent(col, row, r, combc, dimStyle(st))
+		}
+	}
 
 	w := paletteW
 	if w > sw-4 {
@@ -582,6 +607,33 @@ func topLevelItems() []PaletteItem {
 		{Label: "Select model", Sub: "choose model from an endpoint"},
 		{Label: "Hotkeys", Sub: "view and trigger keyboard shortcuts"},
 	}
+}
+
+// dimSlate is the colour that backdrop cells are blended toward when the palette
+// is open, giving the whole background a uniform greyed-out look.
+var dimSlate = tcell.NewRGBColor(28, 30, 40)
+
+// dimStyle greys a cell's style for the palette backdrop: backgrounds collapse
+// most of the way to dimSlate for a flat wash, foregrounds only halfway so text
+// stays faintly legible underneath.
+func dimStyle(st tcell.Style) tcell.Style {
+	fg, bg, attr := st.Decompose()
+	return tcell.StyleDefault.
+		Foreground(dimColor(fg, Theme.Text, 0.5)).
+		Background(dimColor(bg, Theme.Background, 0.7)).
+		Attributes(attr &^ tcell.AttrBold)
+}
+
+// dimColor blends c toward dimSlate by t in [0,1], substituting fallback when c
+// is the terminal default (whose RGB is not meaningful).
+func dimColor(c, fallback tcell.Color, t float64) tcell.Color {
+	if c == tcell.ColorDefault {
+		c = fallback
+	}
+	r, g, b := c.RGB()
+	tr, tg, tb := dimSlate.RGB()
+	lerp := func(a, b int32) int32 { return a + int32(float64(b-a)*t) }
+	return tcell.NewRGBColor(lerp(r, tr), lerp(g, tg), lerp(b, tb))
 }
 
 func (cp *CommandPalette) modeTitle() string {

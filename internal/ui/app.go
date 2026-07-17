@@ -449,12 +449,7 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 		p := a.layout.Palette
 		switch event.Key() {
 		case tcell.KeyCtrlP, tcell.KeyEscape:
-			if p.GetMode() != paletteModeMenu {
-				p.SwitchMode(paletteModeMenu)
-				a.tapp.SetFocus(p)
-			} else {
-				p.Close()
-			}
+			a.paletteBack()
 			return nil
 		case tcell.KeyEnter:
 			p.Confirm()
@@ -643,6 +638,7 @@ func (a *App) newSession() {
 // setupPalette wires palette callbacks.
 func (a *App) setupPalette() {
 	p := a.layout.Palette
+	p.SetBackFunc(func() { a.paletteBack() })
 	p.SetCallbacks(
 		// onClose
 		func() {
@@ -817,6 +813,18 @@ func (a *App) enterSelectModel() {
 func (a *App) openModelSelect() {
 	a.openPalette()
 	a.enterSelectModel()
+}
+
+// paletteBack steps the palette back one level: a sub-mode returns to the menu,
+// and the menu closes. Shared by Esc and the backdrop click.
+func (a *App) paletteBack() {
+	p := a.layout.Palette
+	if p.GetMode() != paletteModeMenu {
+		p.SwitchMode(paletteModeMenu)
+		a.tapp.SetFocus(p)
+	} else {
+		p.Close()
+	}
 }
 
 // syncTabs refreshes the tab bar from the UI-owned tab list and active tab.
