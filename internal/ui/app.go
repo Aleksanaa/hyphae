@@ -71,6 +71,8 @@ func (a *App) newTabContent() *TabContent {
 		func(y int) { tc.Chat.ScrollTo(y, 0) },
 	)
 	tc.Status = NewStatusBar()
+	tc.Status.SetStatusClickFunc(func() { a.openPalette() })
+	tc.Status.SetModelClickFunc(func() { a.openModelSelect() })
 	tc.Input = NewInputView(func(text string) {
 		a.ctrl.SendMessage(text)
 		a.redrawActive()
@@ -779,31 +781,42 @@ func (a *App) openPalette() {
 	p.menuItems[4].Action = func() { p.switchMode(paletteModeAddEndpoint) }
 	p.menuItems[5].Action = func() { p.switchMode(paletteModeDelEndpoint) }
 	p.menuItems[7].Action = func() { p.switchMode(paletteModeHotkeys) }
-	p.menuItems[6].Action = func() {
-		p.switchMode(paletteModeSelectModel)
-		go func() {
-			var items []PaletteItem
-			for _, ep := range a.cfg.Endpoints {
-				models, _ := a.ctrl.ListModels(a.ctrl.Context(), ep)
-				for _, m := range models {
-					items = append(items, PaletteItem{
-						Label: m.ID,
-						Sub:   ep.Name,
-						Value: fmt.Sprintf("%s\x00%s\x00%d", ep.Name, m.ID, m.ContextWindow),
-					})
-				}
-			}
-			if len(items) == 0 {
-				items = []PaletteItem{{Label: "no models found"}}
-			}
-			a.tapp.QueueUpdateDraw(func() {
-				a.layout.Palette.SetModelItems(items)
-			})
-		}()
-	}
+	p.menuItems[6].Action = a.enterSelectModel
 	p.Open()
 	a.layout.ShowPalette()
 	a.tapp.SetFocus(p)
+}
+
+// enterSelectModel switches the (already open) palette into model-selection mode
+// and loads the model list asynchronously. It backs both the palette's "Select
+// model" menu entry and the status-bar model click.
+func (a *App) enterSelectModel() {
+	a.layout.Palette.switchMode(paletteModeSelectModel)
+	go func() {
+		var items []PaletteItem
+		for _, ep := range a.cfg.Endpoints {
+			models, _ := a.ctrl.ListModels(a.ctrl.Context(), ep)
+			for _, m := range models {
+				items = append(items, PaletteItem{
+					Label: m.ID,
+					Sub:   ep.Name,
+					Value: fmt.Sprintf("%s\x00%s\x00%d", ep.Name, m.ID, m.ContextWindow),
+				})
+			}
+		}
+		if len(items) == 0 {
+			items = []PaletteItem{{Label: "no models found"}}
+		}
+		a.tapp.QueueUpdateDraw(func() {
+			a.layout.Palette.SetModelItems(items)
+		})
+	}()
+}
+
+// openModelSelect opens the palette directly in model-selection mode.
+func (a *App) openModelSelect() {
+	a.openPalette()
+	a.enterSelectModel()
 }
 
 // syncTabs refreshes the tab bar from the UI-owned tab list and active tab.

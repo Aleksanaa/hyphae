@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
@@ -46,12 +47,32 @@ type StatusBar struct {
 
 	sessionCost float64
 
+	// onStatusClick / onModelClick, when set, fire on a left-click of the status
+	// indicator or the model name respectively (VSCode-style: click the state to
+	// open the command palette, click the model to open model selection).
+	onStatusClick func()
+	onModelClick  func()
+
 	// rendered cache
-	left     string      // tview-tagged left content
-	costText string      // tview-tagged cost label, left of bar
-	pctText  string      // tview-tagged right text (percentage or tok count)
-	barPct   float64     // 0..1, used in drawBar; 0 when no context window
-	barFill  tcell.Color // fill color for the bar; default when no bar
+	left       string      // tview-tagged left content
+	statusHitW int         // width of the clickable status-indicator region, from the left edge
+	modelHitX  int         // left offset of the clickable model-name region
+	modelHitW  int         // width of the clickable model-name region
+	costText   string      // tview-tagged cost label, left of bar
+	pctText    string      // tview-tagged right text (percentage or tok count)
+	barPct     float64     // 0..1, used in drawBar; 0 when no context window
+	barFill    tcell.Color // fill color for the bar; default when no bar
+}
+
+// SetStatusClickFunc registers a callback invoked when the status indicator
+// (bottom-left "idle/running/…" text) is left-clicked.
+func (sb *StatusBar) SetStatusClickFunc(fn func()) {
+	sb.onStatusClick = fn
+}
+
+// SetModelClickFunc registers a callback invoked when the model name is left-clicked.
+func (sb *StatusBar) SetModelClickFunc(fn func()) {
+	sb.onModelClick = fn
 }
 
 // NewStatusBar creates a styled status bar primitive.
@@ -113,6 +134,12 @@ func (sb *StatusBar) render() {
 		statusStr = fmt.Sprintf("[%s]○ idle[-]  ", TC.Muted)
 	}
 	sb.left = fmt.Sprintf(" %s[%s]%s[-]", statusStr, TC.Muted, tview.Escape(modelStr))
+	// Clickable regions: the leading space plus the status indicator text (its
+	// trailing padding is excluded so we don't claim the gap before the model),
+	// and the model name itself, which begins after the full status prefix.
+	sb.statusHitW = 1 + tview.TaggedStringWidth(strings.TrimRight(statusStr, " "))
+	sb.modelHitX = 1 + tview.TaggedStringWidth(statusStr)
+	sb.modelHitW = tview.TaggedStringWidth(modelStr)
 
 	if sb.sessionCost > 0 {
 		sb.costText = fmt.Sprintf("[%s]%s[-] ", TC.Muted, formatCost(sb.sessionCost))
@@ -216,6 +243,31 @@ func (sb *StatusBar) Draw(screen tcell.Screen) {
 			tview.Print(screen, sb.pctText, barX, y, pctW, tview.AlignLeft, Theme.Text)
 		}
 	}
+}
+
+// MouseHandler opens the command palette when the status indicator is clicked,
+// or model selection when the model name is clicked.
+func (sb *StatusBar) MouseHandler() func(tview.MouseAction, *tcell.EventMouse, func(tview.Primitive)) (bool, tview.Primitive) {
+	return sb.WrapMouseHandler(func(action tview.MouseAction, event *tcell.EventMouse, setFocus func(tview.Primitive)) (bool, tview.Primitive) {
+		if action != tview.MouseLeftClick {
+			return false, nil
+		}
+		x, y, _, _ := sb.GetInnerRect()
+		mx, my := event.Position()
+		if my != y {
+			return false, nil
+		}
+		rel := mx - x
+		switch {
+		case sb.onStatusClick != nil && rel >= 0 && rel < sb.statusHitW:
+			sb.onStatusClick()
+			return true, nil
+		case sb.onModelClick != nil && rel >= sb.modelHitX && rel < sb.modelHitX+sb.modelHitW:
+			sb.onModelClick()
+			return true, nil
+		}
+		return false, nil
+	})
 }
 
 // Reset restores the standard model/status display, clearing any temporary
