@@ -237,6 +237,20 @@ func (cp *CommandPalette) MouseHandler() func(tview.MouseAction, *tcell.EventMou
 			return true, nil
 		}
 
+		// Wheel scrolls the list by moving the selection (which drives the offset).
+		switch action {
+		case tview.MouseScrollUp:
+			if cp.mode != paletteModeAddEndpoint {
+				cp.NavigateUp()
+			}
+			return true, nil
+		case tview.MouseScrollDown:
+			if cp.mode != paletteModeAddEndpoint {
+				cp.NavigateDown()
+			}
+			return true, nil
+		}
+
 		contentY := y + 3 // after: top border, query/hint row, divider
 		if my < contentY || my >= y+h-1 {
 			if action == tview.MouseLeftDown || action == tview.MouseLeftClick {
@@ -261,11 +275,7 @@ func (cp *CommandPalette) MouseHandler() func(tview.MouseAction, *tcell.EventMou
 		}
 
 		itemsH := h - 4
-		offset := 0
-		if cp.sel >= itemsH {
-			offset = cp.sel - itemsH + 1
-		}
-		fi := offset + row
+		fi := cp.itemOffset(itemsH) + row
 		if fi < 0 || fi >= len(cp.filtered) {
 			return true, nil
 		}
@@ -419,9 +429,15 @@ func (cp *CommandPalette) drawFormFields(screen tcell.Screen, x, y, w int, bg tc
 func (cp *CommandPalette) drawItems(screen tcell.Screen, x, y, w, h int, selSt, selMutedSt, mutedSt, textSt tcell.Style) {
 	inner := x + 2
 
-	offset := 0
-	if cp.sel >= h {
-		offset = cp.sel - h + 1
+	offset := cp.itemOffset(h)
+
+	// Reserve the rightmost inner column for a scrollbar when the list overflows.
+	showBar := len(cp.filtered) > h
+	textRight := x + w - 2 // exclusive right bound for item text
+	hlRight := x + w - 1   // exclusive right bound for the selection highlight fill
+	if showBar {
+		textRight--
+		hlRight--
 	}
 
 	for row := range h {
@@ -438,27 +454,42 @@ func (cp *CommandPalette) drawItems(screen tcell.Screen, x, y, w, h int, selSt, 
 		if isSel {
 			lineSt = selSt
 			subSt = selMutedSt
-			for col := 1; col < w-1; col++ {
-				screen.SetContent(x+col, rowY, ' ', nil, selSt)
+			for col := x + 1; col < hlRight; col++ {
+				screen.SetContent(col, rowY, ' ', nil, selSt)
 			}
 		}
 
 		// Label left-aligned.
 		col := inner
 		labelFg, _, _ := lineSt.Decompose()
-		_, labelW := tview.Print(screen, item.Label, col, rowY, x+w-2-col, tview.AlignLeft, labelFg)
+		_, labelW := tview.Print(screen, item.Label, col, rowY, textRight-col, tview.AlignLeft, labelFg)
 		col += labelW
 
 		// Sub right-aligned when there is room (at least 1-col gap after label).
 		if item.Sub != "" {
 			subFg, _, _ := subSt.Decompose()
 			subW := tview.TaggedStringWidth(tview.Escape(item.Sub))
-			subStart := x + w - 2 - subW
+			subStart := textRight - subW
 			if subStart > inner+labelW+1 {
 				tview.Print(screen, item.Sub, subStart, rowY, subW, tview.AlignLeft, subFg)
 			}
 		}
 	}
+
+	if showBar {
+		trackSt := tcell.StyleDefault.Background(Theme.Surface).Foreground(Theme.Muted)
+		thumbSt := tcell.StyleDefault.Background(Theme.Border)
+		drawScrollbarTrack(screen, x+w-2, y, h, len(cp.filtered), h, offset, ' ', ' ', trackSt, thumbSt)
+	}
+}
+
+// itemOffset returns the first visible filtered-item index so that the current
+// selection stays within a window of visH rows.
+func (cp *CommandPalette) itemOffset(visH int) int {
+	if cp.sel >= visH {
+		return cp.sel - visH + 1
+	}
+	return 0
 }
 
 // ── internal helpers ──────────────────────────────────────────────────────────
