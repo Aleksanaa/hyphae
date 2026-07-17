@@ -212,7 +212,7 @@ func New(cfg *config.Config) *App {
 		return event, action
 	})
 	a.tapp.SetInputCapture(a.handleGlobalKey)
-	a.tapp.SetRoot(layout.Root, true).SetFocus(a.sessionContent(id).Input.TextArea)
+	a.tapp.SetRoot(newMinSizeGate(layout.Root), true).SetFocus(a.sessionContent(id).Input.TextArea)
 
 	go func() {
 		for ev := range ctrl.Events() {
