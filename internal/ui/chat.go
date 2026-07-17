@@ -848,6 +848,35 @@ func renderCodeOutputLines(code, output string, maxW int) []renderedLine {
 	return out
 }
 
+// readableCap bounds how wide the conversation band grows, so lines keep a
+// comfortable reading length and stay centered on very wide terminals.
+const readableCap = 120
+
+// convoLayout describes the centered conversation band and the per-role content
+// column widths within it, all derived from the terminal width:
+//   - band is the reading column (≤ readableCap); off is the left margin that centers it.
+//   - user messages keep a 20% left gap (right-aligned within the band).
+//   - assistant output keeps a 20% right gap (left-aligned) once the band exceeds
+//     80 cols; below that it fills the band.
+type convoLayout struct {
+	band, off    int
+	asstW, userW int
+}
+
+func newConvoLayout(width int) convoLayout {
+	band := max(20, min(readableCap, width))
+	asstW := band
+	if band > 80 {
+		asstW = max(20, band*4/5)
+	}
+	return convoLayout{
+		band:  band,
+		off:   max(0, (width-band)/2),
+		asstW: asstW,
+		userW: max(20, band*4/5),
+	}
+}
+
 func (cv *ChatView) buildText(width int) {
 	// Doc lines shift whenever text is rebuilt, so any live selection is invalid.
 	cv.selActive = false
@@ -855,10 +884,7 @@ func (cv *ChatView) buildText(width int) {
 	cv.anchorBox = -1
 	cv.selCursorBox = -1
 
-	maxW := width * 4 / 5
-	if maxW < 20 {
-		maxW = 20
-	}
+	lay := newConvoLayout(width)
 
 	hasDisplayable := false
 	for _, msg := range cv.messages {
@@ -904,14 +930,14 @@ func (cv *ChatView) buildText(width int) {
 	// The entry is marked with a status role so double-click and selection treat it
 	// as an expandable status.
 	writeFlatLine := func(line string, sessIdx, toolIdx int) {
-		b.WriteString("  ")
+		b.WriteString(strings.Repeat(" ", lay.off+2))
 		b.WriteString(line)
 		b.WriteString("\n")
-		addEntry(renderMsg{role: session.RoleTool, content: line}, sessIdx, toolIdx, 2, tview.TaggedStringWidth(line), 1)
+		addEntry(renderMsg{role: session.RoleTool, content: line}, sessIdx, toolIdx, lay.off+2, tview.TaggedStringWidth(line), 1)
 	}
 	renderBox := func(entry renderMsg, sessIdx, toolIdx int) {
 		prev := b.Len()
-		lp, bw := cv.renderMessageBox(&b, entry, width, maxW, len(entries) == cv.selectedIdx)
+		lp, bw := cv.renderMessageBox(&b, entry, lay, len(entries) == cv.selectedIdx)
 		addEntry(entry, sessIdx, toolIdx, lp, bw, strings.Count(b.String()[prev:], "\n"))
 	}
 
@@ -930,15 +956,15 @@ func (cv *ChatView) buildText(width int) {
 				}, divIdx, toolIdxCompact)
 			} else {
 				label := "compacted conversation"
-				labelW := len(label)            // ASCII only
-				dashTotal := width - labelW - 2 // spaces around label
+				labelW := len(label)               // ASCII only
+				dashTotal := lay.band - labelW - 2 // spaces around label
 				leftN := max(1, dashTotal/2)
 				rightN := max(1, dashTotal-leftN)
-				line := fmt.Sprintf("[%s]%s %s %s[-]", TC.Muted,
+				line := fmt.Sprintf("%s[%s]%s %s %s[-]", strings.Repeat(" ", lay.off), TC.Muted,
 					strings.Repeat("─", leftN), label, strings.Repeat("─", rightN))
 				b.WriteString(line)
 				b.WriteString("\n")
-				addEntry(renderMsg{}, divIdx, toolIdxCompact, 0, width, 1)
+				addEntry(renderMsg{}, divIdx, toolIdxCompact, lay.off, lay.band, 1)
 			}
 
 		case riCollapsedRounds:
@@ -954,7 +980,7 @@ func (cv *ChatView) buildText(width int) {
 			}
 			renderBox(renderMsg{
 				role: session.RoleAssistant, expandedBox: true,
-				boxTitle: title, content: collapsedDetail(item.statuses, maxW-4), contentTagged: true,
+				boxTitle: title, content: collapsedDetail(item.statuses, lay.asstW-4), contentTagged: true,
 			}, item.firstStatusIdx, -1)
 
 		case riLiveStatus:
@@ -980,7 +1006,7 @@ func (cv *ChatView) buildText(width int) {
 	}
 
 	cv.entries = entries
-	cv.buildCopyMasks(entries, maxW)
+	cv.buildCopyMasks(entries, lay)
 
 	text := b.String()
 	cv.TotalLines = strings.Count(text, "\n") + 1
@@ -990,12 +1016,11 @@ func (cv *ChatView) buildText(width int) {
 // buildCopyMasks populates copyColMask and softWrapLine for all rendered messages.
 // copyColMask[line] is absent when the line is fully copyable; present with a
 // []bool mask when trailing padding or format chars must be excluded from copies.
-func (cv *ChatView) buildCopyMasks(entries []renderedEntry, maxW int) {
+func (cv *ChatView) buildCopyMasks(entries []renderedEntry, lay convoLayout) {
 	cv.copyColMask = make(map[int][]bool)
 	cv.softWrapLine = make(map[int]bool)
-	cw := maxW - 4
 
-	maskWordWrap := func(start, minCW int, content string) {
+	maskWordWrap := func(start, minCW, cw int, content string) {
 		lines := tview.WordWrap(content, cw)
 		boxCW := max(minCW, maxTaggedWidth(lines))
 		for j, l := range lines {
@@ -1015,9 +1040,10 @@ func (cv *ChatView) buildCopyMasks(entries []renderedEntry, maxW int) {
 
 	for _, e := range entries {
 		start, msg := e.lineStart, e.msg
+		asstCW := lay.asstW - 4
 		switch msg.role {
 		case session.RoleUser:
-			maskWordWrap(start, 4, tview.Escape(msg.content))
+			maskWordWrap(start, 4, lay.userW-4, tview.Escape(msg.content))
 		case session.RoleAssistant:
 			switch {
 			case msg.expandedBox:
@@ -1025,15 +1051,15 @@ func (cv *ChatView) buildCopyMasks(entries []renderedEntry, maxW int) {
 				if !msg.contentTagged {
 					content = tview.Escape(content)
 				}
-				maskWordWrap(start, 1, content)
+				maskWordWrap(start, 1, asstCW, content)
 			case msg.err != nil:
-				maskWordWrap(start, 6, tview.Escape(msg.err.Error()))
+				maskWordWrap(start, 6, asstCW, tview.Escape(msg.err.Error()))
 			case msg.content != "":
 				blocks := cv.mdCache[msg.content]
 				if blocks == nil {
 					break
 				}
-				contentCW := cw
+				contentCW := asstCW
 				if msg.fullWidth {
 					contentCW = (e.boxRight - e.boxLeft) - 4
 				}
@@ -1087,7 +1113,7 @@ func maxTaggedWidth(lines []string) int {
 // Box anatomy:  ┌─ label ───┐ / │ content │ / └───────────┘
 // expandedBox uses dotted borders (╌/╎) with boxTitle; boxTitle alone uses solid borders
 // with a centered title; otherwise solid borders with the "apex" label.
-func (cv *ChatView) renderMessageBox(b *strings.Builder, msg renderMsg, width, maxW int, isHovered bool) (leftPad, boxW int) {
+func (cv *ChatView) renderMessageBox(b *strings.Builder, msg renderMsg, lay convoLayout, isHovered bool) (leftPad, boxW int) {
 	bc := Theme.Border.CSS()
 	if isHovered {
 		bc = Theme.BorderFocus.CSS()
@@ -1106,13 +1132,12 @@ func (cv *ChatView) renderMessageBox(b *strings.Builder, msg renderMsg, width, m
 		}
 	}
 
-	maxContentW := maxW - 4
-
 	switch msg.role {
 	case session.RoleUser:
-		lines := tview.WordWrap(tview.Escape(msg.content), maxContentW)
+		lines := tview.WordWrap(tview.Escape(msg.content), lay.userW-4)
 		boxW = max(8, maxTaggedWidth(lines)+4)
-		leftPad = max(0, width-boxW)
+		// Right-align within the band; the capped width leaves ≥20% blank on the band's left.
+		leftPad = lay.off + max(0, lay.band-boxW)
 		p := strings.Repeat(" ", leftPad)
 		boxLine := mkLine(boxW - 4)
 		fmt.Fprintf(b, "%s[%s]┌─ [%s]you [%s]%s┐[-]\n", p, bc, TC.UserColor, bc, fill(boxW-8))
@@ -1122,15 +1147,19 @@ func (cv *ChatView) renderMessageBox(b *strings.Builder, msg renderMsg, width, m
 		fmt.Fprintf(b, "%s[%s]└%s┘[-]\n", p, bc, fill(boxW-2))
 
 	case session.RoleAssistant:
+		// Assistant boxes hug the band's left edge; their capped width leaves the right margin.
+		maxContentW := lay.asstW - 4
+		leftPad = lay.off
+		p := strings.Repeat(" ", lay.off)
 		if msg.err != nil {
 			lines := tview.WordWrap(tview.Escape(msg.err.Error()), maxContentW)
 			boxW = max(10, maxTaggedWidth(lines)+4)
 			boxLine := mkLine(boxW - 4)
-			fmt.Fprintf(b, "[%s]┌─ [%s]error [%s]%s┐[-]\n", bc, TC.ErrorColor, bc, fill(boxW-10))
+			fmt.Fprintf(b, "%s[%s]┌─ [%s]error [%s]%s┐[-]\n", p, bc, TC.ErrorColor, bc, fill(boxW-10))
 			for _, line := range lines {
-				fmt.Fprintf(b, "%s\n", boxLine(fmt.Sprintf("[%s]%s[-]", TC.ErrorColor, line), tview.TaggedStringWidth(line)))
+				fmt.Fprintf(b, "%s%s\n", p, boxLine(fmt.Sprintf("[%s]%s[-]", TC.ErrorColor, line), tview.TaggedStringWidth(line)))
 			}
-			fmt.Fprintf(b, "[%s]└%s┘[-]\n", bc, fill(boxW-2))
+			fmt.Fprintf(b, "%s[%s]└%s┘[-]\n", p, bc, fill(boxW-2))
 			return
 		}
 
@@ -1142,16 +1171,12 @@ func (cv *ChatView) renderMessageBox(b *strings.Builder, msg renderMsg, width, m
 			}
 			lines = tview.WordWrap(content, maxContentW)
 		} else {
-			contentW := maxContentW
-			if msg.fullWidth {
-				contentW = width - 4
-			}
 			blocks, ok := cv.mdCache[msg.content]
 			if !ok {
 				blocks = parseMarkdown(msg.content)
 				cv.mdCache[msg.content] = blocks
 			}
-			lines = renderBlocks(blocks, contentW)
+			lines = renderBlocks(blocks, maxContentW)
 		}
 
 		partialFrag, extraW := "", 0
@@ -1166,33 +1191,33 @@ func (cv *ChatView) renderMessageBox(b *strings.Builder, msg renderMsg, width, m
 			minBoxW = 11
 		}
 		if msg.fullWidth {
-			boxW = width
+			boxW = lay.asstW
 		} else {
 			boxW = max(minBoxW+extraW, maxTaggedWidth(lines)+4)
 		}
 		boxLine := mkLine(boxW - 4)
 
 		if msg.expandedBox {
-			fmt.Fprintf(b, "[%s]┌╌ %s %s[%s]%s┐[-]\n",
-				bc, msg.boxTitle, partialFrag, bc, fill(boxW-tview.TaggedStringWidth(msg.boxTitle)-5-extraW))
+			fmt.Fprintf(b, "%s[%s]┌╌ %s %s[%s]%s┐[-]\n",
+				p, bc, msg.boxTitle, partialFrag, bc, fill(boxW-tview.TaggedStringWidth(msg.boxTitle)-5-extraW))
 			if len(lines) == 0 {
-				fmt.Fprintf(b, "%s\n", boxLine("", 0))
+				fmt.Fprintf(b, "%s%s\n", p, boxLine("", 0))
 			}
 		} else if msg.boxTitle != "" {
 			titleTagW := tview.TaggedStringWidth(msg.boxTitle)
 			inner := boxW - titleTagW - 4 // total dash space
 			leftF := inner / 2
 			rightF := inner - leftF
-			fmt.Fprintf(b, "[%s]┌%s %s [%s]%s┐[-]\n",
-				bc, fill(leftF), msg.boxTitle, bc, fill(rightF))
+			fmt.Fprintf(b, "%s[%s]┌%s %s [%s]%s┐[-]\n",
+				p, bc, fill(leftF), msg.boxTitle, bc, fill(rightF))
 		} else {
-			fmt.Fprintf(b, "[%s]┌─ [%s]apex [%s]%s[%s]%s┐[-]\n",
-				bc, TC.ApexColor, bc, partialFrag, bc, fill(boxW-9-extraW))
+			fmt.Fprintf(b, "%s[%s]┌─ [%s]apex [%s]%s[%s]%s┐[-]\n",
+				p, bc, TC.ApexColor, bc, partialFrag, bc, fill(boxW-9-extraW))
 		}
 		for _, line := range lines {
-			fmt.Fprintf(b, "%s\n", boxLine(line, tview.TaggedStringWidth(line)))
+			fmt.Fprintf(b, "%s%s\n", p, boxLine(line, tview.TaggedStringWidth(line)))
 		}
-		fmt.Fprintf(b, "[%s]└%s┘[-]\n", bc, fill(boxW-2))
+		fmt.Fprintf(b, "%s[%s]└%s┘[-]\n", p, bc, fill(boxW-2))
 	}
 	return
 }
@@ -1236,7 +1261,7 @@ func (cv *ChatView) SelectedText() string {
 }
 
 func (cv *ChatView) selectedTextPartial() string {
-	maxW := max(20, cv.lastWidth*4/5)
+	lay := newConvoLayout(cv.lastWidth)
 
 	lastMsgIdx := -2
 	var allLines []string
@@ -1250,7 +1275,7 @@ func (cv *ChatView) selectedTextPartial() string {
 		}
 		if msgIdx != lastMsgIdx {
 			lastMsgIdx = msgIdx
-			allLines, _ = computeMsgContent(cv.entries[msgIdx].msg, cv.lastWidth, maxW)
+			allLines, _ = computeMsgContent(cv.entries[msgIdx].msg, lay)
 		}
 		lineWithinBox := docLine - cv.entries[msgIdx].lineStart - 1
 		if lineWithinBox < 0 || lineWithinBox >= len(allLines) {
@@ -1339,19 +1364,20 @@ func (cv *ChatView) selectedTextWhole() string {
 	return strings.Join(parts, "\n\n")
 }
 
-// computeMsgContent returns the plain-text content lines for a rendered entry and
-// the screen-column left padding of its box (non-zero only for right-aligned user boxes).
-func computeMsgContent(msg renderMsg, width, maxW int) ([]string, int) {
-	cw := maxW - 4
+// computeMsgContent returns the plain-text content lines for a rendered entry,
+// wrapped to the same per-role column width used when rendering (asstW for
+// assistant/status content, userW for user messages). The second return is a
+// legacy indent hint kept for callers that still read it.
+func computeMsgContent(msg renderMsg, lay convoLayout) ([]string, int) {
 	switch {
 	case msg.role == session.RoleUser:
-		lines := tview.WordWrap(tview.Escape(msg.content), cw)
-		boxW := max(8, maxTaggedWidth(lines)+4)
+		lines := tview.WordWrap(tview.Escape(msg.content), lay.userW-4)
 		for i, l := range lines {
 			lines[i] = tview.Unescape(l)
 		}
-		return lines, max(0, width-boxW)
+		return lines, 0
 	case msg.role == session.RoleAssistant:
+		cw := lay.asstW - 4
 		var plain string
 		switch {
 		case msg.expandedBox:
@@ -1359,11 +1385,7 @@ func computeMsgContent(msg renderMsg, width, maxW int) ([]string, int) {
 		case msg.err != nil:
 			plain = msg.err.Error()
 		default:
-			contentCW := cw
-			if msg.fullWidth {
-				contentCW = width - 4
-			}
-			raw := renderMarkdown(msg.content, contentCW)
+			raw := renderMarkdown(msg.content, cw)
 			out := make([]string, len(raw))
 			for i, l := range raw {
 				out[i] = stripTags(l)
