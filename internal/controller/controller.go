@@ -75,6 +75,14 @@ type ModelInfo struct {
 	ContextWindow int64
 }
 
+// ModelPricing holds context window and per-1M-token pricing for a model, as
+// reported by models.dev (0 when unknown).
+type ModelPricing struct {
+	ContextWindow int64
+	InputPrice    float64
+	OutputPrice   float64
+}
+
 // SessionSummary is a lightweight session record for listing.
 type SessionSummary struct {
 	ID        string

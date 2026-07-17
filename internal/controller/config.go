@@ -97,6 +97,21 @@ func (c *Controller) ListSessions() ([]SessionSummary, error) {
 	return out, nil
 }
 
+// ModelPricingLookup fetches the models.dev catalog once and returns a lookup
+// closure for a model's context window and pricing, safe to call for each model
+// in a list without refetching. Missing models yield a zero ModelPricing.
+func (c *Controller) ModelPricingLookup(ctx context.Context) func(modelID string) ModelPricing {
+	cat := agent.FetchModelDevCatalog(ctx)
+	return func(id string) ModelPricing {
+		info := cat.Lookup(id)
+		return ModelPricing{
+			ContextWindow: info.ContextWindow,
+			InputPrice:    info.InputPrice,
+			OutputPrice:   info.OutputPrice,
+		}
+	}
+}
+
 // FetchModelDevInfoAsync fetches context window and pricing for modelID from
 // models.dev and emits EvContextWindow when data is available.
 func (c *Controller) FetchModelDevInfoAsync(ctx context.Context, modelID string) {

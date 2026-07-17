@@ -33,30 +33,50 @@ type ModelDevInfo struct {
 	OutputPrice   float64 // USD per million output tokens; 0 if unknown
 }
 
-// FetchModelDevInfo fetches the models.dev catalog and returns context window
-// and pricing for the given model ID. Returns zero values on error or not found.
-func FetchModelDevInfo(ctx context.Context, modelID string) ModelDevInfo {
+// ModelDevCatalog is a fetched models.dev catalog that supports repeated lookups
+// without refetching. Use it when enriching a whole list of models at once.
+type ModelDevCatalog struct {
+	catalog modelsDevCatalog
+}
+
+// FetchModelDevCatalog fetches the models.dev catalog once. Returns nil on error;
+// Lookup on a nil catalog safely yields zero values.
+func FetchModelDevCatalog(ctx context.Context) *ModelDevCatalog {
 	reqCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, modelsDevURL, nil)
 	if err != nil {
-		return ModelDevInfo{}
+		return nil
 	}
 	req.Header.Set("User-Agent", "hyphae")
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return ModelDevInfo{}
+		return nil
 	}
 	defer resp.Body.Close()
 
 	var catalog modelsDevCatalog
 	if err := json.NewDecoder(resp.Body).Decode(&catalog); err != nil {
+		return nil
+	}
+	return &ModelDevCatalog{catalog: catalog}
+}
+
+// Lookup returns context window and pricing for the given model ID, or zero
+// values when the catalog is nil or the model is not found.
+func (c *ModelDevCatalog) Lookup(modelID string) ModelDevInfo {
+	if c == nil {
 		return ModelDevInfo{}
 	}
+	return lookupModelDevInfo(c.catalog, modelID)
+}
 
-	return lookupModelDevInfo(catalog, modelID)
+// FetchModelDevInfo fetches the models.dev catalog and returns context window
+// and pricing for the given model ID. Returns zero values on error or not found.
+func FetchModelDevInfo(ctx context.Context, modelID string) ModelDevInfo {
+	return FetchModelDevCatalog(ctx).Lookup(modelID)
 }
 
 func lookupModelDevInfo(catalog modelsDevCatalog, modelID string) ModelDevInfo {

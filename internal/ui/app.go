@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/atotto/clipboard"
@@ -797,14 +798,21 @@ func (a *App) openPalette() {
 func (a *App) enterSelectModel() {
 	a.layout.Palette.switchMode(paletteModeSelectModel)
 	go func() {
+		lookup := a.ctrl.ModelPricingLookup(a.ctrl.Context())
 		var items []PaletteItem
 		for _, ep := range a.cfg.Endpoints {
 			models, _ := a.ctrl.ListModels(a.ctrl.Context(), ep)
 			for _, m := range models {
+				pr := lookup(m.ID)
+				cw := m.ContextWindow
+				if cw <= 0 {
+					cw = pr.ContextWindow
+				}
 				items = append(items, PaletteItem{
-					Label: m.ID,
-					Sub:   ep.Name,
-					Value: fmt.Sprintf("%s\x00%s\x00%d", ep.Name, m.ID, m.ContextWindow),
+					Label:  fmt.Sprintf("[%s]%s/[-]%s", TC.StatusText, ep.Name, m.ID),
+					Sub:    formatContextWindow(cw),
+					Detail: formatModelPricing(pr.InputPrice, pr.OutputPrice),
+					Value:  fmt.Sprintf("%s\x00%s\x00%d", ep.Name, m.ID, cw),
 				})
 			}
 		}
@@ -815,6 +823,45 @@ func (a *App) enterSelectModel() {
 			a.layout.Palette.SetModelItems(items)
 		})
 	}()
+}
+
+// formatContextWindow renders a token count as a compact "128K context" label,
+// or "" when unknown.
+func formatContextWindow(tokens int64) string {
+	if tokens <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("[%s]%s [%s]context", TC.Accent, humanTokens(tokens), TC.Muted)
+}
+
+// humanTokens abbreviates a token count as e.g. "128K" or "1M".
+func humanTokens(t int64) string {
+	switch {
+	case t >= 1_000_000:
+		return strings.TrimSuffix(fmt.Sprintf("%.1f", float64(t)/1e6), ".0") + "M"
+	case t >= 1_000:
+		return fmt.Sprintf("%.0f", float64(t)/1e3) + "K"
+	default:
+		return fmt.Sprintf("%d", t)
+	}
+}
+
+// formatModelPricing renders per-1M-token pricing as a dim second line. Prices
+// come from models.dev and carry a caveat since they may lag the provider.
+func formatModelPricing(in, out float64) string {
+	if in == 0 && out == 0 {
+		return "Price: unknown"
+	}
+	return fmt.Sprintf("Price: [%s]$%s in[-] · [%s]$%s out[-] per 1M [%s](may be inaccurate)[-]",
+		TC.ToolColor, trimPrice(in), TC.ShellColor, trimPrice(out), TC.Border)
+}
+
+// trimPrice renders a price rounded to at most 3 decimals, dropping trailing zeros
+// (e.g. 3 → "3", 2.5 → "2.5", 0.075 → "0.075").
+func trimPrice(v float64) string {
+	s := strconv.FormatFloat(v, 'f', 3, 64)
+	s = strings.TrimRight(s, "0")
+	return strings.TrimRight(s, ".")
 }
 
 // openModelSelect opens the palette directly in model-selection mode.

@@ -20,10 +20,12 @@ const (
 	paletteModeHotkeys                          // list of keyboard shortcuts
 )
 
-// PaletteItem is one selectable row in the palette list.
+// PaletteItem is one selectable entry in the palette list. An entry occupies one
+// row normally, or two when Detail is set (Detail renders as a dim second line).
 type PaletteItem struct {
-	Label  string
-	Sub    string // dim secondary text shown right-aligned
+	Label  string // primary line, left-aligned (supports color tags)
+	Sub    string // dim secondary text shown right-aligned on the primary line
+	Detail string // optional dim second line; empty means a single-row entry
 	Value  string // opaque payload passed to callbacks
 	Action func() // called on Enter in menu mode
 }
@@ -275,7 +277,7 @@ func (cp *CommandPalette) MouseHandler() func(tview.MouseAction, *tcell.EventMou
 		}
 
 		itemsH := h - 4
-		fi := cp.itemOffset(itemsH) + row
+		fi := cp.itemAtRow(row, itemsH)
 		if fi < 0 || fi >= len(cp.filtered) {
 			return true, nil
 		}
@@ -330,11 +332,11 @@ func (cp *CommandPalette) Draw(screen tcell.Screen) {
 		w = sw - 4
 	}
 
-	visItems := len(cp.filtered)
+	visRows := cp.contentRows()
 	if cp.mode == paletteModeAddEndpoint {
-		visItems = 0
+		visRows = 0
 	}
-	h := 4 + visItems
+	h := 4 + visRows
 	if cp.mode == paletteModeAddEndpoint {
 		h = 4 + 3
 	}
@@ -431,8 +433,8 @@ func (cp *CommandPalette) drawItems(screen tcell.Screen, x, y, w, h int, selSt, 
 
 	offset := cp.itemOffset(h)
 
-	// Reserve the rightmost inner column for a scrollbar when the list overflows.
-	showBar := len(cp.filtered) > h
+	// Reserve the rightmost inner column for a scrollbar when content overflows.
+	showBar := cp.contentRows() > h
 	textRight := x + w - 2 // exclusive right bound for item text
 	hlRight := x + w - 1   // exclusive right bound for the selection highlight fill
 	if showBar {
@@ -440,11 +442,11 @@ func (cp *CommandPalette) drawItems(screen tcell.Screen, x, y, w, h int, selSt, 
 		hlRight--
 	}
 
-	for row := range h {
-		fi := offset + row
-		rowY := y + row
-		if fi >= len(cp.filtered) {
-			break
+	rowY := y
+	for fi := offset; fi < len(cp.filtered); fi++ {
+		ih := cp.itemHeight(fi)
+		if rowY+ih > y+h {
+			break // no room for the whole entry; stop cleanly
 		}
 		item := cp.items[cp.filtered[fi]]
 		isSel := fi == cp.sel
@@ -454,42 +456,108 @@ func (cp *CommandPalette) drawItems(screen tcell.Screen, x, y, w, h int, selSt, 
 		if isSel {
 			lineSt = selSt
 			subSt = selMutedSt
-			for col := x + 1; col < hlRight; col++ {
-				screen.SetContent(col, rowY, ' ', nil, selSt)
+			for r := range ih {
+				for col := x + 1; col < hlRight; col++ {
+					screen.SetContent(col, rowY+r, ' ', nil, selSt)
+				}
 			}
 		}
 
-		// Label left-aligned.
+		// Primary line: label left-aligned.
 		col := inner
 		labelFg, _, _ := lineSt.Decompose()
 		_, labelW := tview.Print(screen, item.Label, col, rowY, textRight-col, tview.AlignLeft, labelFg)
-		col += labelW
 
 		// Sub right-aligned when there is room (at least 1-col gap after label).
 		if item.Sub != "" {
 			subFg, _, _ := subSt.Decompose()
-			subW := tview.TaggedStringWidth(tview.Escape(item.Sub))
+			subW := tview.TaggedStringWidth(item.Sub) // honor color tags in Sub
 			subStart := textRight - subW
 			if subStart > inner+labelW+1 {
 				tview.Print(screen, item.Sub, subStart, rowY, subW, tview.AlignLeft, subFg)
 			}
 		}
+
+		// Optional dim second line.
+		if item.Detail != "" {
+			subFg, _, _ := subSt.Decompose()
+			tview.Print(screen, item.Detail, inner, rowY+1, textRight-inner, tview.AlignLeft, subFg)
+		}
+
+		rowY += ih
 	}
 
 	if showBar {
 		trackSt := tcell.StyleDefault.Background(Theme.Surface).Foreground(Theme.Muted)
 		thumbSt := tcell.StyleDefault.Background(Theme.Border)
-		drawScrollbarTrack(screen, x+w-2, y, h, len(cp.filtered), h, offset, ' ', ' ', trackSt, thumbSt)
+		drawScrollbarTrack(screen, x+w-2, y, h, cp.contentRows(), h, cp.rowsBefore(offset), ' ', ' ', trackSt, thumbSt)
 	}
 }
 
-// itemOffset returns the first visible filtered-item index so that the current
-// selection stays within a window of visH rows.
-func (cp *CommandPalette) itemOffset(visH int) int {
-	if cp.sel >= visH {
-		return cp.sel - visH + 1
+// itemHeight returns the number of rows the filtered entry at fi occupies.
+func (cp *CommandPalette) itemHeight(fi int) int {
+	if cp.items[cp.filtered[fi]].Detail != "" {
+		return 2
 	}
-	return 0
+	return 1
+}
+
+// contentRows is the total row height of all filtered entries.
+func (cp *CommandPalette) contentRows() int {
+	n := 0
+	for fi := range cp.filtered {
+		n += cp.itemHeight(fi)
+	}
+	return n
+}
+
+// rowsBefore is the combined row height of the filtered entries before offset.
+func (cp *CommandPalette) rowsBefore(offset int) int {
+	n := 0
+	for fi := range offset {
+		n += cp.itemHeight(fi)
+	}
+	return n
+}
+
+// itemOffset returns the first visible filtered index so that the selected entry
+// stays within a window of visH rows, filling upward from the selection.
+func (cp *CommandPalette) itemOffset(visH int) int {
+	off := cp.sel
+	if off >= len(cp.filtered) {
+		off = len(cp.filtered) - 1
+	}
+	if off < 0 {
+		return 0
+	}
+	used := cp.itemHeight(off)
+	for off > 0 {
+		ph := cp.itemHeight(off - 1)
+		if used+ph > visH {
+			break
+		}
+		used += ph
+		off--
+	}
+	return off
+}
+
+// itemAtRow maps a content-area row (0-based from the top of the item region) to
+// a filtered index, or -1 when the row is past the last visible entry.
+func (cp *CommandPalette) itemAtRow(relRow, visH int) int {
+	offset := cp.itemOffset(visH)
+	rowY := 0
+	for fi := offset; fi < len(cp.filtered); fi++ {
+		ih := cp.itemHeight(fi)
+		if rowY+ih > visH {
+			break
+		}
+		if relRow >= rowY && relRow < rowY+ih {
+			return fi
+		}
+		rowY += ih
+	}
+	return -1
 }
 
 // ── internal helpers ──────────────────────────────────────────────────────────
