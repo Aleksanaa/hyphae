@@ -218,30 +218,44 @@ func (sb *StatusBar) Draw(screen tcell.Screen) {
 		screen.SetContent(x+col, y, ' ', nil, tcell.StyleDefault.Background(bg))
 	}
 
-	leftW, _ := tview.Print(screen, sb.left, x, y, w, tview.AlignLeft, Theme.Text)
+	_, leftW := tview.Print(screen, sb.left, x, y, w, tview.AlignLeft, Theme.Text)
 
 	paletteHint := fmt.Sprintf("[%s]Ctrl-P[-] [%s]palette[-]  ", TC.Accent, TC.Muted)
 	paletteW := tview.TaggedStringWidth(paletteHint)
 	pctW := tview.TaggedStringWidth(sb.pctText)
 	costW := tview.TaggedStringWidth(sb.costText)
 	hasBar := sb.promptTokens > 0 && sb.contextWindow > 0
-	rightW := paletteW + costW + pctW
+
+	// usageW is the cost + progress bar + percentage cluster ("right").
+	usageW := costW + pctW
 	if hasBar {
-		rightW += barWidth
+		usageW += barWidth
 	}
-	rightX := x + w - rightW
-	if rightX > x+leftW {
-		tview.Print(screen, paletteHint, rightX, y, paletteW, tview.AlignLeft, Theme.Text)
+
+	// drawUsage renders the cost/bar/pct cluster starting at sx.
+	drawUsage := func(sx int) {
 		if costW > 0 {
-			tview.Print(screen, sb.costText, rightX+paletteW, y, costW, tview.AlignLeft, Theme.Text)
+			tview.Print(screen, sb.costText, sx, y, costW, tview.AlignLeft, Theme.Text)
 		}
-		barX := rightX + paletteW + costW
+		barX := sx + costW
 		if hasBar {
 			sb.drawBar(screen, barX, y, barWidth)
 			tview.Print(screen, sb.pctText, barX+barWidth, y, pctW, tview.AlignLeft, Theme.Text)
 		} else if pctW > 0 {
 			tview.Print(screen, sb.pctText, barX, y, pctW, tview.AlignLeft, Theme.Text)
 		}
+	}
+
+	// Degrade the right side in stages, always keeping ≥2 spaces from the left:
+	// full (palette hint + usage) → drop the palette hint → drop the right entirely.
+	const gap = 2
+	switch {
+	case leftW+gap+paletteW+usageW <= w:
+		rightX := x + w - paletteW - usageW
+		tview.Print(screen, paletteHint, rightX, y, paletteW, tview.AlignLeft, Theme.Text)
+		drawUsage(rightX + paletteW)
+	case usageW > 0 && leftW+gap+usageW <= w:
+		drawUsage(x + w - usageW)
 	}
 }
 
