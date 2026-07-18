@@ -8,6 +8,7 @@ import (
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
+	"github.com/rivo/uniseg"
 
 	"github.com/aleksanaa/hyphae/internal/session"
 )
@@ -73,6 +74,69 @@ func stripTags(s string) string {
 		s = s[end+2:]
 	}
 	return out.String()
+}
+
+const riLo, riHi = 0x1F1E6, 0x1F1FF // regional indicator symbols 🇦..🇿
+
+// unstableRune reports whether r can take part in a multi-codepoint emoji cluster
+// whose rendered width terminals disagree on: ZWJ, variation selector 16, the
+// enclosing keycap, and anything in the emoji/supplementary planes (which covers
+// regional indicators, skin-tone modifiers, tag characters and emoji bases).
+func unstableRune(r rune) bool {
+	return r == 0x200D || r == 0xFE0F || r == 0x20E3 || r >= 0x1F000
+}
+
+// stabilizeWidth rewrites multi-codepoint emoji grapheme clusters — whose
+// terminal-rendered width routinely disagrees with the Unicode width (2) that
+// tcell reserves — into a single width-stable representative, keeping the
+// message-box borders aligned on every terminal:
+//
+//   - regional-indicator flags (🇨🇳)                    → ISO letters (CN)
+//   - keycaps (1️⃣)                                      → the base digit (1)
+//   - ZWJ (👨‍👩‍👧‍👦), skin-tone (👍🏽), variation-selector (❤️)
+//     and tag-sequence flags (🏴…)                      → their base emoji
+//
+// Plain text, CJK, and letter+diacritic clusters are left untouched. Applied at
+// render time only; the stored message keeps the original characters.
+func stabilizeWidth(s string) string {
+	// Fast path: nothing that can form an unstable cluster.
+	if strings.IndexFunc(s, unstableRune) < 0 {
+		return s
+	}
+	isRI := func(r rune) bool { return r >= riLo && r <= riHi }
+
+	var b strings.Builder
+	b.Grow(len(s))
+	g := uniseg.NewGraphemes(s)
+	for g.Next() {
+		rs := g.Runes()
+		if len(rs) == 1 {
+			b.WriteRune(rs[0])
+			continue
+		}
+		// Multi-rune cluster: simplify only genuine emoji sequences, so that
+		// combining-mark clusters (e.g. "e"+◌́) are preserved intact.
+		emoji, allRI := false, true
+		for _, r := range rs {
+			if unstableRune(r) {
+				emoji = true
+			}
+			if !isRI(r) {
+				allRI = false
+			}
+		}
+		switch {
+		case !emoji:
+			b.WriteString(g.Str())
+		case allRI:
+			for _, r := range rs {
+				b.WriteRune('A' + (r - riLo))
+			}
+		default:
+			b.WriteRune(rs[0]) // keep the base emoji / digit / symbol
+		}
+	}
+	return b.String()
 }
 
 // toolIdxCompact is the sentinel toolIdx value for compact divider entries.
@@ -975,12 +1039,14 @@ func (cv *ChatView) buildText(width int) {
 	// The entry is marked with a status role so double-click and selection treat it
 	// as an expandable status.
 	writeFlatLine := func(line string, sessIdx, toolIdx int) {
+		line = stabilizeWidth(line)
 		b.WriteString(strings.Repeat(" ", lay.off+2))
 		b.WriteString(line)
 		b.WriteString("\n")
 		addEntry(renderMsg{role: session.RoleTool, content: line}, sessIdx, toolIdx, lay.off+2, tview.TaggedStringWidth(line), 1)
 	}
 	renderBox := func(entry renderMsg, sessIdx, toolIdx int) {
+		entry.content = stabilizeWidth(entry.content)
 		prev := b.Len()
 		idx := len(entries)
 		lp, bw := cv.renderMessageBox(&b, entry, lay, idx == cv.selectedIdx)
