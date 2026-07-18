@@ -96,8 +96,10 @@ type ChatView struct {
 	compactSeqs     []int        // all compact atSeqs in order; nil = no compact
 	compactExpanded map[int]bool // divider index → expanded state
 
-	// callback for double-clicking expandable thinking status items
-	onStatusExpand func(sessionIdx int)
+	// status (thinking/tool) box expansion — UI-only display state, keyed by
+	// session-message index. The UI owns display arrangement, so this lives here
+	// rather than on session.Message.
+	statusExpanded map[int]bool
 
 	// drag-to-select state
 	selAnchor    selPoint
@@ -149,6 +151,7 @@ func NewChatView() *ChatView {
 		selCursorBox:    -1,
 		mdCache:         make(map[string][]mdBlock),
 		compactExpanded: make(map[int]bool),
+		statusExpanded:  make(map[int]bool),
 		welcomeArt:      art,
 		welcomeFocal:    focal,
 	}
@@ -171,10 +174,6 @@ func (cv *ChatView) SetCompact(summary string, seqs []int) {
 	cv.compactSeqs = append([]int(nil), seqs...)
 	cv.compactExpanded = newExpanded
 }
-
-// SetStatusExpandCallback registers a function called when the user double-clicks
-// a status (thinking/tool) item. The argument is the session-message index.
-func (cv *ChatView) SetStatusExpandCallback(fn func(sessionIdx int)) { cv.onStatusExpand = fn }
 
 // SetFocused is called by focus/blur hooks; no visible border to update.
 func (cv *ChatView) SetFocused(_ bool) {}
@@ -462,8 +461,9 @@ func (cv *ChatView) handleDoubleClick(docLine int) {
 		}
 		return
 	}
-	if ((e.msg.role.IsStatus() && e.msg.content != "") || e.msg.expandedBox) && cv.onStatusExpand != nil {
-		cv.onStatusExpand(e.sessIdx)
+	if (e.msg.role.IsStatus() && e.msg.content != "") || e.msg.expandedBox {
+		cv.statusExpanded[e.sessIdx] = !cv.statusExpanded[e.sessIdx]
+		cv.buildText(cv.lastWidth)
 	}
 }
 
@@ -970,7 +970,7 @@ func (cv *ChatView) buildText(width int) {
 		case riCollapsedRounds:
 			sep()
 			desc, thinkSecs := collapseStatuses(item.statuses)
-			if !msgs[item.firstStatusIdx].Expanded {
+			if !cv.statusExpanded[item.firstStatusIdx] {
 				writeFlatLine(apexLabel(desc), item.firstStatusIdx, -1)
 				break
 			}

@@ -99,7 +99,6 @@ type SessionSummary struct {
 type Controller struct {
 	mu        sync.Mutex
 	persistMu sync.Map // map[sessionID]*sync.Mutex — serializes concurrent PersistSession calls
-	ag        *agent.Agent
 	mgr       *session.Manager
 	cfg       *config.Config
 	st        *store.Store
@@ -110,19 +109,15 @@ type Controller struct {
 
 	sessionCosts     map[string]float64
 	lastPromptTokens map[string]int64
-	sessionModels    map[string]Model // sessionID → its model (identity, context, pricing)
+	sessionModels    map[string]Model        // sessionID → its model (identity, context, pricing)
+	sessionAgents    map[string]*agent.Agent // sessionID → its agent (own model, endpoint, and run namespace)
 	sendCancel       context.CancelFunc
-
-	// current is the active model driving new turns: its identity, context
-	// window, and pricing. Not persisted in config (config holds only identity).
-	current Model
 }
 
 // New creates a Controller. ctx is the application-lifetime context; when it is
 // cancelled the event channel is closed and all background operations stop.
-func New(ag *agent.Agent, mgr *session.Manager, cfg *config.Config, st *store.Store, ctx context.Context) *Controller {
+func New(mgr *session.Manager, cfg *config.Config, st *store.Store, ctx context.Context) *Controller {
 	c := &Controller{
-		ag:               ag,
 		mgr:              mgr,
 		cfg:              cfg,
 		st:               st,
@@ -132,7 +127,7 @@ func New(ag *agent.Agent, mgr *session.Manager, cfg *config.Config, st *store.St
 		sessionCosts:     make(map[string]float64),
 		lastPromptTokens: make(map[string]int64),
 		sessionModels:    make(map[string]Model),
-		current:          Model{Endpoint: cfg.ActiveEndpointName, ID: cfg.Model},
+		sessionAgents:    make(map[string]*agent.Agent),
 	}
 	go c.eventForwarder()
 	return c
@@ -165,17 +160,16 @@ func (c *Controller) eventForwarder() {
 	}
 }
 
-// NewFromConfig is the preferred constructor: it creates all dependencies (agent,
-// session manager, store) from cfg and returns a ready-to-use Controller along
-// with a cancel func that must be called to shut it down (e.g. on app exit).
+// NewFromConfig is the preferred constructor: it creates the session manager and
+// store from cfg and returns a ready-to-use Controller along with a cancel func
+// that must be called to shut it down (e.g. on app exit). Per-session agents are
+// created lazily as sessions are opened.
 func NewFromConfig(cfg *config.Config) (*Controller, context.CancelFunc) {
-	ep := cfg.ActiveEndpoint()
-	ag := agent.New(ep.BaseURL, ep.APIKey, cfg.Model)
 	workDir, _ := os.Getwd()
 	mgr := session.NewManager(workDir)
 	st, _ := store.Open(store.DefaultPath()) // non-fatal if nil
 	ctx, cancel := context.WithCancel(context.Background())
-	c := New(ag, mgr, cfg, st, ctx)
+	c := New(mgr, cfg, st, ctx)
 	shutdown := func() {
 		cancel()
 		if st != nil {
@@ -191,18 +185,50 @@ func (c *Controller) Events() <-chan Event { return c.ch }
 // Context returns the application-lifetime context.
 func (c *Controller) Context() context.Context { return c.ctx }
 
-// CurrentModel returns the active model (identity, context window, pricing).
-func (c *Controller) CurrentModel() Model {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.current
-}
-
-// ContextWindow returns the in-memory context window for the current model.
+// ContextWindow returns the in-memory context window for the active session's model.
 func (c *Controller) ContextWindow() int64 {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.current.ContextWindow
+	return c.sessionModels[c.mgr.ActiveID()].ContextWindow
+}
+
+// defaultModel is the identity a fresh session starts from: the config default.
+// Pricing and context window are unknown here and filled per-session by
+// EnrichSessionAsync. There is deliberately no global "current model" — each
+// session owns its own (see sessionModels / sessionAgents).
+func (c *Controller) defaultModel() Model {
+	return Model{Endpoint: c.cfg.ActiveEndpointName, ID: c.cfg.Model}
+}
+
+// agentForModel builds an agent configured for m, resolving m.Endpoint to its
+// base URL and API key from config (falling back to the active endpoint when the
+// name is unknown). Each call yields a fresh agent with its own run namespace.
+func (c *Controller) agentForModel(m Model) *agent.Agent {
+	ep := c.cfg.ActiveEndpoint()
+	for _, e := range c.cfg.Endpoints {
+		if e.Name == m.Endpoint {
+			ep = e
+			break
+		}
+	}
+	return agent.New(ep.BaseURL, ep.APIKey, m.ID)
+}
+
+// agentFor returns the agent that serves a session, lazily creating one from the
+// session's model (or the current default) on first use. Caller must not hold c.mu.
+func (c *Controller) agentFor(sessionID string) *agent.Agent {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if ag := c.sessionAgents[sessionID]; ag != nil {
+		return ag
+	}
+	m, ok := c.sessionModels[sessionID]
+	if !ok {
+		m = c.defaultModel()
+	}
+	ag := c.agentForModel(m)
+	c.sessionAgents[sessionID] = ag
+	return ag
 }
 
 // emit enqueues an event for delivery. Never blocks; returns immediately once
@@ -212,13 +238,6 @@ func (c *Controller) emit(ev Event) {
 	case c.incoming <- ev:
 	case <-c.ctx.Done():
 	}
-}
-
-// SetAgent replaces the active agent (called on model switch).
-func (c *Controller) SetAgent(ag *agent.Agent) {
-	c.mu.Lock()
-	c.ag = ag
-	c.mu.Unlock()
 }
 
 // Manager returns the session manager.

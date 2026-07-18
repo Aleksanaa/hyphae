@@ -56,9 +56,7 @@ func (c *Controller) Compact() error {
 	c.emit(Event{Kind: EvStatusMsg, SessionID: sess.ID, Text: "compacting conversation..."})
 	c.emit(Event{Kind: EvRedraw, SessionID: sess.ID})
 
-	c.mu.Lock()
-	ag := c.ag
-	c.mu.Unlock()
+	ag := c.agentFor(sess.ID)
 
 	go func() {
 		summary, usage, err := ag.Compact(ctx, sess)

@@ -58,9 +58,12 @@ func (c *Controller) SaveSessionPlanMode(id string, on bool) {
 func (c *Controller) NewSession() *session.Session {
 	sess := c.mgr.New()
 	c.mgr.SetActive(sess.ID)
+	m := c.defaultModel()
 	c.mu.Lock()
-	c.sessionModels[sess.ID] = c.current
+	c.sessionModels[sess.ID] = m
+	c.sessionAgents[sess.ID] = c.agentForModel(m)
 	c.mu.Unlock()
+	go c.EnrichSessionAsync(sess.ID)
 	return sess
 }
 
@@ -171,8 +174,16 @@ func (c *Controller) ResumeSession(id string) (*session.Session, SessionInfo, er
 		c.mu.Lock()
 		c.sessionCosts[id] = row.TotalCost
 		c.lastPromptTokens[id] = row.LastPromptTokens
+		if info.Model.ID == "" {
+			// Legacy session with no stored model: run it on the default identity.
+			info.Model = c.defaultModel()
+		}
 		c.sessionModels[id] = info.Model
+		c.sessionAgents[id] = c.agentForModel(info.Model)
 		c.mu.Unlock()
+
+		// Fill any missing context window / pricing for this session's model.
+		go c.EnrichSessionAsync(id)
 
 		if row.CompactedSummary != "" {
 			dbSeqs := store.ParseCompactSeqs(row.CompactSeqs)

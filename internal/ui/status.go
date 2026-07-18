@@ -90,6 +90,14 @@ func (sb *StatusBar) SetDefault(model string, status session.Status) {
 	sb.render()
 }
 
+// SetStatus updates only the status, keeping the bar's current model. Redraws
+// use this so a redraw never re-asserts a model — the model is a per-session
+// value set once at tab creation / resume / model switch, not on every render.
+func (sb *StatusBar) SetStatus(status session.Status) {
+	sb.status = status
+	sb.render()
+}
+
 func (sb *StatusBar) SetSelActive(active bool) {
 	if sb.selActive == active {
 		return

@@ -126,9 +126,7 @@ func (c *Controller) SendMessage(text string) {
 	c.sendCancel = cancel
 	c.mu.Unlock()
 
-	c.mu.Lock()
-	ag := c.ag
-	c.mu.Unlock()
+	ag := c.agentFor(sess.ID)
 
 	agCh := ag.Send(ctx, sess)
 	go c.processAgentEvents(sess.ID, agCh, &turnState{})

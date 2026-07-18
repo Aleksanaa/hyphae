@@ -84,13 +84,6 @@ func (a *App) newTabContent() *TabContent {
 	tc.SelectView = NewSelectView()
 	tc.PlanMode = NewPlanModeView(func() { a.togglePlanMode() })
 
-	tc.Chat.SetStatusExpandCallback(func(sessionIdx int) {
-		if sess, ok := a.ctrl.ActiveSession(); ok {
-			sess.ToggleExpanded(sessionIdx)
-			a.redrawActive()
-		}
-	})
-
 	tc.Chat.TextView.SetFocusFunc(func() { tc.Chat.SetFocused(true) })
 	tc.Chat.TextView.SetBlurFunc(func() { tc.Chat.SetFocused(false) })
 	tc.Input.TextArea.SetFocusFunc(func() { tc.Input.SetFocused(true) })
@@ -195,10 +188,6 @@ func New(cfg *config.Config) *App {
 	a.activeTabID = id
 	layout.ShowTab(id)
 	a.syncTabs()
-
-	if cfg.Model != "" {
-		go ctrl.FetchModelDevInfoAsync(ctrl.Context(), cfg.Model)
-	}
 
 	a.tapp.EnableMouse(true)
 	a.tapp.SetMouseCapture(func(event *tcell.EventMouse, action tview.MouseAction) (*tcell.EventMouse, tview.MouseAction) {
@@ -347,7 +336,7 @@ func (a *App) handleControllerEvent(ev controller.Event) {
 		respCh := ev.RespCh
 		msgs, status := sess.Snapshot()
 		tc.Chat.Render(msgs)
-		tc.Status.SetDefault(a.cfg.Model, status)
+		tc.Status.SetStatus(status)
 
 		if tool.DiffPatch != "" {
 			files := []DiffFileChange{{
@@ -395,7 +384,7 @@ func (a *App) handleControllerEvent(ev controller.Event) {
 		respCh := ev.SelectRespCh
 		msgs, status := sess.Snapshot()
 		tc.Chat.Render(msgs)
-		tc.Status.SetDefault(a.cfg.Model, status)
+		tc.Status.SetStatus(status)
 
 		tc.SelectView.Show(tool.SelectQuestion, tool.SelectOptions)
 		_, _, chatW, _ := tc.Chat.GetInnerRect()
@@ -620,19 +609,19 @@ func (a *App) resumeSession(id string) {
 		return
 	}
 
-	// Restore per-session model if it differs from the current default.
-	model := a.cfg.Model
-	if info.Model.ID != "" {
-		a.ctrl.SwitchModel(info.Model)
-		model = info.Model.ID
+	// The resumed session keeps its own model (ResumeSession set up its agent and
+	// records). Just reflect it in this tab — don't touch the global default or
+	// any other open session.
+	model := info.Model.ID
+	if model == "" {
+		model = a.cfg.Model
 	}
 
 	tc := a.registerSessionTab(sess)
 	tc.Status.SetDefault(model, session.StatusIdle)
-	if !a.seedContextWindow(tc, info.Model.ContextWindow) && info.Model.ID == "" && model != "" {
-		// Old session with no stored model and no known CW yet; fetch it for the current model.
-		go a.ctrl.FetchModelDevInfoAsync(a.ctrl.Context(), model)
-	}
+	// Seed the known context window; if it's not known yet, ResumeSession's
+	// background enrichment will emit EvContextWindow once models.dev responds.
+	a.seedContextWindow(tc, info.Model.ContextWindow)
 	if info.PlanMode {
 		tc.ShowPlanMode()
 	}
@@ -1008,5 +997,5 @@ func (a *App) redrawActive() {
 	summary, seqs := sess.GetCompact()
 	tc.Chat.SetCompact(summary, seqs)
 	tc.Chat.Render(msgs)
-	tc.Status.SetDefault(a.cfg.Model, status)
+	tc.Status.SetStatus(status)
 }

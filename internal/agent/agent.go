@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sync"
 	"time"
 
 	openai "github.com/openai/openai-go/v3"
@@ -101,16 +100,12 @@ type Event struct {
 	StatusEvent  session.StatusEvent
 }
 
-// Agent orchestrates the LLM ↔ tool loop.
+// Agent orchestrates the LLM ↔ tool loop. Each agent serves a single session,
+// so the run-tool namespace (persistent starlark globals) is a plain field.
 type Agent struct {
-	client     openai.Client
-	model      string
-	namespaces sync.Map // session ID → starlark.StringDict
-}
-
-func (a *Agent) getNamespace(sessionID string) starlark.StringDict {
-	v, _ := a.namespaces.LoadOrStore(sessionID, make(starlark.StringDict))
-	return v.(starlark.StringDict)
+	client    openai.Client
+	model     string
+	namespace starlark.StringDict
 }
 
 // New creates an Agent using the provided OpenAI client and model name.
@@ -119,7 +114,7 @@ func New(baseURL, apiKey, model string) *Agent {
 		option.WithBaseURL(baseURL),
 		option.WithAPIKey(apiKey),
 	)
-	return &Agent{client: client, model: model}
+	return &Agent{client: client, model: model, namespace: make(starlark.StringDict)}
 }
 
 // ModelInfo holds a model ID and its context window size (0 if unknown).
@@ -344,7 +339,7 @@ func (a *Agent) loop(ctx context.Context, sess *session.Session, ch chan<- Event
 				return
 			}
 
-			output, isErr, anyToolsRan := runScript(ctx, ch, tc.Function.Arguments, sess.WorkDir, a.getNamespace(sess.ID))
+			output, isErr, anyToolsRan := runScript(ctx, ch, tc.Function.Arguments, sess.WorkDir, a.namespace)
 			te.Output = output
 			te.IsError = isErr
 			if !anyToolsRan {

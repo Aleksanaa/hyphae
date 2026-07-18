@@ -89,7 +89,8 @@ type ToolUse struct {
 //	RoleTool      — ToolUses[0] (the call + its result in Output/State), StatusEvents
 //
 // Thinking and tool items are "statuses" (Role.IsStatus): expandable boxes the
-// UI may aggregate. Expanded and Partial are UI/stream state on any item.
+// UI may aggregate. Whether a box is expanded is UI-only state (the UI owns
+// display arrangement); Partial marks streaming in progress.
 type Message struct {
 	Role         Role
 	Content      string        // RoleUser / RoleAssistant text
@@ -98,18 +99,8 @@ type Message struct {
 	ThinkingSecs int           // RoleThinking: CoT duration in seconds
 	StatusEvents []StatusEvent // RoleTool: append-only op record for aggregation
 	ToolUses     []ToolUse     // RoleTool: the single tool call, carrying its own result
-	Expanded     bool          // UI: status box expanded to show detail
 	Partial      bool          // streaming in progress
 	Error        error         // RoleAssistant: set if the turn failed
-}
-
-// ToggleExpanded flips the Expanded flag on a status (thinking or tool) item.
-func (s *Session) ToggleExpanded(idx int) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if idx >= 0 && idx < len(s.msgs) && s.msgs[idx].Role.IsStatus() {
-		s.msgs[idx].Expanded = !s.msgs[idx].Expanded
-	}
 }
 
 // Session holds the full local state for one conversation.
