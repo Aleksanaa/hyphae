@@ -116,6 +116,9 @@ type Session struct {
 	msgs             []Message
 	compactedSummary string // latest compact summary; empty = no compact
 	compactSeqs      []int  // all compact atSeqs in ascending order; nil = no compact
+
+	titleFinal      bool // title is authoritative (restored on resume or model-generated); no auto-regeneration
+	titleGenerating bool // a title-generation call is in flight
 }
 
 // SetPlanMode enables or disables plan mode for this session.
@@ -240,6 +243,14 @@ func (s *Session) AddMessage(m Message) int {
 	return idx
 }
 
+// SetTitle overwrites the session title. Used to replace the truncated
+// first-message placeholder with a model-generated title.
+func (s *Session) SetTitle(title string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.Title = title
+}
+
 // AppendTextDelta appends streaming text to the message at idx.
 func (s *Session) AppendTextDelta(idx int, delta string) {
 	s.mu.Lock()
@@ -331,6 +342,49 @@ func (s *Session) Snapshot() ([]Message, Status) {
 	msgs := make([]Message, len(s.msgs))
 	copy(msgs, s.msgs)
 	return msgs, s.Status
+}
+
+// MarkTitleFinal marks the session's title authoritative so it is never
+// auto-regenerated (e.g. a title restored from persistence on resume).
+func (s *Session) MarkTitleFinal() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.titleFinal = true
+}
+
+// ClaimTitleGeneration reports whether one-shot title generation should start
+// now: the title is not yet final, none is in flight, and the session has
+// reached at least minRounds completed user↔assistant rounds. It sets the
+// in-flight flag; the caller must pair each true return with FinishTitleGeneration.
+func (s *Session) ClaimTitleGeneration(minRounds int) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.titleFinal || s.titleGenerating {
+		return false
+	}
+	rounds := 0
+	for i := range s.msgs {
+		if s.msgs[i].Role == RoleUser {
+			rounds++
+		}
+	}
+	if rounds < minRounds {
+		return false
+	}
+	s.titleGenerating = true
+	return true
+}
+
+// FinishTitleGeneration clears the in-flight flag. final=true marks the title
+// authoritative (generation succeeded); final=false leaves it open so a later
+// round can retry.
+func (s *Session) FinishTitleGeneration(final bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.titleGenerating = false
+	if final {
+		s.titleFinal = true
+	}
 }
 
 // Manager tracks all sessions and which is active. It is an unordered set:

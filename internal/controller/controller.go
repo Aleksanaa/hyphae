@@ -27,6 +27,7 @@ const (
 	EvError                           // turn errored
 	EvToolApproval                    // tool needs user approval (forwarded from agent)
 	EvSelectPrompt                    // ask_user tool needs user selection (forwarded from agent)
+	EvTitle                           // session title changed; refresh tab labels
 )
 
 // Event is one item sent from the controller to the UI.

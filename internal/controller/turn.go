@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/aleksanaa/hyphae/internal/agent"
@@ -114,6 +115,7 @@ func (c *Controller) SendMessage(text string) {
 		sentLabel = agent.PlanModeLabel() + "\n"
 	}
 	sentLabel += agent.FormatSentLabel(time.Now())
+
 	sess.AddMessage(session.Message{
 		Role:      session.RoleUser,
 		Content:   text,
@@ -130,6 +132,61 @@ func (c *Controller) SendMessage(text string) {
 
 	agCh := ag.Send(ctx, sess)
 	go c.processAgentEvents(sess.ID, agCh, &turnState{})
+}
+
+// titleMinRounds is how many completed user↔assistant rounds a session must
+// reach before its title is generated. Until then the truncated first-message
+// placeholder stands; a few rounds of context yields a far more meaningful title.
+const titleMinRounds = 3
+
+// generateTitle asks the session's model for a short title summarizing the
+// conversation so far, then replaces the placeholder title, persists it, and
+// tells the UI to refresh the tab label. Best-effort: on error or empty output
+// the placeholder stays and a later round may retry. Runs in its own goroutine;
+// the caller must have claimed generation via Session.ClaimTitleGeneration.
+func (c *Controller) generateTitle(sess *session.Session) {
+	ctx, cancel := context.WithTimeout(c.ctx, 30*time.Second)
+	defer cancel()
+
+	convo := conversationText(sess)
+	if convo == "" {
+		sess.FinishTitleGeneration(false)
+		return
+	}
+	title, err := c.agentFor(sess.ID).GenerateTitle(ctx, convo)
+	if err != nil || title == "" {
+		sess.FinishTitleGeneration(false)
+		return
+	}
+	sess.SetTitle(title)
+	sess.FinishTitleGeneration(true)
+	c.st.UpdateSessionTitle(sess.ID, title) //nolint:errcheck
+	c.emit(Event{Kind: EvTitle, SessionID: sess.ID})
+}
+
+// conversationText renders the session's user/assistant text into a compact
+// transcript for title generation. Thinking and tool-status peers are omitted —
+// the title should summarize what was discussed, not how.
+func conversationText(sess *session.Session) string {
+	msgs, _ := sess.Snapshot()
+	var b strings.Builder
+	for i := range msgs {
+		m := msgs[i]
+		if m.Content == "" {
+			continue
+		}
+		switch m.Role {
+		case session.RoleUser:
+			b.WriteString("User: ")
+		case session.RoleAssistant:
+			b.WriteString("Assistant: ")
+		default:
+			continue
+		}
+		b.WriteString(m.Content)
+		b.WriteString("\n\n")
+	}
+	return strings.TrimSpace(b.String())
 }
 
 // processAgentEvents translates raw agent events into controller events and updates
@@ -258,6 +315,9 @@ func (c *Controller) processAgentEvents(sessionID string, agCh <-chan agent.Even
 			pt := c.lastPromptTokens[sessionID]
 			c.mu.Unlock()
 			go c.PersistSession(sess, cost, pt)
+			if sess.ClaimTitleGeneration(titleMinRounds) {
+				go c.generateTitle(sess)
+			}
 			c.emit(Event{Kind: EvDone, SessionID: sessionID})
 			return
 

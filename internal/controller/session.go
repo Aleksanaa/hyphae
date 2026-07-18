@@ -141,15 +141,28 @@ func (c *Controller) ResumeSession(id string) (*session.Session, SessionInfo, er
 	sess.BulkLoad(msgs)
 	sess.SetColdResumed()
 
+	// Fallback placeholder from the first user message; the persisted title (which
+	// may be model-generated) overrides it below once the session row is loaded.
+	userRounds := 0
 	for _, m := range msgs {
-		if m.Role == session.RoleUser && m.Content != "" {
+		if m.Role != session.RoleUser {
+			continue
+		}
+		userRounds++
+		if sess.Title == "" && m.Content != "" {
 			t := m.Content
 			if len(t) > 40 {
 				t = t[:37] + "…"
 			}
 			sess.Title = t
-			break
 		}
+	}
+	// Only settle the title if the session already crossed the generation
+	// threshold — its title was (or should have been) generated. A session
+	// resumed with fewer rounds keeps its placeholder and can still generate a
+	// title once it accumulates enough rounds.
+	if userRounds >= titleMinRounds {
+		sess.MarkTitleFinal()
 	}
 
 	c.mgr.AddExisting(sess)
@@ -157,6 +170,9 @@ func (c *Controller) ResumeSession(id string) (*session.Session, SessionInfo, er
 
 	var info SessionInfo
 	if row, err := c.st.GetSession(id); err == nil {
+		if row.Title != "" {
+			sess.Title = row.Title
+		}
 		info.TotalCost = row.TotalCost
 		info.PromptTokens = row.LastPromptTokens
 		info.PlanMode = row.PlanMode

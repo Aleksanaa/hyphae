@@ -312,6 +312,11 @@ func (a *App) handleControllerEvent(ev controller.Event) {
 			a.redrawActive()
 		}
 
+	case controller.EvTitle:
+		// A session's title was (re)generated; tab labels read sess.Title live,
+		// so a tab-bar refresh is all that's needed.
+		a.syncTabs()
+
 	case controller.EvDone:
 		if isActive {
 			a.redrawActive()
