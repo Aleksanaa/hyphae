@@ -62,6 +62,7 @@ type CommandPalette struct {
 	items     []PaletteItem
 	filtered  []int
 	sel       int
+	top       int // first visible filtered index (persistent scroll position)
 
 	// callbacks wired by App
 	onClose         func()
@@ -540,26 +541,65 @@ func (cp *CommandPalette) rowsBefore(offset int) int {
 	return n
 }
 
-// itemOffset returns the first visible filtered index so that the selected entry
-// stays within a window of visH rows, filling upward from the selection.
+// itemOffset reconciles the persistent scroll position (cp.top) with the current
+// selection and returns the first visible filtered index. The list only scrolls
+// when the selection would fall outside the visH-row window, so the selected row
+// can sit anywhere within the window instead of being pinned to an edge.
 func (cp *CommandPalette) itemOffset(visH int) int {
-	off := cp.sel
-	if off >= len(cp.filtered) {
-		off = len(cp.filtered) - 1
-	}
-	if off < 0 {
+	if len(cp.filtered) == 0 {
+		cp.top = 0
 		return 0
 	}
-	used := cp.itemHeight(off)
-	for off > 0 {
-		ph := cp.itemHeight(off - 1)
-		if used+ph > visH {
+	// Clamp into range: filtering may have shrunk the list, and we never want to
+	// leave blank rows below when there is content that could fill them.
+	if mt := cp.maxTop(visH); cp.top > mt {
+		cp.top = mt
+	}
+	if cp.top < 0 {
+		cp.top = 0
+	}
+	// Scroll up only if the selection is above the window's top.
+	if cp.sel < cp.top {
+		cp.top = cp.sel
+	}
+	// Scroll down only if the selection is below the window's bottom.
+	for cp.lastVisible(cp.top, visH) < cp.sel {
+		cp.top++
+	}
+	return cp.top
+}
+
+// lastVisible returns the last filtered index that fully fits in a visH-row
+// window starting at top.
+func (cp *CommandPalette) lastVisible(top, visH int) int {
+	used := 0
+	last := top
+	for fi := top; fi < len(cp.filtered); fi++ {
+		ih := cp.itemHeight(fi)
+		if used+ih > visH {
 			break
 		}
-		used += ph
-		off--
+		used += ih
+		last = fi
 	}
-	return off
+	return last
+}
+
+// maxTop returns the largest scroll offset that still fills the visH-row window
+// (i.e. keeps the last entry pinned to the bottom), so scrolling never reveals
+// blank space past the end of the list.
+func (cp *CommandPalette) maxTop(visH int) int {
+	used := 0
+	top := len(cp.filtered)
+	for fi := len(cp.filtered) - 1; fi >= 0; fi-- {
+		ih := cp.itemHeight(fi)
+		if used+ih > visH {
+			break
+		}
+		used += ih
+		top = fi
+	}
+	return top
 }
 
 // itemAtRow maps a content-area row (0-based from the top of the item region) to
@@ -736,6 +776,7 @@ func (cp *CommandPalette) refilter() {
 	if cp.sel >= len(cp.filtered) {
 		cp.sel = max(0, len(cp.filtered)-1)
 	}
+	cp.top = 0 // reset scroll to the top whenever the visible set changes
 }
 
 func topLevelItems() []PaletteItem {
