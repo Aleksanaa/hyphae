@@ -77,6 +77,12 @@ func (a *App) newTabContent() *TabContent {
 	tc.Status.SetModelClickFunc(func() { a.openModelSelect() })
 	tc.Input = NewInputView(func(text string) {
 		a.ctrl.SendMessage(text)
+		// Auto-focus the message view on the latest message so it follows the one
+		// just sent and the reply streaming in after it; the input box blurs.
+		// Following ends when the user scrolls, clicks in the chat, or focuses the
+		// input again (see ChatView.FollowLatest / StopFollow).
+		tc.Chat.FollowLatest()
+		a.tapp.SetFocus(tc.Chat.TextView)
 		a.redrawActive()
 	})
 	tc.Approval = NewApprovalView()
@@ -326,6 +332,10 @@ func (a *App) handleControllerEvent(ev controller.Event) {
 	case controller.EvDone:
 		if isActive {
 			a.redrawActive()
+			// Turn is idle: end follow but keep the last reply's focus border.
+			if tc != nil {
+				tc.Chat.SettleFollow()
+			}
 		} else {
 			// Background session finished — clear its running dot.
 			a.syncTabs()
@@ -1036,8 +1046,15 @@ func (a *App) redrawActive() {
 		return
 	}
 	msgs, status := sess.Snapshot()
+	// While following, a newly appended message re-grabs focus to the chat so the
+	// view stays on the latest message even if the user had clicked into the input
+	// (only from the input — modal dialogs keep their focus).
+	grew := len(msgs) > len(tc.Chat.messages)
 	summary, seqs := sess.GetCompact()
 	tc.Chat.SetCompact(summary, seqs)
 	tc.Chat.Render(msgs)
 	tc.Status.SetStatus(status)
+	if grew && tc.Chat.autoFollow && a.tapp.GetFocus() == tc.Input.TextArea {
+		a.tapp.SetFocus(tc.Chat.TextView)
+	}
 }

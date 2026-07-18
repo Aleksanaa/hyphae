@@ -86,6 +86,8 @@ type ChatView struct {
 	lastHeight      int             // inner height at last buildText; welcome recenters on change
 	welcomeShown    bool            // last buildText rendered the (vertically-centred) welcome screen
 	TotalLines      int             // read by Scrollbar
+	forceBottom     bool            // next Render jumps to the last message regardless of scroll pos
+	autoFollow      bool            // following the latest message; pins selectedIdx to the last box
 	hoverIdx        int             // index into renderedMsgs; -1 = none
 	selectedIdx     int             // box highlighted by last click; -1 = none
 	lastSelectedIdx int             // selectedIdx at last buildText call; -2 = never built
@@ -360,7 +362,8 @@ func (cv *ChatView) Render(messages []session.Message) {
 		w = 80
 	}
 	scrollY, _ := cv.GetScrollOffset()
-	atBottom := h <= 0 || scrollY+h >= cv.TotalLines
+	atBottom := cv.forceBottom || h <= 0 || scrollY+h >= cv.TotalLines
+	cv.forceBottom = false
 	cv.lastWidth = w
 	cv.lastHeight = h
 	cv.buildText(w)
@@ -370,6 +373,31 @@ func (cv *ChatView) Render(messages []session.Message) {
 		cv.TextView.ScrollTo(scrollY, 0)
 	}
 }
+
+// FollowLatest starts auto-following the latest message: the next Render jumps to
+// the bottom, and buildText keeps selectedIdx pinned to the last box so it shows
+// the same focus border as a clicked box, tracking the reply as it streams in.
+// Following stops only when the user focuses another message (clicks a different
+// box); scrolling and input focus leave it running.
+func (cv *ChatView) FollowLatest() {
+	cv.autoFollow = true
+	cv.forceBottom = true
+}
+
+// StopFollow ends auto-follow and drops the pinned selection so the focus border
+// clears on the next rebuild. No-op when not following, so it leaves a genuine
+// click-selection untouched.
+func (cv *ChatView) StopFollow() {
+	if cv.autoFollow {
+		cv.autoFollow = false
+		cv.selectedIdx = -1
+	}
+}
+
+// SettleFollow ends auto-follow when the turn goes idle, but leaves the last
+// message's focus border in place as an ordinary selection — it then clears on
+// the next mouse-move-out or click, like any clicked box.
+func (cv *ChatView) SettleFollow() { cv.autoFollow = false }
 
 // HoveredContent returns the raw content of whichever message the mouse is over.
 func (cv *ChatView) HoveredContent() string {
@@ -441,6 +469,11 @@ func (cv *ChatView) MouseHandler() func(tview.MouseAction, *tcell.EventMouse, fu
 
 		case tview.MouseLeftClick:
 			cv.hoverIdx = cv.findMsgAt(docLine)
+			// Focusing another message ends auto-follow; clicking the followed
+			// message (selectedIdx while following) leaves it running.
+			if cv.hoverIdx >= 0 && cv.hoverIdx != cv.selectedIdx {
+				cv.StopFollow()
+			}
 			cv.selectedIdx = cv.hoverIdx
 
 		case tview.MouseLeftDoubleClick:
@@ -914,6 +947,7 @@ func (cv *ChatView) buildText(width int) {
 	var entries []renderedEntry
 	first := true
 	lineCount := 0
+	lastBoxIdx := -1 // entry index of the last rendered box (auto-follow target)
 
 	addEntry := func(entry renderMsg, sessIdx, toolIdx, lp, bw, lines int) {
 		entries = append(entries, renderedEntry{
@@ -942,8 +976,10 @@ func (cv *ChatView) buildText(width int) {
 	}
 	renderBox := func(entry renderMsg, sessIdx, toolIdx int) {
 		prev := b.Len()
-		lp, bw := cv.renderMessageBox(&b, entry, lay, len(entries) == cv.selectedIdx)
+		idx := len(entries)
+		lp, bw := cv.renderMessageBox(&b, entry, lay, idx == cv.selectedIdx)
 		addEntry(entry, sessIdx, toolIdx, lp, bw, strings.Count(b.String()[prev:], "\n"))
+		lastBoxIdx = idx
 	}
 
 	lastDivider := len(cv.compactSeqs) - 1
@@ -1011,6 +1047,11 @@ func (cv *ChatView) buildText(width int) {
 	}
 
 	cv.entries = entries
+	// While following, pin the selection to the last box so it renders with the
+	// focus border. Applied on the next rebuild (Draw sees selectedIdx change).
+	if cv.autoFollow && lastBoxIdx >= 0 {
+		cv.selectedIdx = lastBoxIdx
+	}
 	cv.buildCopyMasks(entries, lay)
 
 	text := b.String()
@@ -1241,7 +1282,11 @@ func (cv *ChatView) HasSelection() bool { return cv.selActive }
 // mouse moves outside the chat view's rect (which the chat handler never sees).
 func (cv *ChatView) ClearHover() {
 	cv.hoverIdx = -1
-	cv.selectedIdx = -1
+	// While following, selectedIdx is the pinned last-message focus, not a click
+	// selection, so leave it for buildText to keep tracking the latest box.
+	if !cv.autoFollow {
+		cv.selectedIdx = -1
+	}
 }
 
 func (cv *ChatView) ClearSelection() {
