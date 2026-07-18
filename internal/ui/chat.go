@@ -1194,7 +1194,11 @@ func (cv *ChatView) renderMessageBox(b *strings.Builder, msg renderMsg, lay conv
 
 	case session.RoleAssistant:
 		// Assistant boxes hug the band's left edge; their capped width leaves the right margin.
+		// Full-width boxes (e.g. the compact summary) span the whole band instead.
 		maxContentW := lay.asstW - 4
+		if msg.fullWidth {
+			maxContentW = lay.band - 4
+		}
 		leftPad = lay.off
 		p := strings.Repeat(" ", lay.off)
 		if msg.err != nil {
@@ -1237,7 +1241,7 @@ func (cv *ChatView) renderMessageBox(b *strings.Builder, msg renderMsg, lay conv
 			minBoxW = 11
 		}
 		if msg.fullWidth {
-			boxW = lay.asstW
+			boxW = lay.band
 		} else {
 			boxW = max(minBoxW+extraW, maxTaggedWidth(lines)+4)
 		}
@@ -1428,6 +1432,9 @@ func computeMsgContent(msg renderMsg, lay convoLayout) ([]string, int) {
 		return lines, 0
 	case msg.role == session.RoleAssistant:
 		cw := lay.asstW - 4
+		if msg.fullWidth {
+			cw = lay.band - 4
+		}
 		var plain string
 		switch {
 		case msg.expandedBox:
