@@ -651,6 +651,18 @@ func (cv *ChatView) buildText(width int) {
 				continue
 			}
 			sep()
+			// An in-progress status is expandable too: reveal its streaming
+			// thinking text / running tool code, mirroring a settled round.
+			if cv.statusExpanded[item.liveMsgIdx] {
+				if detail := collapsedDetail([]session.Message{msgs[item.liveMsgIdx]}, lay.asstW-4); detail != "" {
+					title := fmt.Sprintf("[%s]apex[-][%s] (%s)[-]", TC.ApexColor, TC.Muted, stripTags(content))
+					renderBox(renderMsg{
+						role: session.RoleAssistant, expandedBox: true,
+						boxTitle: title, content: detail, contentTagged: true,
+					}, item.liveMsgIdx, -1)
+					break
+				}
+			}
 			if len(content) > 0 && content[0] != '[' {
 				content = apexLabel(content)
 			}
