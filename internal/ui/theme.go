@@ -40,6 +40,7 @@ var Theme = struct {
 	// Text
 	Text   tcell.Color
 	Muted  tcell.Color
+	Faint  tcell.Color // Text nudged toward Bg — secondary body copy (e.g. thoughts)
 	Accent tcell.Color
 
 	// Cursor is the terminal (hardware) cursor color, applied via
@@ -77,6 +78,7 @@ var TC struct {
 	Surface      string
 	Text         string
 	Muted        string
+	Faint        string
 	Accent       string
 	UserColor    string
 	ApexColor    string
@@ -138,6 +140,7 @@ func applyTint(t *tint.Tint) {
 	Theme.Surface = mix(t.Bg, t.BrightBlack, 0.18)
 	Theme.Text = toTcell(t.Fg)
 	Theme.Muted = mix(t.BrightBlack, t.Fg, 0.45)
+	Theme.Faint = mix(t.Fg, t.Bg, 0.18)
 
 	// The cursor color is optional in the tint schema; fall back to the fg.
 	if t.Cursor != nil {
@@ -202,6 +205,7 @@ func applyTint(t *tint.Tint) {
 	TC.Surface = Theme.Surface.CSS()
 	TC.Text = Theme.Text.CSS()
 	TC.Muted = Theme.Muted.CSS()
+	TC.Faint = Theme.Faint.CSS()
 	TC.Accent = Theme.Accent.CSS()
 	TC.UserColor = Theme.UserColor.CSS()
 	TC.ApexColor = Theme.ApexColor.CSS()

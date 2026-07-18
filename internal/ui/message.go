@@ -478,8 +478,10 @@ func maxTaggedWidth(lines []string) int {
 
 // renderMessageBox writes a compact bordered box into b and returns leftPad and boxW.
 // Box anatomy:  ┌─ label ───┐ / │ content │ / └───────────┘
-// expandedBox uses dotted borders (╌/╎) with boxTitle; boxTitle alone uses solid borders
-// with a centered title; otherwise solid borders with the "apex" label.
+// expandedBox ("thoughts") is the exception: it renders a left-rail callout — a
+// header line above content prefixed with "│ " and no right/bottom border.
+// boxTitle alone uses solid borders with a centered title; otherwise solid
+// borders with the "apex" label.
 func (cv *ChatView) renderMessageBox(b *strings.Builder, msg renderMsg, lay convoLayout, isHovered bool) (leftPad, boxW int) {
 	bc := Theme.Border.CSS()
 	if isHovered {
@@ -487,9 +489,6 @@ func (cv *ChatView) renderMessageBox(b *strings.Builder, msg renderMsg, lay conv
 	}
 
 	hChar, vChar := "─", "│"
-	if msg.expandedBox {
-		hChar, vChar = "╌", "╎"
-	}
 	fill := func(n int) string { return strings.Repeat(hChar, max(0, n)) }
 	// mkLine pads inner to contentW; [-:-:-] resets style before padding so
 	// trailing spaces and the border char are not colored by inner tags.
@@ -534,21 +533,44 @@ func (cv *ChatView) renderMessageBox(b *strings.Builder, msg renderMsg, lay conv
 			return
 		}
 
-		var lines []string
+		// Expanded status ("thoughts") renders as a left-rail callout — a header
+		// line above content prefixed by a connected vertical bar — rather than a
+		// full box. It reads as a secondary aside and sidesteps the fussy dashed
+		// horizontal borders. The rail's left prefix is "│ " (2 cols), matching a
+		// box's left border, and it has no right/bottom border; the selection code
+		// keys off msg.expandedBox to drop those (see isWhole/iterPartialSel).
 		if msg.expandedBox {
 			content := msg.content
 			if !msg.contentTagged {
 				content = tview.Escape(content)
 			}
-			lines = tview.WordWrap(content, maxContentW)
-		} else {
-			blocks, ok := cv.mdCache[msg.content]
-			if !ok {
-				blocks = parseMarkdown(msg.content)
-				cv.mdCache[msg.content] = blocks
+			lines := tview.WordWrap(content, maxContentW)
+			partialFrag := ""
+			if msg.partial {
+				partialFrag = fmt.Sprintf(" [%s]…[-]", TC.Muted)
 			}
-			lines = renderBlocks(blocks, maxContentW)
+			fmt.Fprintf(b, "%s%s%s\n", p, msg.boxTitle, partialFrag)
+			contentW := 0
+			for _, line := range lines {
+				// Faint body copy — a secondary aside. [-:-:-] resets any unclosed
+				// inner style so it never bleeds past the line.
+				fmt.Fprintf(b, "%s[%s]│[-] [%s]%s[-:-:-]\n", p, bc, TC.Faint, line)
+				if n := tview.TaggedStringWidth(line); n > contentW {
+					contentW = n
+				}
+			}
+			// boxW spans "│ " + widest content; contentRight = boxRight (no right
+			// border) in iterPartialSel, so partial selection reaches the last column.
+			boxW = contentW + 2
+			return
 		}
+
+		blocks, ok := cv.mdCache[msg.content]
+		if !ok {
+			blocks = parseMarkdown(msg.content)
+			cv.mdCache[msg.content] = blocks
+		}
+		lines := renderBlocks(blocks, maxContentW)
 
 		partialFrag, extraW := "", 0
 		if msg.partial {
@@ -568,13 +590,7 @@ func (cv *ChatView) renderMessageBox(b *strings.Builder, msg renderMsg, lay conv
 		}
 		boxLine := mkLine(boxW - 4)
 
-		if msg.expandedBox {
-			fmt.Fprintf(b, "%s[%s]┌╌ %s %s[%s]%s┐[-]\n",
-				p, bc, msg.boxTitle, partialFrag, bc, fill(boxW-tview.TaggedStringWidth(msg.boxTitle)-5-extraW))
-			if len(lines) == 0 {
-				fmt.Fprintf(b, "%s%s\n", p, boxLine("", 0))
-			}
-		} else if msg.boxTitle != "" {
+		if msg.boxTitle != "" {
 			titleTagW := tview.TaggedStringWidth(msg.boxTitle)
 			inner := boxW - titleTagW - 4 // total dash space
 			leftF := inner / 2

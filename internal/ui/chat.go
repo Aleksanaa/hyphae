@@ -184,7 +184,13 @@ func (cv *ChatView) isWhole() bool {
 	}
 	startDoc, endDoc := cv.boxDocRange(cv.anchorBox)
 	cl := cv.selCursor.docLine
-	return cl <= startDoc || cl >= endDoc-1
+	// Content lines are strictly between the first line and the bottom border.
+	// A rail callout ("thoughts") has no bottom border, so its last line is content.
+	lastGuard := endDoc - 1
+	if cv.entries[cv.anchorBox].msg.expandedBox {
+		lastGuard = endDoc
+	}
+	return cl <= startDoc || cl >= lastGuard
 }
 
 // boxDocRange returns the [startDoc, endDoc) doc-line range for box i,
@@ -209,8 +215,14 @@ func (cv *ChatView) iterPartialSel(fn func(docLine, colLo, colHi int, mask []boo
 	}
 	ix, _, _, _ := cv.GetInnerRect()
 	ae := cv.entries[cv.anchorBox]
+	// A rail callout ("thoughts") has no right/bottom border: content reaches
+	// boxRight and its last line is content, not a border to skip.
+	rightBorder, hasBottom := 2, true
+	if ae.msg.expandedBox {
+		rightBorder, hasBottom = 0, false
+	}
 	contentLeft := ix + ae.boxLeft + 2
-	contentRight := ix + ae.boxRight - 2
+	contentRight := ix + ae.boxRight - rightBorder
 
 	anchor, cur := cv.selAnchor, cv.selCursor
 	if anchor.docLine > cur.docLine ||
@@ -222,7 +234,7 @@ func (cv *ChatView) iterPartialSel(fn func(docLine, colLo, colHi int, mask []boo
 	bottomBorder := boxEndExcl - 1
 
 	for docLine := anchor.docLine; docLine <= cur.docLine; docLine++ {
-		if docLine == boxStart || docLine == bottomBorder {
+		if docLine == boxStart || (hasBottom && docLine == bottomBorder) {
 			continue
 		}
 		x0 := contentLeft
