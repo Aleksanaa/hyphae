@@ -571,6 +571,10 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 		if a.tapp.GetFocus() == tc.Input.TextArea {
 			a.tapp.SetFocus(tc.Chat.TextView)
 		} else {
+			// Match a mouse click on the input box: that click reaches the app's
+			// SetMouseCapture, which clears the chat's hover/selection highlight.
+			// Tab never triggers that path, so clear it here too.
+			tc.Chat.ClearHover()
 			a.tapp.SetFocus(tc.Input.TextArea)
 		}
 		return nil
@@ -774,6 +778,7 @@ func (a *App) setupPalette() {
 						if a.tapp.GetFocus() == tc.Input.TextArea {
 							a.tapp.SetFocus(tc.Chat.TextView)
 						} else {
+							tc.Chat.ClearHover()
 							a.tapp.SetFocus(tc.Input.TextArea)
 						}
 					},
