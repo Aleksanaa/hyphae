@@ -64,6 +64,12 @@ type CommandPalette struct {
 	sel       int
 	top       int // first visible filtered index (persistent scroll position)
 
+	// scrollbar is the shared Scrollbar primitive, driven in content-row units.
+	// The palette owns it directly (like its input fields) rather than through a
+	// tview layout, driving its Draw and forwarding mouse events to it.
+	scrollbar *Scrollbar
+	trackH    int // scrollbar/list viewport height in rows, set each Draw
+
 	// callbacks wired by App
 	onClose         func()
 	onBack          func() // step back a level (like Esc); backdrop click
@@ -98,6 +104,15 @@ func NewCommandPalette() *CommandPalette {
 	cp.nameField = mkField("name     ❯ ")
 	cp.urlField = mkField("base url ❯ ")
 	cp.keyField = mkField("api key  ❯ ")
+
+	// The list scrolls in content-row units (entries may be 1 or 2 rows tall);
+	// scrollTo receives a row offset which we map back to a filtered index.
+	cp.scrollbar = NewScrollbar(
+		cp.contentRows,
+		func() int { return cp.trackH },
+		func() int { return cp.rowsBefore(cp.itemOffset(cp.trackH)) },
+		cp.scrollToRow,
+	)
 
 	return cp
 }
@@ -275,6 +290,16 @@ func (cp *CommandPalette) MouseHandler() func(tview.MouseAction, *tcell.EventMou
 		}
 
 		contentY := y + 3 // after: top border, query/hint row, divider
+		itemsH := h - 4
+
+		// A press on the scrollbar column is forwarded to the shared Scrollbar
+		// primitive, which owns click/drag handling. Returning its capture value
+		// lets tview route the rest of the drag straight to it (see WrapMouseHandler).
+		showBar := cp.mode != paletteModeAddEndpoint && cp.contentRows() > itemsH
+		if showBar && action == tview.MouseLeftDown && mx == x+w-2 && my >= contentY && my < contentY+itemsH {
+			return cp.scrollbar.MouseHandler()(action, event, setFocus)
+		}
+
 		if my < contentY || my >= y+h-1 {
 			if action == tview.MouseLeftDown || action == tview.MouseLeftClick {
 				setFocus(cp)
@@ -297,7 +322,6 @@ func (cp *CommandPalette) MouseHandler() func(tview.MouseAction, *tcell.EventMou
 			return true, nil
 		}
 
-		itemsH := h - 4
 		fi := cp.itemAtRow(row, itemsH)
 		if fi < 0 || fi >= len(cp.filtered) {
 			return true, nil
@@ -422,6 +446,7 @@ func (cp *CommandPalette) Draw(screen tcell.Screen) {
 
 	// Content area (y+3 .. y+h-2).
 	itemsH := h - 4
+	cp.trackH = itemsH
 	if cp.mode == paletteModeAddEndpoint {
 		cp.drawFormFields(screen, x, y+3, w, bg)
 	} else {
@@ -509,9 +534,8 @@ func (cp *CommandPalette) drawItems(screen tcell.Screen, x, y, w, h int, selSt, 
 	}
 
 	if showBar {
-		trackSt := tcell.StyleDefault.Background(Theme.Surface).Foreground(Theme.Muted)
-		thumbSt := tcell.StyleDefault.Background(Theme.Border)
-		drawScrollbarTrack(screen, x+w-2, y, h, cp.contentRows(), h, cp.rowsBefore(offset), ' ', ' ', trackSt, thumbSt)
+		cp.scrollbar.SetRect(x+w-2, y, 1, h)
+		cp.scrollbar.Draw(screen)
 	}
 }
 
@@ -567,6 +591,36 @@ func (cp *CommandPalette) itemOffset(visH int) int {
 		cp.top++
 	}
 	return cp.top
+}
+
+// scrollToRow is the Scrollbar's scrollTo callback: it takes a target content-row
+// offset, maps it to a filtered index, and applies it. Because the palette keeps
+// the selection inside the visible window, the selection is nudged to stay within
+// the new window so itemOffset does not immediately snap the scroll back.
+func (cp *CommandPalette) scrollToRow(rowOff int) {
+	cp.top = cp.topForRow(rowOff, cp.trackH)
+	if cp.sel < cp.top {
+		cp.sel = cp.top
+	}
+	if last := cp.lastVisible(cp.top, cp.trackH); cp.sel > last {
+		cp.sel = last
+	}
+}
+
+// topForRow returns the filtered index whose top edge is nearest targetRow (in
+// content rows from the top), clamped so it never scrolls past maxTop.
+func (cp *CommandPalette) topForRow(targetRow, visH int) int {
+	best, bestDiff, row := 0, 1<<30, 0
+	for fi := range cp.filtered {
+		if d := abs(targetRow - row); d < bestDiff {
+			best, bestDiff = fi, d
+		}
+		row += cp.itemHeight(fi)
+	}
+	if mt := cp.maxTop(visH); best > mt {
+		best = mt
+	}
+	return best
 }
 
 // lastVisible returns the last filtered index that fully fits in a visH-row
@@ -833,6 +887,13 @@ func (cp *CommandPalette) modeTitle() string {
 	default:
 		return "command palette"
 	}
+}
+
+func abs(n int) int {
+	if n < 0 {
+		return -n
+	}
+	return n
 }
 
 func formatSessionTime(ms int64) string {
