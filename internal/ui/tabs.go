@@ -104,6 +104,11 @@ func NewTabBar(onSwitch func(id string), onCloseSession func(id string), onNewSe
 	return tb
 }
 
+// Restyle re-applies theme colors after a theme switch.
+func (tb *TabBar) Restyle() {
+	tb.SetBackgroundColor(Theme.Background)
+}
+
 // Sync updates the displayed tabs. Must be called on the tview event loop.
 func (tb *TabBar) Sync(tabs []TabInfo, activeID string) {
 	tb.tabs = tabs
@@ -131,7 +136,7 @@ func (tb *TabBar) computeBodyWidth(tab TabInfo) int {
 		fgTag = TC.Text
 		bgTag = TC.Surface
 	} else {
-		fgTag = "#b4b9d4"
+		fgTag = TC.StatusText
 		bgTag = TC.Background
 	}
 
@@ -298,7 +303,7 @@ func (tb *TabBar) Draw(screen tcell.Screen) {
 				bgTag = TC.Surface
 				tabBg = Theme.Surface
 			} else {
-				fgTag = "#b4b9d4"
+				fgTag = TC.StatusText
 				bgTag = TC.Background
 				tabBg = Theme.Background
 			}

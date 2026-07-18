@@ -5,8 +5,6 @@ import (
 	"github.com/rivo/tview"
 )
 
-var selectHighlightBg = tcell.NewRGBColor(40, 60, 110)
-
 // SelectView is a pick-one prompt shown when the agent calls ask_user.
 // Height varies with option count; use SelectViewHeight to compute it.
 type SelectView struct {
@@ -39,6 +37,17 @@ func NewSelectView() *SelectView {
 		}
 	})
 	return sv
+}
+
+// Restyle re-applies theme colors after a theme switch. The custom-field
+// highlight state is re-derived on the next render.
+func (sv *SelectView) Restyle() {
+	sv.Box.SetBackgroundColor(Theme.Surface)
+	sv.SetBorderColor(Theme.PendingColor)
+	sv.SetTitleColor(Theme.PendingColor)
+	sv.customField.SetFieldTextColor(Theme.Text)
+	sv.customField.SetFieldBackgroundColor(Theme.Surface)
+	sv.customField.SetBackgroundColor(Theme.Surface)
 }
 
 func (sv *SelectView) IsVisible() bool { return sv.visible }

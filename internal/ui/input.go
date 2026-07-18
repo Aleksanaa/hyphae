@@ -52,6 +52,18 @@ func NewInputView(onSend func(string)) *InputView {
 	return iv
 }
 
+// Restyle re-applies theme colors after a theme switch.
+func (iv *InputView) Restyle() {
+	iv.SetBackgroundColor(Theme.Surface)
+	iv.SetTextStyle(tcell.StyleDefault.
+		Foreground(Theme.Text).
+		Background(Theme.Surface))
+	iv.SetPlaceholderStyle(tcell.StyleDefault.
+		Foreground(Theme.Muted).
+		Background(Theme.Surface))
+	iv.SetFocused(iv.HasFocus()) // sets border/title for the current focus state
+}
+
 // SetFocused updates border color to reflect focus.
 func (iv *InputView) SetFocused(focused bool) {
 	if focused {

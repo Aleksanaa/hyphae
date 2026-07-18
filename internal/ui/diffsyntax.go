@@ -10,21 +10,26 @@ import (
 	"github.com/alecthomas/chroma/v2/lexers"
 	chromastyles "github.com/alecthomas/chroma/v2/styles"
 	"github.com/gdamore/tcell/v2"
+	"github.com/lrstanley/bubbletint/chromatint/v2"
 )
 
 var (
 	diffLexerCache  sync.Map
 	diffChromaStyle *chroma.Style
-	diffChromaOnce  sync.Once
 )
 
-func initDiffHighlight() {
-	diffChromaOnce.Do(func() {
-		diffChromaStyle = chromastyles.Get("dracula")
-		if diffChromaStyle == nil {
-			diffChromaStyle = chromastyles.Get("monokai")
-		}
-	})
+// rebuildChromaStyle derives the chroma style from the active bubbletint tint so
+// syntax highlighting matches the rest of the UI palette. Called by applyTint
+// (theme.go) whenever the theme changes.
+func rebuildChromaStyle() {
+	if s, err := chroma.NewStyle("hyphae-tint", chromatint.StyleEntry(ActiveTint, false)); err == nil {
+		diffChromaStyle = s
+		return
+	}
+	diffChromaStyle = chromastyles.Get("dracula")
+	if diffChromaStyle == nil {
+		diffChromaStyle = chromastyles.Get("monokai")
+	}
 }
 
 func getDiffLexer(filename string) chroma.Lexer {
@@ -61,7 +66,6 @@ func getMarkdownLexer(lang string) chroma.Lexer {
 // tokenizeForMarkdown returns (rune, style) pairs for content using chroma highlighting.
 // No background is set; tokens with no chroma color fall back to Theme.CodeColor.
 func tokenizeForMarkdown(content, lang string) []diffStyledRune {
-	initDiffHighlight()
 	plain := func() []diffStyledRune {
 		rs := []rune(content)
 		out := make([]diffStyledRune, len(rs))
@@ -99,7 +103,6 @@ type diffStyledRune struct {
 // tokenizeForTcell returns (rune, style) pairs for content using chroma highlighting.
 // bg is applied as the background for every rune.
 func tokenizeForTcell(content, filename string, bg tcell.Color) []diffStyledRune {
-	initDiffHighlight()
 	plain := func() []diffStyledRune {
 		rs := []rune(content)
 		out := make([]diffStyledRune, len(rs))

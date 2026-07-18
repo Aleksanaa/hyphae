@@ -12,16 +12,6 @@ import (
 
 const barWidth = 10
 
-// barEmptyBg is the background color for unfilled bar cells.
-var barEmptyBg = tcell.NewRGBColor(40, 44, 60)
-
-// bar fill colors — darker than the theme equivalents to avoid visual glare on solid blocks.
-var (
-	barFillBlue  = tcell.NewRGBColor(40, 70, 160)
-	barFillAmber = tcell.NewRGBColor(120, 90, 20)
-	barFillRed   = tcell.NewRGBColor(130, 38, 38)
-)
-
 // subBlockRunes maps eighths (1–7) to the corresponding Unicode block element.
 var subBlockRunes = []rune{'▏', '▎', '▍', '▌', '▋', '▊', '▉'}
 
@@ -82,6 +72,11 @@ func NewStatusBar() *StatusBar {
 	sb.SetBorder(false)
 	sb.render()
 	return sb
+}
+
+// Restyle re-applies theme colors after a theme switch.
+func (sb *StatusBar) Restyle() {
+	sb.SetBackgroundColor(Theme.StatusBg)
 }
 
 func (sb *StatusBar) SetDefault(model string, status session.Status) {

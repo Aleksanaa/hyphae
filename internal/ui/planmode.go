@@ -32,6 +32,13 @@ func NewPlanModeView(onExit func()) *PlanModeView {
 	return pv
 }
 
+// Restyle re-applies theme colors after a theme switch.
+func (pv *PlanModeView) Restyle() {
+	pv.SetBackgroundColor(Theme.Surface)
+	pv.SetBorderColor(Theme.SuccessColor)
+	pv.SetTitleColor(Theme.SuccessColor)
+}
+
 func (pv *PlanModeView) IsVisible() bool { return pv.visible }
 
 func (pv *PlanModeView) Show() { pv.visible = true }

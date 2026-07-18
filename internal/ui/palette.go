@@ -18,6 +18,7 @@ const (
 	paletteModeSelectModel                      // list of models to pick
 	paletteModeResumeSession                    // list of past sessions to resume
 	paletteModeHotkeys                          // list of keyboard shortcuts
+	paletteModeSelectTheme                      // list of color themes to pick
 )
 
 // PaletteItem is one selectable entry in the palette list. An entry occupies one
@@ -68,6 +69,7 @@ type CommandPalette struct {
 	onAddEndpoint   func(name, baseURL, apiKey string)
 	onDelEndpoint   func(name string)
 	onSelectModel   func(model string)
+	onSelectTheme   func(id string)
 	onResumeSession func(id string)
 	getEndpoints    func() []paletteEndpointInfo
 	getSessions     func() []paletteSessionInfo
@@ -85,10 +87,7 @@ func NewCommandPalette() *CommandPalette {
 	mkField := func(label string) *tview.InputField {
 		f := tview.NewInputField()
 		f.SetLabel(label)
-		f.SetLabelStyle(tcell.StyleDefault.Foreground(Theme.Muted).Background(Theme.Surface))
-		f.SetFieldTextColor(Theme.Text)
-		f.SetFieldBackgroundColor(Theme.Surface)
-		f.SetBackgroundColor(Theme.Surface)
+		stylePaletteField(f)
 		return f
 	}
 
@@ -100,6 +99,25 @@ func NewCommandPalette() *CommandPalette {
 	cp.keyField = mkField("api key  ❯ ")
 
 	return cp
+}
+
+// stylePaletteField applies theme colors to a palette input field.
+func stylePaletteField(f *tview.InputField) {
+	f.SetLabelStyle(tcell.StyleDefault.Foreground(Theme.Muted).Background(Theme.Surface))
+	f.SetFieldTextColor(Theme.Text)
+	f.SetFieldBackgroundColor(Theme.Surface)
+	f.SetBackgroundColor(Theme.Surface)
+}
+
+// Restyle re-applies theme colors after a theme switch.
+func (cp *CommandPalette) Restyle() {
+	cp.SetBackgroundColor(Theme.Surface)
+	cp.SetBorderColor(Theme.BorderFocus)
+	cp.SetTitleColor(Theme.Accent)
+	stylePaletteField(cp.queryField)
+	stylePaletteField(cp.nameField)
+	stylePaletteField(cp.urlField)
+	stylePaletteField(cp.keyField)
 }
 
 // ── Focus delegation ─────────────────────────────────────────────────────────
@@ -159,6 +177,7 @@ func (cp *CommandPalette) SetCallbacks(
 	onAddEndpoint func(name, baseURL, apiKey string),
 	onDelEndpoint func(name string),
 	onSelectModel func(model string),
+	onSelectTheme func(id string),
 	onResumeSession func(id string),
 	getEndpoints func() []paletteEndpointInfo,
 	getSessions func() []paletteSessionInfo,
@@ -168,6 +187,7 @@ func (cp *CommandPalette) SetCallbacks(
 	cp.onAddEndpoint = onAddEndpoint
 	cp.onDelEndpoint = onDelEndpoint
 	cp.onSelectModel = onSelectModel
+	cp.onSelectTheme = onSelectTheme
 	cp.onResumeSession = onResumeSession
 	cp.getEndpoints = getEndpoints
 	cp.getSessions = getSessions
@@ -379,8 +399,8 @@ func (cp *CommandPalette) Draw(screen tcell.Screen) {
 	}
 	mutedSt := tcell.StyleDefault.Foreground(Theme.Muted).Background(bg)
 	textSt := tcell.StyleDefault.Foreground(Theme.Text).Background(bg)
-	selSt := tcell.StyleDefault.Background(tcell.NewRGBColor(40, 44, 70)).Foreground(Theme.Text)
-	selMutedSt := tcell.StyleDefault.Background(tcell.NewRGBColor(40, 44, 70)).Foreground(Theme.Muted)
+	selSt := tcell.StyleDefault.Background(paletteSelBg).Foreground(Theme.Text)
+	selMutedSt := tcell.StyleDefault.Background(paletteSelBg).Foreground(Theme.Muted)
 
 	// Query row (y+1).
 	if cp.mode == paletteModeAddEndpoint {
@@ -620,6 +640,19 @@ func (cp *CommandPalette) switchMode(m paletteMode) {
 
 	case paletteModeHotkeys:
 		cp.items = cp.getHotkeyItems()
+
+	case paletteModeSelectTheme:
+		choices := ThemeChoices()
+		current := CurrentThemeID()
+		cp.items = make([]PaletteItem, len(choices))
+		for i, c := range choices {
+			sub := c.ID
+			if c.ID == current {
+				sub = "current · " + c.ID
+				cp.sel = i // start highlighted on the active theme
+			}
+			cp.items[i] = PaletteItem{Label: c.Name, Sub: sub, Detail: c.Blocks, Value: c.ID}
+		}
 	}
 	cp.refilter()
 }
@@ -679,6 +712,16 @@ func (cp *CommandPalette) confirm() {
 			cp.onResumeSession(item.Value)
 		}
 		cp.Close()
+
+	case paletteModeSelectTheme:
+		if len(cp.filtered) == 0 {
+			return
+		}
+		item := cp.items[cp.filtered[cp.sel]]
+		if cp.onSelectTheme != nil {
+			cp.onSelectTheme(item.Value)
+		}
+		cp.Close()
 	}
 }
 
@@ -704,13 +747,10 @@ func topLevelItems() []PaletteItem {
 		{Label: "Add endpoint", Sub: "register a new API endpoint"},
 		{Label: "Delete endpoint", Sub: "remove a saved endpoint"},
 		{Label: "Select model", Sub: "choose model from an endpoint"},
+		{Label: "Switch theme", Sub: "change the color scheme"},
 		{Label: "Hotkeys", Sub: "view and trigger keyboard shortcuts"},
 	}
 }
-
-// dimSlate is the colour that backdrop cells are blended toward when the palette
-// is open, giving the whole background a uniform greyed-out look.
-var dimSlate = tcell.NewRGBColor(28, 30, 40)
 
 // dimStyle greys a cell's style for the palette backdrop: backgrounds collapse
 // most of the way to dimSlate for a flat wash, foregrounds only halfway so text
@@ -747,6 +787,8 @@ func (cp *CommandPalette) modeTitle() string {
 		return "resume session"
 	case paletteModeHotkeys:
 		return "hotkeys"
+	case paletteModeSelectTheme:
+		return "switch theme"
 	default:
 		return "command palette"
 	}

@@ -29,6 +29,17 @@ type TabContent struct {
 	Root       *tview.Flex // the full content flex for this tab
 }
 
+// Restyle re-applies theme colors to every child view after a theme switch.
+func (tc *TabContent) Restyle() {
+	tc.Chat.Restyle()
+	tc.Input.Restyle()
+	tc.Status.Restyle()
+	tc.Approval.Restyle()
+	tc.DiffView.Restyle()
+	tc.SelectView.Restyle()
+	tc.PlanMode.Restyle()
+}
+
 // SetInputHeightForScreen steps the input box height down on shorter terminals
 // so the conversation keeps usable vertical space.
 func (tc *TabContent) SetInputHeightForScreen(screenH int) {

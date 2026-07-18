@@ -19,6 +19,7 @@ type Config struct {
 	Endpoints          []Endpoint `toml:"endpoint"`
 	ActiveEndpointName string     `toml:"active_endpoint"`
 	Model              string     `toml:"model"`
+	Theme              string     `toml:"theme"` // bubbletint tint ID; empty = built-in default
 }
 
 // ActiveEndpoint returns the endpoint matching ActiveEndpointName, falling back to the first.

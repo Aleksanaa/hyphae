@@ -162,6 +162,12 @@ func (a *App) seedContextWindow(tc *TabContent, stored int64) bool {
 
 // New wires up and returns a ready-to-run App.
 func New(cfg *config.Config) *App {
+	// Apply the saved theme before any widget is constructed, since tview
+	// snapshots colors at construction time.
+	if cfg.Theme != "" {
+		SetThemeByID(cfg.Theme)
+	}
+
 	ctrl, shutdown := controller.NewFromConfig(cfg)
 
 	a := &App{
@@ -694,6 +700,19 @@ func (a *App) setupPalette() {
 				tc.Status.SetDefault(modelID, session.StatusIdle)
 			}
 		},
+		// onSelectTheme
+		func(id string) {
+			if !SetThemeByID(id) {
+				return
+			}
+			a.cfg.Theme = id
+			if err := a.cfg.Save(); err != nil {
+				if tc := a.activeContent(); tc != nil {
+					tc.Status.SetError("theme save failed: " + err.Error())
+				}
+			}
+			a.restyle()
+		},
 		// onResumeSession
 		func(id string) {
 			a.layout.HidePalette()
@@ -774,6 +793,23 @@ func (a *App) setupPalette() {
 	)
 }
 
+// restyle re-applies theme colors to every constructed widget after a theme
+// switch, then re-renders the active chat. tview snapshots colors at
+// construction time, so native chrome (box backgrounds, borders, input fields)
+// must have its setters re-run; content drawn dynamically picks up the new
+// palette on the next frame. Inactive tabs re-render their chat on switch.
+// Must only be called from the tview event loop.
+func (a *App) restyle() {
+	a.layout.Tabs.Restyle()
+	a.layout.Palette.Restyle()
+	for _, t := range a.tabs {
+		if tc := a.sessionContent(t.id); tc != nil {
+			tc.Restyle()
+		}
+	}
+	a.redrawActive()
+}
+
 func (a *App) openPalette() {
 	p := a.layout.Palette
 	p.menuItems = topLevelItems()
@@ -783,8 +819,9 @@ func (a *App) openPalette() {
 	p.menuItems[3].Action = func() { p.Close(); a.togglePlanMode() }
 	p.menuItems[4].Action = func() { p.switchMode(paletteModeAddEndpoint) }
 	p.menuItems[5].Action = func() { p.switchMode(paletteModeDelEndpoint) }
-	p.menuItems[7].Action = func() { p.switchMode(paletteModeHotkeys) }
 	p.menuItems[6].Action = a.enterSelectModel
+	p.menuItems[7].Action = func() { p.switchMode(paletteModeSelectTheme) }
+	p.menuItems[8].Action = func() { p.switchMode(paletteModeHotkeys) }
 	p.Open()
 	a.layout.ShowPalette()
 	a.tapp.SetFocus(p)

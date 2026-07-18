@@ -33,6 +33,10 @@ github.com/hashicorp/golang-lru/v2 v2.0.7 h1:a+bsQ5rvGLjzHuww6tVxozPZFVghXaHOwFs
 github.com/hashicorp/golang-lru/v2 v2.0.7/go.mod h1:QeFd9opnmA6QUJc5vARoKUSoFhyfM2/ZepoAG6RGpeM=
 github.com/hexops/gotextdiff v1.0.3 h1:gitA9+qJrrTCsiCl7+kh75nPqQt1cx4ZkudSTLoUqJM=
 github.com/hexops/gotextdiff v1.0.3/go.mod h1:pSWU5MAI3yDq+fZBTazCSJysOMbxWL1BSow5/V2vxeg=
+github.com/lrstanley/bubbletint/chromatint/v2 v2.0.2 h1:R6hYBDqxZ+0IVlF+w36kXCPrz93NpVIYQwzGAbtnQxo=
+github.com/lrstanley/bubbletint/chromatint/v2 v2.0.2/go.mod h1:F0feC1UlfMEeb5RixQjPt3kfPOv/UhoWmWnyTutxwWY=
+github.com/lrstanley/bubbletint/v2 v2.0.2 h1:JvLHMf7qI/UE47AyNsD9jVI7h2VQvq+4AYcHNe8DwSQ=
+github.com/lrstanley/bubbletint/v2 v2.0.2/go.mod h1:HaBq3Yc6pcCrQDuW8huE+Bs1adVFUmg/O1B9Zu/kab4=
 github.com/lucasb-eyer/go-colorful v1.2.0 h1:1nnpGOrhyZZuNyfu1QjKiUICQ74+3FNCN69Aj6K7nkY=
 github.com/lucasb-eyer/go-colorful v1.2.0/go.mod h1:R4dSotOR9KMtayYi1e77YzuveK+i7ruzyGqttikkLy0=
 github.com/mattn/go-isatty v0.0.20 h1:xfD0iDuEKnDkl03q4limB+vH+GxLEtL/jb4xVJSWWEY=

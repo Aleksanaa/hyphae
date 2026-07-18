@@ -25,15 +25,6 @@ type screenLine struct {
 	isContinuation bool
 }
 
-var (
-	diffAddedBg   = tcell.NewRGBColor(15, 50, 15)
-	diffRemovedBg = tcell.NewRGBColor(55, 15, 15)
-	diffHunkBg    = tcell.NewRGBColor(22, 28, 50)
-	diffAddedFg   = tcell.NewRGBColor(80, 180, 80)
-	diffRemovedFg = tcell.NewRGBColor(210, 90, 90)
-	diffHunkFg    = tcell.NewRGBColor(120, 145, 210)
-)
-
 // DiffFileChange is a single file being changed during a diff approval.
 type DiffFileChange struct {
 	Path  string
@@ -100,6 +91,17 @@ func (dv *DiffView) Focus(delegate func(p tview.Primitive)) {
 	} else {
 		dv.denyField.Blur()
 	}
+}
+
+// Restyle re-applies theme colors after a theme switch. Deny-field state colors
+// are re-derived on the next render from the current mode.
+func (dv *DiffView) Restyle() {
+	dv.Box.SetBackgroundColor(Theme.Surface)
+	dv.SetBorderColor(Theme.PendingColor)
+	dv.SetTitleColor(Theme.PendingColor)
+	dv.denyField.SetFieldTextColor(Theme.Text)
+	dv.denyField.SetFieldBackgroundColor(Theme.Surface)
+	dv.denyField.SetBackgroundColor(Theme.Surface)
 }
 
 // ── public API ───────────────────────────────────────────────────────────────

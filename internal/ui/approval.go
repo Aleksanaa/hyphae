@@ -11,12 +11,6 @@ import (
 // ApprovalHeight is the fixed row count of the approval bar when visible.
 const ApprovalHeight = 5
 
-var (
-	approvalDarkGreen = tcell.NewRGBColor(30, 90, 50)
-	approvalDarkRed   = tcell.NewRGBColor(100, 35, 35)
-	approvalWhite     = tcell.NewRGBColor(240, 240, 240)
-)
-
 // ApprovalView is a confirmation bar for tool calls that don't produce a diff.
 // It sits between the chat and input in the layout. When hidden its height is 0.
 type ApprovalView struct {
@@ -58,6 +52,17 @@ func NewApprovalView() *ApprovalView {
 	})
 
 	return av
+}
+
+// Restyle re-applies theme colors after a theme switch. Deny-field state colors
+// are re-derived on the next render from the current mode.
+func (av *ApprovalView) Restyle() {
+	av.Box.SetBackgroundColor(Theme.Surface)
+	av.SetBorderColor(Theme.PendingColor)
+	av.SetTitleColor(Theme.PendingColor)
+	av.denyField.SetFieldTextColor(Theme.Text)
+	av.denyField.SetFieldBackgroundColor(Theme.Surface)
+	av.denyField.SetBackgroundColor(Theme.Surface)
 }
 
 // ── Focus delegation ─────────────────────────────────────────────────────────

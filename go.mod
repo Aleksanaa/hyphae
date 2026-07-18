@@ -9,6 +9,8 @@ require (
 	github.com/aymanbagabas/go-udiff v0.4.1
 	github.com/boyter/gocodewalker v1.5.2-0.20260227212453-19676720409f
 	github.com/gdamore/tcell/v2 v2.8.1
+	github.com/lrstanley/bubbletint/chromatint/v2 v2.0.2
+	github.com/lrstanley/bubbletint/v2 v2.0.2
 	github.com/openai/openai-go/v3 v3.41.0
 	github.com/rivo/tview v0.42.0
 	github.com/rivo/uniseg v0.4.7

@@ -133,6 +133,11 @@ type ChatView struct {
 	softWrapLine map[int]bool
 }
 
+// Restyle re-applies theme colors after a theme switch.
+func (cv *ChatView) Restyle() {
+	cv.SetBackgroundColor(Theme.Background)
+}
+
 // NewChatView creates the scrollable message display.
 func NewChatView() *ChatView {
 	tv := tview.NewTextView()
@@ -283,8 +288,8 @@ func (cv *ChatView) drawPartialSel(screen tcell.Screen) {
 	scrollY, _ := cv.GetScrollOffset()
 
 	selStyle := tcell.StyleDefault.
-		Foreground(tcell.NewRGBColor(220, 220, 230)).
-		Background(tcell.NewRGBColor(50, 80, 150))
+		Foreground(Theme.Text).
+		Background(chatSelBg)
 
 	cv.iterPartialSel(func(docLine, colLo, colHi int, mask []bool) {
 		sy := iy + (docLine - scrollY)
@@ -320,8 +325,8 @@ func (cv *ChatView) drawWholeSel(screen tcell.Screen) {
 	scrollY, _ := cv.GetScrollOffset()
 
 	selStyle := tcell.StyleDefault.
-		Foreground(tcell.NewRGBColor(220, 220, 230)).
-		Background(tcell.NewRGBColor(50, 80, 150))
+		Foreground(Theme.Text).
+		Background(chatSelBg)
 
 	for msgIdx := lo; msgIdx <= hi; msgIdx++ {
 		if msgIdx >= len(cv.entries) {
