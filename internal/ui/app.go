@@ -2,8 +2,10 @@ package ui
 
 import (
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/atotto/clipboard"
 	"github.com/gdamore/tcell/v2"
@@ -423,6 +425,14 @@ func (a *App) handleControllerEvent(ev controller.Event) {
 func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 	tc := a.activeContent()
 
+	// Ctrl+Z suspends to the background like an ordinary shell program. In raw
+	// mode tcell delivers it as a key event instead of raising SIGTSTP, so we
+	// raise it ourselves after restoring the terminal.
+	if event.Key() == tcell.KeyCtrlZ {
+		a.suspend()
+		return nil
+	}
+
 	if tc != nil && tc.SelectView.IsVisible() {
 		switch event.Key() {
 		case tcell.KeyEscape:
@@ -586,6 +596,37 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 		return nil
 	}
 	return event
+}
+
+// suspend backgrounds the process via job control: tview restores the terminal
+// out of raw mode, then we raise SIGTSTP so the shell stops us. Running `fg`
+// delivers SIGCONT, the Kill call returns, and tview redraws the restored TUI.
+func (a *App) suspend() {
+	a.tapp.Suspend(func() {
+		fmt.Fprint(os.Stdout, "\n"+drawTextBox([]string{
+			"Hyphae has been suspended.",
+			"Run `fg` or press Ctrl+Z again to resume",
+		})+"\n")
+		_ = syscall.Kill(syscall.Getpid(), syscall.SIGTSTP) //nolint:errcheck
+	})
+}
+
+// drawTextBox wraps the given lines in a single-line border sized to the widest
+// line, one space of padding on each side. Returned with a trailing newline.
+func drawTextBox(lines []string) string {
+	w := 0
+	for _, l := range lines {
+		if n := len([]rune(l)); n > w {
+			w = n
+		}
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "┌%s┐\n", strings.Repeat("─", w+2))
+	for _, l := range lines {
+		fmt.Fprintf(&b, "│ %s%s │\n", l, strings.Repeat(" ", w-len([]rune(l))))
+	}
+	fmt.Fprintf(&b, "└%s┘\n", strings.Repeat("─", w+2))
+	return b.String()
 }
 
 // togglePlanMode flips plan mode for the active session and updates the indicator.
@@ -797,6 +838,11 @@ func (a *App) setupPalette() {
 					Label:  "Alt+←/→",
 					Sub:    "cycle tabs",
 					Action: func() { p.Close() },
+				},
+				{
+					Label:  "Ctrl+Z",
+					Sub:    "suspend to background (fg to resume)",
+					Action: func() { p.Close(); a.suspend() },
 				},
 				{
 					Label:  "Ctrl+D",
