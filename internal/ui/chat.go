@@ -135,9 +135,15 @@ type ChatView struct {
 	softWrapLine map[int]bool
 }
 
-// Restyle re-applies theme colors after a theme switch.
+// Restyle re-applies theme colors after a theme switch. The text style carries
+// the default foreground (what "[-]" resets to) and the empty-cell background,
+// both snapshotted from the global Styles at construction, so they must be
+// re-applied here or plain body text keeps the previous theme's colors.
 func (cv *ChatView) Restyle() {
 	cv.SetBackgroundColor(Theme.Background)
+	cv.SetTextStyle(tcell.StyleDefault.
+		Foreground(Theme.Text).
+		Background(Theme.Background))
 }
 
 // NewChatView creates the scrollable message display.

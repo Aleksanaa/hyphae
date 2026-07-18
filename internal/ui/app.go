@@ -223,6 +223,11 @@ func New(cfg *config.Config) *App {
 		if tc := a.activeContent(); tc != nil {
 			tc.SetInputHeightForScreen(h)
 		}
+		// Colour the hardware cursor from the active tint. tview drives the cursor
+		// via screen.ShowCursor but never sets its colour; re-applying every frame
+		// keeps it in sync across theme switches. CursorStyleDefault leaves the
+		// terminal's cursor shape untouched. tcell restores the colour on exit.
+		screen.SetCursorStyle(tcell.CursorStyleDefault, Theme.Cursor)
 		return false
 	})
 	a.tapp.SetRoot(newMinSizeGate(layout.Root), true).SetFocus(a.sessionContent(id).Input.TextArea)

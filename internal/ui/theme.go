@@ -42,6 +42,10 @@ var Theme = struct {
 	Muted  tcell.Color
 	Accent tcell.Color
 
+	// Cursor is the terminal (hardware) cursor color, applied via
+	// screen.SetCursorStyle. Falls back to Text for tints that omit it.
+	Cursor tcell.Color
+
 	// Message roles
 	UserColor    tcell.Color
 	ApexColor    tcell.Color
@@ -134,6 +138,13 @@ func applyTint(t *tint.Tint) {
 	Theme.Surface = mix(t.Bg, t.BrightBlack, 0.18)
 	Theme.Text = toTcell(t.Fg)
 	Theme.Muted = mix(t.BrightBlack, t.Fg, 0.45)
+
+	// The cursor color is optional in the tint schema; fall back to the fg.
+	if t.Cursor != nil {
+		Theme.Cursor = toTcell(t.Cursor)
+	} else {
+		Theme.Cursor = Theme.Text
+	}
 
 	// Role hues: user=cyan, apex=purple (the tint's iconic "blue"), accents=pink.
 	Theme.Accent = toTcell(t.BrightPurple)

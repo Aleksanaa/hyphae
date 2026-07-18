@@ -29,6 +29,9 @@ func NewInputView(onSend func(string)) *InputView {
 	ta.SetPlaceholderStyle(tcell.StyleDefault.
 		Foreground(Theme.Muted).
 		Background(Theme.Surface))
+	ta.SetSelectedStyle(tcell.StyleDefault.
+		Foreground(Theme.Surface).
+		Background(Theme.Text))
 
 	iv := &InputView{TextArea: ta, onSend: onSend}
 
@@ -61,6 +64,9 @@ func (iv *InputView) Restyle() {
 	iv.SetPlaceholderStyle(tcell.StyleDefault.
 		Foreground(Theme.Muted).
 		Background(Theme.Surface))
+	iv.SetSelectedStyle(tcell.StyleDefault.
+		Foreground(Theme.Surface).
+		Background(Theme.Text))
 	iv.SetFocused(iv.HasFocus()) // sets border/title for the current focus state
 }
 
