@@ -18,6 +18,7 @@ var mdGold = goldmark.New(
 	goldmark.WithExtensions(
 		extension.Table,
 		extension.Strikethrough,
+		extension.TaskList,
 	),
 )
 
@@ -73,7 +74,11 @@ type listBlock struct {
 	start   int
 	items   []listItemBlock
 }
-type listItemBlock struct{ blocks []mdBlock }
+type listItemBlock struct {
+	blocks  []mdBlock
+	isTask  bool // GFM task-list item ("- [ ]" / "- [x]")
+	checked bool
+}
 type tableBlock struct {
 	alignments []extast.Alignment
 	header     [][]mdSpan
@@ -315,13 +320,18 @@ func (b *listBlock) renderLines(maxW int) []renderedLine {
 	var out []renderedLine
 	for _, item := range b.items {
 		var bullet string
-		if b.ordered {
+		switch {
+		case item.isTask && item.checked:
+			bullet = fmt.Sprintf("[%s]☑[-:-:-] ", TC.SuccessColor)
+		case item.isTask:
+			bullet = fmt.Sprintf("[%s]☐[-:-:-] ", TC.Muted)
+		case b.ordered:
 			bullet = fmt.Sprintf("%d. ", num)
 			num++
-		} else {
+		default:
 			bullet = "• "
 		}
-		bulletW := len([]rune(bullet))
+		bulletW := tview.TaggedStringWidth(bullet)
 		innerW := maxW - bulletW
 		if innerW < 10 {
 			innerW = 10
@@ -448,9 +458,24 @@ func parseList(list *ast.List, source []byte) *listBlock {
 				itemBlocks = append(itemBlocks, b)
 			}
 		}
-		b.items = append(b.items, listItemBlock{blocks: itemBlocks})
+		isTask, checked := listItemTask(item)
+		b.items = append(b.items, listItemBlock{blocks: itemBlocks, isTask: isTask, checked: checked})
 	}
 	return b
+}
+
+// listItemTask reports whether a list item is a GFM task-list item and its
+// checked state. The TaskList extension inserts a *extast.TaskCheckBox as the
+// first inline child of the item's first (text) block.
+func listItemTask(item ast.Node) (isTask, checked bool) {
+	first := item.FirstChild()
+	if first == nil {
+		return false, false
+	}
+	if cb, ok := first.FirstChild().(*extast.TaskCheckBox); ok {
+		return true, cb.IsChecked
+	}
+	return false, false
 }
 
 func parseTable(tbl *extast.Table, source []byte) *tableBlock {
