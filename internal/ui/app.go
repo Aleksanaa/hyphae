@@ -579,7 +579,7 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 		}
 		return nil
 
-	case event.Key() == tcell.KeyTab:
+	case event.Key() == tcell.KeyTab || event.Key() == tcell.KeyEscape:
 		if tc == nil {
 			return nil
 		}
@@ -590,12 +590,6 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 			// SetMouseCapture, which clears the chat's hover/selection highlight.
 			// Tab never triggers that path, so clear it here too.
 			tc.Chat.ClearHover()
-			a.tapp.SetFocus(tc.Input.TextArea)
-		}
-		return nil
-
-	case event.Key() == tcell.KeyEscape:
-		if tc != nil {
 			a.tapp.SetFocus(tc.Input.TextArea)
 		}
 		return nil
