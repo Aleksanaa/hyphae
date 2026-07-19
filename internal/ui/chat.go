@@ -219,6 +219,15 @@ func (cv *ChatView) boxDocRange(i int) (startDoc, endDoc int) {
 // selection. fn receives content-relative column indices (colLo, colHi) and
 // the copyColMask for that line (nil = fully copyable). Box border lines are
 // skipped; anchor/cursor are normalised internally.
+//
+// Selection is cell-aware inside tables:
+//   - within a single cell (even wrapped/multi-line) it is ordinary linear text
+//     confined to that cell's columns, so it never spills into neighbours;
+//   - across cells (a different row and/or column) it selects whole cells — a
+//     spreadsheet block — so no cell is ever partially clipped.
+//
+// Outside tables it is plain linear text: anchor column → end of line, full middle
+// lines, start of line → cursor column.
 func (cv *ChatView) iterPartialSel(fn func(docLine, colLo, colHi int, mask []bool)) {
 	if cv.anchorBox < 0 || cv.anchorBox >= len(cv.entries) {
 		return
@@ -226,31 +235,108 @@ func (cv *ChatView) iterPartialSel(fn func(docLine, colLo, colHi int, mask []boo
 	ix, _, _, _ := cv.GetInnerRect()
 	ae := cv.entries[cv.anchorBox]
 	contentLeft := ix + ae.boxLeft + 2
-	// Clamp the right edge to the box's right column uniformly; each line's mask
-	// (len < box width for short lines, borders/padding false) decides which
-	// columns are actually copyable, so no per-kind border bookkeeping is needed.
-	maxRight := ix + ae.boxRight
+	// Content-relative right edge; each line's mask (len < box width for short
+	// lines, borders/padding false) decides which columns are actually copyable.
+	maxRight := ae.boxRight - ae.boxLeft - 2
 
 	anchor, cur := cv.selAnchor, cv.selCursor
 	if anchor.docLine > cur.docLine ||
 		(anchor.docLine == cur.docLine && anchor.screenX > cur.screenX) {
 		anchor, cur = cur, anchor
 	}
+	aRel := anchor.screenX - contentLeft
+	cRel := cur.screenX - contentLeft
+
+	// clampLo/clampHi bound every line horizontally (defaults: the whole content
+	// width). block=true applies them to every line (whole-cell rectangle); else
+	// the drag is linear within [clampLo, clampHi] (anchor→end, full, start→cursor).
+	clampLo, clampHi, block := 0, maxRight, false
+	if cv.tabularLine(ae, anchor.docLine) && cv.tabularLine(ae, cur.docLine) {
+		if seps := cv.tableColumns(ae, anchor.docLine, cur.docLine); len(seps) >= 2 {
+			aCol, cCol := colOfRel(seps, aRel), colOfRel(seps, cRel)
+			if aCol == cCol && !cv.crossesRow(ae, anchor.docLine, cur.docLine) {
+				// Same cell: linear, but confined to that cell's column span.
+				clampLo, clampHi = seps[aCol]+1, seps[aCol+1]
+			} else {
+				// Across cells: whole cells from the leftmost to rightmost touched,
+				// applied to every row in the drag.
+				lo, hi := min(aCol, cCol), max(aCol, cCol)
+				clampLo, clampHi, block = seps[lo]+1, seps[hi+1], true
+			}
+		}
+	}
 
 	for docLine := anchor.docLine; docLine <= cur.docLine; docLine++ {
 		if _, ok := ae.contentLineAt(docLine); !ok {
 			continue // top border / header / bottom border
 		}
-		x0 := contentLeft
-		x1 := maxRight
-		if docLine == anchor.docLine && anchor.screenX > x0 {
-			x0 = anchor.screenX
+		lo, hi := clampLo, clampHi
+		if !block {
+			if docLine == anchor.docLine && aRel > lo {
+				lo = aRel
+			}
+			if docLine == cur.docLine && cRel < hi {
+				hi = cRel
+			}
 		}
-		if docLine == cur.docLine && cur.screenX < x1 {
-			x1 = cur.screenX
-		}
-		fn(docLine, x0-contentLeft, x1-contentLeft, cv.copyColMask[docLine])
+		fn(docLine, lo, hi, cv.copyColMask[docLine])
 	}
+}
+
+// tabularLine reports whether docLine is a table content line of entry e.
+func (cv *ChatView) tabularLine(e renderedEntry, docLine int) bool {
+	j, ok := e.contentLineAt(docLine)
+	return ok && e.contentLines[j].tabular
+}
+
+// crossesRow reports whether the doc-line range [lo, hi] spans a table-row break
+// within entry e. Lines within one row are soft-wrap-connected; a row ends on a
+// line whose softWrap is false, so a false line strictly before hi means the drag
+// left the starting row. (lo <= hi expected; single-line drags never cross.)
+func (cv *ChatView) crossesRow(e renderedEntry, lo, hi int) bool {
+	for d := lo; d < hi; d++ {
+		if j, ok := e.contentLineAt(d); ok && !e.contentLines[j].softWrap {
+			return true
+		}
+	}
+	return false
+}
+
+// tableColumns returns the content-relative columns of the │ separators (the two
+// outer borders plus every interior one) of the first table row line found in
+// [lo, hi] of entry e. Column positions are identical across a table's rows, so
+// any row serves as the template; nil if none is found. len(seps)-1 == column count.
+func (cv *ChatView) tableColumns(e renderedEntry, lo, hi int) []int {
+	for d := lo; d <= hi; d++ {
+		j, ok := e.contentLineAt(d)
+		if !ok || !e.contentLines[j].tabular {
+			continue
+		}
+		var seps []int
+		col := 0
+		for _, r := range stripTags(e.contentLines[j].text) {
+			if r == '│' {
+				seps = append(seps, col)
+			}
+			col += tview.TaggedStringWidth(string(r))
+		}
+		if len(seps) >= 2 {
+			return seps
+		}
+	}
+	return nil
+}
+
+// colOfRel maps a content-relative column to a table column index given the │
+// separator positions seps (len >= 2). Positions before/after the table clamp to
+// the first/last column.
+func colOfRel(seps []int, rel int) int {
+	for i := 0; i+1 < len(seps); i++ {
+		if rel < seps[i+1] {
+			return i
+		}
+	}
+	return len(seps) - 2
 }
 
 // drawPartialSel highlights copyable columns within the anchor box's content
@@ -782,6 +868,8 @@ func (cv *ChatView) selectedTextPartial() string {
 		line := stripTags(e.contentLines[lineWithinBox].text)
 		var sb strings.Builder
 		col := 0
+		emitted := false
+		pendingSeps := 0 // │ separators skipped since the last emitted rune
 		for _, r := range line {
 			rW := tview.TaggedStringWidth(string(r))
 			if col >= colHi {
@@ -789,7 +877,16 @@ func (cv *ChatView) selectedTextPartial() string {
 			}
 			if col >= colLo {
 				if mask == nil || (col < len(mask) && mask[col]) {
+					// Crossing into a new cell: one space per separator crossed, so
+					// table columns read as space-separated (empty cells preserved).
+					if emitted && pendingSeps > 0 {
+						sb.WriteString(strings.Repeat(" ", pendingSeps))
+					}
 					sb.WriteRune(r)
+					emitted = true
+					pendingSeps = 0
+				} else if emitted && r == '│' {
+					pendingSeps++
 				}
 			}
 			col += rW

@@ -34,6 +34,10 @@ type renderedLine struct {
 	text     string
 	copyMask []bool
 	softWrap bool
+	// tabular marks a line belonging to a rendered table. Drag-selection reads it
+	// to offer spreadsheet-style block selection when a drag spans multiple table
+	// rows and columns (see iterPartialSel).
+	tabular bool
 }
 
 // allCopyMask returns a mask of length n with every position marked copyable.
@@ -351,6 +355,9 @@ func (b *listBlock) renderLines(maxW int) []renderedLine {
 func (b *tableBlock) renderLines(maxW int) []renderedLine {
 	var out []renderedLine
 	renderTableBlock(b, maxW, &out)
+	for i := range out {
+		out[i].tabular = true
+	}
 	return out
 }
 
