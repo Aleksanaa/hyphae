@@ -946,7 +946,7 @@ func formatModelPricing(in, out float64) string {
 	if in == 0 && out == 0 {
 		return "Price: unknown"
 	}
-	return fmt.Sprintf("Price: [%s]$%s in[-] · [%s]$%s out[-] per 1M [%s](may be inaccurate)[-]",
+	return fmt.Sprintf("Price: [%s]$%s in[-] · [%s]$%s out[-] per 1M [%s](estimated)[-]",
 		TC.ToolColor, trimPrice(in), TC.ShellColor, trimPrice(out), TC.Border)
 }
 
