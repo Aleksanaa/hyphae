@@ -25,6 +25,23 @@ type renderedEntry struct {
 	lineStart int // doc-line of the item's top border
 	boxLeft   int // left-pad columns
 	boxRight  int // boxLeft + boxWidth
+	// contentLines are the box's inner content lines (masks content-relative to
+	// boxLeft+2, soft-wrap flags). Content line j sits at doc-line lineStart+1+j.
+	// Nil for flat status lines and the compact divider (whole-select only).
+	contentLines []renderedLine
+}
+
+// contentLineAt returns the content-line index for a doc-line and whether that
+// doc-line is one of the entry's content lines (false for the top border/header,
+// the bottom border, or a doc-line outside the entry). Boxes have a bottom border
+// after the content; the thoughts rail has none — both are handled by the single
+// [lineStart+1, lineStart+1+len(contentLines)) range with no per-kind branching.
+func (e renderedEntry) contentLineAt(docLine int) (int, bool) {
+	j := docLine - e.lineStart - 1
+	if j >= 0 && j < len(e.contentLines) {
+		return j, true
+	}
+	return 0, false
 }
 
 // toolIdxCompact is the sentinel toolIdx value for compact divider entries.
@@ -175,22 +192,15 @@ func (cv *ChatView) drawSelectionOverlay(screen tcell.Screen) {
 	}
 }
 
-// isWhole reports whether the cursor is on a border line or outside the anchor
-// box, triggering whole-box-at-a-time selection mode.
-// Content lines are strictly inside both borders: (startDoc, endDoc-1).
+// isWhole reports whether the cursor is on a border/header line or outside the
+// anchor box, triggering whole-box-at-a-time selection mode. Anything that is not
+// one of the anchor box's content lines selects whole boxes.
 func (cv *ChatView) isWhole() bool {
 	if !cv.selActive || cv.anchorBox < 0 || cv.anchorBox >= len(cv.entries) {
 		return false
 	}
-	startDoc, endDoc := cv.boxDocRange(cv.anchorBox)
-	cl := cv.selCursor.docLine
-	// Content lines are strictly between the first line and the bottom border.
-	// A rail callout ("thoughts") has no bottom border, so its last line is content.
-	lastGuard := endDoc - 1
-	if cv.entries[cv.anchorBox].msg.expandedBox {
-		lastGuard = endDoc
-	}
-	return cl <= startDoc || cl >= lastGuard
+	_, ok := cv.entries[cv.anchorBox].contentLineAt(cv.selCursor.docLine)
+	return !ok
 }
 
 // boxDocRange returns the [startDoc, endDoc) doc-line range for box i,
@@ -215,14 +225,11 @@ func (cv *ChatView) iterPartialSel(fn func(docLine, colLo, colHi int, mask []boo
 	}
 	ix, _, _, _ := cv.GetInnerRect()
 	ae := cv.entries[cv.anchorBox]
-	// A rail callout ("thoughts") has no right/bottom border: content reaches
-	// boxRight and its last line is content, not a border to skip.
-	rightBorder, hasBottom := 2, true
-	if ae.msg.expandedBox {
-		rightBorder, hasBottom = 0, false
-	}
 	contentLeft := ix + ae.boxLeft + 2
-	contentRight := ix + ae.boxRight - rightBorder
+	// Clamp the right edge to the box's right column uniformly; each line's mask
+	// (len < box width for short lines, borders/padding false) decides which
+	// columns are actually copyable, so no per-kind border bookkeeping is needed.
+	maxRight := ix + ae.boxRight
 
 	anchor, cur := cv.selAnchor, cv.selCursor
 	if anchor.docLine > cur.docLine ||
@@ -230,15 +237,12 @@ func (cv *ChatView) iterPartialSel(fn func(docLine, colLo, colHi int, mask []boo
 		anchor, cur = cur, anchor
 	}
 
-	boxStart, boxEndExcl := cv.boxDocRange(cv.anchorBox)
-	bottomBorder := boxEndExcl - 1
-
 	for docLine := anchor.docLine; docLine <= cur.docLine; docLine++ {
-		if docLine == boxStart || (hasBottom && docLine == bottomBorder) {
-			continue
+		if _, ok := ae.contentLineAt(docLine); !ok {
+			continue // top border / header / bottom border
 		}
 		x0 := contentLeft
-		x1 := contentRight
+		x1 := maxRight
 		if docLine == anchor.docLine && anchor.screenX > x0 {
 			x0 = anchor.screenX
 		}
@@ -577,10 +581,11 @@ func (cv *ChatView) buildText(width int) {
 	lineCount := 0
 	lastBoxIdx := -1 // entry index of the last rendered box (auto-follow target)
 
-	addEntry := func(entry renderMsg, sessIdx, toolIdx, lp, bw, lines int) {
+	addEntry := func(entry renderMsg, sessIdx, toolIdx, lp, bw, lines int, content []renderedLine) {
 		entries = append(entries, renderedEntry{
 			msg: entry, sessIdx: sessIdx, toolIdx: toolIdx,
 			lineStart: lineCount, boxLeft: lp, boxRight: lp + bw,
+			contentLines: content,
 		})
 		lineCount += lines
 	}
@@ -601,14 +606,14 @@ func (cv *ChatView) buildText(width int) {
 		b.WriteString(strings.Repeat(" ", lay.off+2))
 		b.WriteString(line)
 		b.WriteString("\n")
-		addEntry(renderMsg{role: session.RoleTool, content: line}, sessIdx, toolIdx, lay.off+2, tview.TaggedStringWidth(line), 1)
+		addEntry(renderMsg{role: session.RoleTool, content: line}, sessIdx, toolIdx, lay.off+2, tview.TaggedStringWidth(line), 1, nil)
 	}
 	renderBox := func(entry renderMsg, sessIdx, toolIdx int) {
 		entry.content = stabilizeWidth(entry.content)
 		prev := b.Len()
 		idx := len(entries)
-		lp, bw := cv.renderMessageBox(&b, entry, lay, idx == cv.selectedIdx)
-		addEntry(entry, sessIdx, toolIdx, lp, bw, strings.Count(b.String()[prev:], "\n"))
+		content, lp, bw := cv.renderMessageBox(&b, entry, lay, idx == cv.selectedIdx)
+		addEntry(entry, sessIdx, toolIdx, lp, bw, strings.Count(b.String()[prev:], "\n"), content)
 		lastBoxIdx = idx
 	}
 
@@ -635,7 +640,7 @@ func (cv *ChatView) buildText(width int) {
 					strings.Repeat("─", leftN), label, strings.Repeat("─", rightN))
 				b.WriteString(line)
 				b.WriteString("\n")
-				addEntry(renderMsg{}, divIdx, toolIdxCompact, lay.off, lay.band, 1)
+				addEntry(renderMsg{}, divIdx, toolIdxCompact, lay.off, lay.band, 1, nil)
 			}
 
 		case riCollapsedRounds:
@@ -694,93 +699,28 @@ func (cv *ChatView) buildText(width int) {
 	if cv.autoFollow && lastBoxIdx >= 0 {
 		cv.selectedIdx = lastBoxIdx
 	}
-	cv.buildCopyMasks(entries, lay)
+	cv.buildCopyMasks(entries)
 
 	text := b.String()
 	cv.TotalLines = strings.Count(text, "\n") + 1
 	cv.TextView.SetText(text)
 }
 
-// buildCopyMasks populates copyColMask and softWrapLine for all rendered messages.
-// copyColMask[line] is absent when the line is fully copyable; present with a
-// []bool mask when trailing padding or format chars must be excluded from copies.
-func (cv *ChatView) buildCopyMasks(entries []renderedEntry, lay convoLayout) {
+// buildCopyMasks projects the per-line copy masks and soft-wrap flags out of the
+// rendered content lines captured by renderMessageBox — no re-wrapping or width
+// re-derivation. copyColMask[docLine] holds the line's content-relative mask;
+// drawPartialSel treats columns past len(mask) as non-copyable, so a mask shorter
+// than the box's content width excludes trailing padding without extra bookkeeping.
+func (cv *ChatView) buildCopyMasks(entries []renderedEntry) {
 	cv.copyColMask = make(map[int][]bool)
 	cv.softWrapLine = make(map[int]bool)
 
-	maskWordWrap := func(start, minCW, cw int, content string) {
-		lines := tview.WordWrap(content, cw)
-		boxCW := max(minCW, maxTaggedWidth(lines))
-		for j, l := range lines {
-			if vlen := tview.TaggedStringWidth(l); vlen < boxCW {
-				cv.copyColMask[start+1+j] = allCopyMask(vlen)
-			}
-		}
-		offset := 0
-		for _, para := range strings.Split(content, "\n") {
-			wrapped := tview.WordWrap(para, cw)
-			for k := 0; k < len(wrapped)-1; k++ {
-				cv.softWrapLine[start+1+offset+k] = true
-			}
-			offset += len(wrapped)
-		}
-	}
-
 	for _, e := range entries {
-		start, msg := e.lineStart, e.msg
-		asstCW := lay.asstW - 4
-		switch msg.role {
-		case session.RoleUser:
-			maskWordWrap(start, 4, lay.userW-4, tview.Escape(msg.content))
-		case session.RoleAssistant:
-			switch {
-			case msg.expandedBox:
-				content := msg.content
-				if !msg.contentTagged {
-					content = tview.Escape(content)
-				}
-				maskWordWrap(start, 1, asstCW, content)
-			case msg.err != nil:
-				maskWordWrap(start, 6, asstCW, tview.Escape(msg.err.Error()))
-			case msg.content != "":
-				blocks := cv.mdCache[msg.content]
-				if blocks == nil {
-					break
-				}
-				contentCW := asstCW
-				if msg.fullWidth {
-					contentCW = (e.boxRight - e.boxLeft) - 4
-				}
-				rls := renderBlocksAnnotated(blocks, contentCW)
-				actualW := 0
-				for _, rl := range rls {
-					if n := len(rl.copyMask); n > actualW {
-						actualW = n
-					}
-				}
-				minBW := 9
-				if msg.partial {
-					minBW = 11
-				} else if msg.boxTitle != "" {
-					minBW = tview.TaggedStringWidth(msg.boxTitle) + 5
-				}
-				boxCW := max(minBW-4, actualW)
-				for j, rl := range rls {
-					mask := rl.copyMask
-					hasFormat := false
-					for _, v := range mask {
-						if !v {
-							hasFormat = true
-							break
-						}
-					}
-					if hasFormat || len(mask) < boxCW {
-						cv.copyColMask[start+1+j] = mask
-					}
-					if rl.softWrap {
-						cv.softWrapLine[start+1+j] = true
-					}
-				}
+		for j, rl := range e.contentLines {
+			docLine := e.lineStart + 1 + j
+			cv.copyColMask[docLine] = rl.copyMask
+			if rl.softWrap {
+				cv.softWrapLine[docLine] = true
 			}
 		}
 	}
@@ -824,10 +764,6 @@ func (cv *ChatView) SelectedText() string {
 }
 
 func (cv *ChatView) selectedTextPartial() string {
-	lay := newConvoLayout(cv.lastWidth)
-
-	lastMsgIdx := -2
-	var allLines []string
 	var result strings.Builder
 	lastContribDocLine := -1
 
@@ -836,15 +772,14 @@ func (cv *ChatView) selectedTextPartial() string {
 		if msgIdx < 0 || msgIdx >= len(cv.entries) {
 			return
 		}
-		if msgIdx != lastMsgIdx {
-			lastMsgIdx = msgIdx
-			allLines, _ = computeMsgContent(cv.entries[msgIdx].msg, lay)
-		}
-		lineWithinBox := docLine - cv.entries[msgIdx].lineStart - 1
-		if lineWithinBox < 0 || lineWithinBox >= len(allLines) {
+		e := cv.entries[msgIdx]
+		lineWithinBox, ok := e.contentLineAt(docLine)
+		if !ok {
 			return
 		}
-		line := allLines[lineWithinBox]
+		// Copy plaintext comes from the same rendered line the display used:
+		// strip its tview tags (which restores escaped brackets) and mask columns.
+		line := stripTags(e.contentLines[lineWithinBox].text)
 		var sb strings.Builder
 		col := 0
 		for _, r := range line {

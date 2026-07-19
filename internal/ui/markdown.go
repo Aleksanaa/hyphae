@@ -728,26 +728,6 @@ func renderBlocksAnnotated(blocks []mdBlock, maxW int) []renderedLine {
 	return out
 }
 
-// renderBlocks renders blocks for display, discarding copy masks.
-func renderBlocks(blocks []mdBlock, maxW int) []string {
-	rls := renderBlocksAnnotated(blocks, maxW)
-	out := make([]string, len(rls))
-	for i, rl := range rls {
-		out[i] = rl.text
-	}
-	return out
-}
-
-// renderMarkdown parses and renders src for display (masks discarded).
-func renderMarkdown(src string, maxW int) []string {
-	return renderBlocks(parseMarkdown(src), maxW)
-}
-
-// renderMarkdownAnnotated parses and renders src with per-column copy masks.
-func renderMarkdownAnnotated(src string, maxW int) []renderedLine {
-	return renderBlocksAnnotated(parseMarkdown(src), maxW)
-}
-
 // ─── inline span collection ───────────────────────────────────────────────────
 
 type mdStyle struct {
