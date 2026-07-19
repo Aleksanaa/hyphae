@@ -19,6 +19,7 @@ var mdGold = goldmark.New(
 		extension.Table,
 		extension.Strikethrough,
 		extension.TaskList,
+		extension.Footnote,
 	),
 )
 
@@ -85,6 +86,11 @@ type tableBlock struct {
 	rows       [][][]mdSpan
 }
 type groupBlock struct{ items []mdBlock } // fallback for unknown block nodes
+type footnoteBlock struct {
+	index  int
+	blocks []mdBlock
+}
+type footnoteListBlock struct{ items []footnoteBlock } // rendered at document end
 
 // ─── renderLines implementations ─────────────────────────────────────────────
 
@@ -379,6 +385,42 @@ func (b *groupBlock) renderLines(maxW int) []renderedLine {
 	return out
 }
 
+func (b *footnoteListBlock) renderLines(maxW int) []renderedLine {
+	if len(b.items) == 0 {
+		return nil
+	}
+	var out []renderedLine
+	// Separator + muted label, mirroring how GitHub sets footnotes apart.
+	out = append(out, (&thematicBreakBlock{}).renderLines(maxW)...)
+	label := fmt.Sprintf("[%s]Footnotes[-:-:-]", TC.Muted)
+	out = append(out, renderedLine{text: label, copyMask: allCopyMask(len("Footnotes"))})
+
+	for _, item := range b.items {
+		marker := fmt.Sprintf("%d. ", item.index)
+		markerW := len([]rune(marker))
+		innerW := max(10, maxW-markerW)
+		cont := strings.Repeat(" ", markerW)
+
+		var itemLines []renderedLine
+		for _, blk := range item.blocks {
+			itemLines = append(itemLines, blk.renderLines(innerW)...)
+		}
+		for i, rl := range itemLines {
+			prefix := cont
+			if i == 0 {
+				prefix = fmt.Sprintf("[%s]%s[-:-:-]", TC.Muted, marker)
+			}
+			mask := make([]bool, markerW+len(rl.copyMask))
+			for j := range markerW {
+				mask[j] = true
+			}
+			copy(mask[markerW:], rl.copyMask)
+			out = append(out, renderedLine{text: prefix + rl.text, copyMask: mask, softWrap: rl.softWrap})
+		}
+	}
+	return out
+}
+
 // ─── parsing (goldmark AST → []mdBlock) ──────────────────────────────────────
 
 // parseMarkdown parses src into a width-independent block list.
@@ -426,6 +468,9 @@ func parseOneBlock(n ast.Node, source []byte) mdBlock {
 
 	case extast.KindTable:
 		return parseTable(n.(*extast.Table), source)
+
+	case extast.KindFootnoteList:
+		return parseFootnoteList(n, source)
 
 	default:
 		children := parseBlockChildren(n, source)
@@ -476,6 +521,18 @@ func listItemTask(item ast.Node) (isTask, checked bool) {
 		return true, cb.IsChecked
 	}
 	return false, false
+}
+
+func parseFootnoteList(list ast.Node, source []byte) *footnoteListBlock {
+	b := &footnoteListBlock{}
+	for fn := list.FirstChild(); fn != nil; fn = fn.NextSibling() {
+		f, ok := fn.(*extast.Footnote)
+		if !ok {
+			continue
+		}
+		b.items = append(b.items, footnoteBlock{index: f.Index, blocks: parseBlockChildren(fn, source)})
+	}
+	return b
 }
 
 func parseTable(tbl *extast.Table, source []byte) *tableBlock {
@@ -767,11 +824,15 @@ type mdStyle struct {
 	italic        bool
 	code          bool
 	strikethrough bool
+	ref           bool // footnote reference marker — rendered in the accent color
 }
 
 func (s mdStyle) openTag() string {
 	if s.code {
 		return fmt.Sprintf("[-:-:-][%s]", TC.CodeColor)
+	}
+	if s.ref {
+		return fmt.Sprintf("[-:-:-][%s]", TC.Accent)
 	}
 	attrs := ""
 	if s.bold {
@@ -848,6 +909,16 @@ func nodeSpans(node ast.Node, source []byte, style mdStyle) []mdSpan {
 	case ast.KindRawHTML:
 		return nil
 
+	case extast.KindFootnoteLink:
+		fl := node.(*extast.FootnoteLink)
+		s := style
+		s.ref = true
+		return []mdSpan{{text: fmt.Sprintf("[%d]", fl.Index), style: s}}
+
+	case extast.KindFootnoteBacklink:
+		// The "↩" back-reference is only useful in a browser; drop it in the TUI.
+		return nil
+
 	default:
 		return collectSpans(node, source, style)
 	}
@@ -863,7 +934,7 @@ func spansPlain(spans []mdSpan) string {
 
 // spansToTagged renders spans to a single tview-tagged line without wrapping.
 func spansToTagged(spans []mdSpan) string {
-	sentinel := mdStyle{code: true, bold: true, italic: true, strikethrough: true}
+	sentinel := mdStyle{code: true, bold: true, italic: true, strikethrough: true, ref: true}
 	var sb strings.Builder
 	cur := sentinel
 	for _, sp := range spans {
@@ -899,7 +970,7 @@ func wrapSpans(spans []mdSpan, maxW int) []renderedLine {
 		return []renderedLine{{text: ""}}
 	}
 
-	sentinel := mdStyle{code: true, bold: true, italic: true, strikethrough: true}
+	sentinel := mdStyle{code: true, bold: true, italic: true, strikethrough: true, ref: true}
 
 	emitLine := func(from, to int) string {
 		if to <= from {
