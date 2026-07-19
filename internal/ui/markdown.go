@@ -301,8 +301,8 @@ func (b *blockquoteBlock) renderLines(maxW int) []renderedLine {
 	}
 	out := make([]renderedLine, len(inner))
 	for i, rl := range inner {
-		text := fmt.Sprintf("[%s]▎[-:-:-] %s", mc, rl.text)
-		// Prepend 2 non-copyable columns (▎ and space), then shift inner mask.
+		text := fmt.Sprintf(" [%s]▎[-:-:-]%s", mc, rl.text)
+		// Prepend 2 non-copyable columns (space and ▎), then shift inner mask.
 		mask := make([]bool, 2+len(rl.copyMask))
 		copy(mask[2:], rl.copyMask)
 		out[i] = renderedLine{text: text, copyMask: mask, softWrap: rl.softWrap}
