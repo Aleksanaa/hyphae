@@ -780,7 +780,10 @@ func renderTableBlock(tbl *tableBlock, maxW int, out *[]renderedLine) {
 		*out = append(*out, hRule("├", "┼", "┤"))
 	}
 
-	for _, row := range tbl.rows {
+	for ri, row := range tbl.rows {
+		if ri > 0 {
+			*out = append(*out, hRule("├", "┼", "┤"))
+		}
 		cellLines := make([][]string, numCols)
 		for i := 0; i < numCols; i++ {
 			var spans []mdSpan
