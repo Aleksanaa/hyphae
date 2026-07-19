@@ -364,8 +364,18 @@ func (cp *CommandPalette) Draw(screen tcell.Screen) {
 	// palette stands out. Recolour every cell toward a dark slate in place.
 	for row := range sh {
 		for col := range sw {
-			r, combc, st, _ := screen.GetContent(col, row)
+			r, combc, st, cw := screen.GetContent(col, row)
 			if r == 0 { // continuation cell of a wide rune; styled via its primary
+				continue
+			}
+			if emojiGlyph(r) {
+				// Color-emoji glyphs are painted by the terminal with their own
+				// baked-in colors and ignore the SGR styling we set, so they
+				// refuse to dim with the rest of the backdrop. Paint over them
+				// with dimmed blanks instead of just restyling.
+				for i := 0; i < cw && col+i < sw; i++ {
+					screen.SetContent(col+i, row, ' ', nil, dimStyle(st))
+				}
 				continue
 			}
 			screen.SetContent(col, row, r, combc, dimStyle(st))
@@ -845,6 +855,42 @@ func topLevelItems() []PaletteItem {
 		{Label: "Switch theme", Sub: "change the color scheme"},
 		{Label: "Hotkeys", Sub: "view and trigger keyboard shortcuts"},
 	}
+}
+
+// emojiGlyph reports whether r is a color-emoji code point. Terminals render
+// these with their own baked-in colors, ignoring the foreground/background style
+// we set, so they will not dim with the rest of the palette backdrop and must be
+// painted over with blanks instead. The set is the supplementary emoji planes
+// (r >= 0x1F000, which also covers regional indicators and skin-tone modifiers)
+// plus the BMP code points whose Unicode Emoji_Presentation is Yes — the ones a
+// terminal shows in color even without a variation selector.
+func emojiGlyph(r rune) bool {
+	if r >= 0x1F000 {
+		return true
+	}
+	switch {
+	case r >= 0x231A && r <= 0x231B, // ⌚⌛
+		r >= 0x23E9 && r <= 0x23EC, r == 0x23F0, r == 0x23F3,
+		r >= 0x25FD && r <= 0x25FE,
+		r >= 0x2614 && r <= 0x2615,
+		r >= 0x2648 && r <= 0x2653,
+		r == 0x267F, r == 0x2693, r == 0x26A1,
+		r >= 0x26AA && r <= 0x26AB,
+		r >= 0x26BD && r <= 0x26BE,
+		r >= 0x26C4 && r <= 0x26C5,
+		r == 0x26CE, r == 0x26D4, r == 0x26EA,
+		r >= 0x26F2 && r <= 0x26F3, r == 0x26F5, r == 0x26FA, r == 0x26FD,
+		r == 0x2705,
+		r >= 0x270A && r <= 0x270B,
+		r == 0x2728, r == 0x274C, r == 0x274E,
+		r >= 0x2753 && r <= 0x2755, r == 0x2757,
+		r >= 0x2795 && r <= 0x2797,
+		r == 0x27B0, r == 0x27BF,
+		r >= 0x2B1B && r <= 0x2B1C,
+		r == 0x2B50, r == 0x2B55:
+		return true
+	}
+	return false
 }
 
 // dimStyle greys a cell's style for the palette backdrop: backgrounds collapse
