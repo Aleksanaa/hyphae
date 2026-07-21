@@ -6,6 +6,7 @@ import (
 	"os"
 	"sync"
 
+	"github.com/aleksanaa/hyphae/internal/agent"
 	"github.com/aleksanaa/hyphae/internal/session"
 	"github.com/aleksanaa/hyphae/internal/store"
 )
@@ -232,7 +233,12 @@ func (c *Controller) ResumeSession(id string) (*session.Session, SessionInfo, er
 // resumes use the new location. No-ops for an unknown session.
 func (c *Controller) SetSessionWorkDir(id, workDir string) {
 	if sess, ok := c.mgr.Get(id); ok {
+		old := sess.WorkDir
 		sess.WorkDir = workDir
+		if old != "" && old != workDir {
+			// Tell the model about the move on its next turn.
+			sess.AddReminder(agent.WorkDirChangedLabel(old, workDir))
+		}
 	}
 	if c.st != nil {
 		_ = c.st.UpdateSessionWorkDir(id, workDir) //nolint:errcheck

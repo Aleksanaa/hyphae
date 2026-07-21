@@ -111,8 +111,9 @@ type Session struct {
 	Status           Status
 	WorkDir          string
 	PlanMode         bool
-	PlanModeExited   bool // true for one turn after plan mode is disabled
-	ColdResumed      bool // true for one turn after session is loaded from DB
+	PlanModeExited   bool     // true for one turn after plan mode is disabled
+	ColdResumed      bool     // true for one turn after session is loaded from DB
+	pendingReminders []string // one-shot <system-reminder> blocks for the next user message
 	msgs             []Message
 	compactedSummary string // latest compact summary; empty = no compact
 	compactSeqs      []int  // all compact atSeqs in ascending order; nil = no compact
@@ -163,6 +164,23 @@ func (s *Session) TakeColdResumed() bool {
 	v := s.ColdResumed
 	s.ColdResumed = false
 	return v
+}
+
+// AddReminder queues a one-shot system-reminder block (see agent.SystemReminder)
+// to attach to the next user message sent in this session.
+func (s *Session) AddReminder(block string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pendingReminders = append(s.pendingReminders, block)
+}
+
+// TakeReminders returns and clears the queued one-shot reminders.
+func (s *Session) TakeReminders() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r := s.pendingReminders
+	s.pendingReminders = nil
+	return r
 }
 
 // AppendStatusEvent appends a structured op event to the tool status at idx.

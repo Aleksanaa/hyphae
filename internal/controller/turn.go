@@ -105,14 +105,24 @@ func (c *Controller) SendMessage(text string) {
 		return
 	}
 
-	var sentLabel string
+	// Assemble the message's out-of-band suffix: zero or more <system-reminder>
+	// blocks followed by the send timestamp. The plan-mode / cold-resume states
+	// contribute at most one block; any one-shot reminders queued on the session
+	// (e.g. a working-directory change) follow.
+	var reminders []string
 	if sess.PlanModeExited {
 		sess.ClearPlanModeExited()
-		sentLabel = agent.PlanModeExitLabel() + "\n"
+		reminders = append(reminders, agent.PlanModeExitLabel())
 	} else if sess.TakeColdResumed() {
-		sentLabel = agent.NamespaceClearedLabel() + "\n"
+		reminders = append(reminders, agent.NamespaceClearedLabel())
 	} else if sess.IsPlanMode() {
-		sentLabel = agent.PlanModeLabel() + "\n"
+		reminders = append(reminders, agent.PlanModeLabel())
+	}
+	reminders = append(reminders, sess.TakeReminders()...)
+
+	var sentLabel string
+	if len(reminders) > 0 {
+		sentLabel = strings.Join(reminders, "\n") + "\n"
 	}
 	sentLabel += agent.FormatSentLabel(time.Now())
 

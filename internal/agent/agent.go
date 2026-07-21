@@ -427,19 +427,41 @@ func FormatSentLabel(t time.Time) string {
 	return "<system-timestamp>The message is sent on " + t.Local().Format("2006-01-02 15:04") + " " + tz + "</system-timestamp>"
 }
 
+// SystemReminder wraps body in the <system-reminder> tags used to attach
+// out-of-band context (plan mode, resume notices, working-directory changes, …)
+// to the next user message. All such notices go through this so their framing
+// stays consistent.
+func SystemReminder(body string) string {
+	return "<system-reminder>\n" + body + "\n</system-reminder>"
+}
+
 // PlanModeLabel returns the system-reminder block to append for an active plan mode turn.
 func PlanModeLabel() string {
-	return "<system-reminder>\n" + planModePrompt + "\n</system-reminder>"
+	return SystemReminder(planModePrompt)
 }
 
 // PlanModeExitLabel returns the system-reminder block to append when plan mode just ended.
 func PlanModeExitLabel() string {
-	return "<system-reminder>\nPlan mode has ended. You may now make changes freely.\n</system-reminder>"
+	return SystemReminder("Plan mode has ended. You may now make changes freely.")
+}
+
+// WorkDirChangedLabel returns the system-reminder block announcing that the
+// session's working directory moved from one path to another.
+func WorkDirChangedLabel(from, to string) string {
+	return SystemReminder(fmt.Sprintf(
+		"The working directory has changed from %s to %s. This session was resumed in a "+
+			"different location than where it originally ran, so relative file paths and shell "+
+			"commands now resolve against the new directory. Files, directories, and paths "+
+			"referenced earlier in the conversation may no longer exist at their previous "+
+			"locations, may have different contents, or may be absent entirely here. Do not "+
+			"assume anything from the earlier working directory is present — verify paths (e.g. "+
+			"by listing or reading them) before acting on them.",
+		from, to))
 }
 
 // NamespaceClearedLabel returns the system-reminder block injected on cold session resume.
 func NamespaceClearedLabel() string {
-	return "<system-reminder>\nThis session was resumed from storage. The run namespace has been reset — any variables or functions defined in previous run calls are no longer available.\n</system-reminder>"
+	return SystemReminder("This session was resumed from storage. The run namespace has been reset — any variables or functions defined in previous run calls are no longer available.")
 }
 
 // isRetryable returns true for transient errors that warrant a retry.
