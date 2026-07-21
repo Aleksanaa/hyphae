@@ -232,12 +232,11 @@ func (s *Store) UpdateSessionTitle(id, title string) error {
 	return err
 }
 
-// ListSessions returns sessions for workDir ordered newest first.
-func (s *Store) ListSessions(workDir string) ([]SessionRow, error) {
+// ListSessions returns all sessions ordered newest first, across every work dir.
+func (s *Store) ListSessions() ([]SessionRow, error) {
 	rows, err := s.db.Query(
 		`SELECT id, work_dir, title, total_cost, last_prompt_tokens, created_at, updated_at
-		   FROM sessions WHERE work_dir = ? ORDER BY updated_at DESC`,
-		workDir,
+		   FROM sessions ORDER BY updated_at DESC`,
 	)
 	if err != nil {
 		return nil, err

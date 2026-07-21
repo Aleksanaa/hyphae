@@ -869,7 +869,14 @@ func (a *App) setupPalette() {
 				if r.ID == activeID {
 					continue
 				}
-				out = append(out, paletteSessionInfo{ID: r.ID, Title: r.Title, UpdatedAt: r.UpdatedAt})
+				out = append(out, paletteSessionInfo{
+					ID:            r.ID,
+					Title:         r.Title,
+					UpdatedAt:     r.UpdatedAt,
+					WorkDir:       r.WorkDir,
+					ContextWindow: r.ContextWindow,
+					PromptTokens:  r.PromptTokens,
+				})
 			}
 			return out
 		},

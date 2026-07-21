@@ -90,9 +90,12 @@ func (m Model) Cost(promptTokens, completionTokens int64) float64 {
 
 // SessionSummary is a lightweight session record for listing.
 type SessionSummary struct {
-	ID        string
-	Title     string
-	UpdatedAt int64
+	ID            string
+	Title         string
+	UpdatedAt     int64
+	WorkDir       string
+	ContextWindow int64 // models.dev-derived context window, 0 if unknown
+	PromptTokens  int64 // last prompt token count, 0 if none yet
 }
 
 // Controller owns session lifecycle, agent orchestration, and persistence.

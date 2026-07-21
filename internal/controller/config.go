@@ -94,18 +94,32 @@ func (c *Controller) EnrichPricing(ctx context.Context, models []Model) []Model 
 	return models
 }
 
-// ListSessions returns a lightweight summary of sessions for the controller's work directory.
+// ListSessions returns a lightweight summary of all saved sessions, across every
+// work directory.
 func (c *Controller) ListSessions() ([]SessionSummary, error) {
 	if c.st == nil {
 		return nil, nil
 	}
-	rows, err := c.st.ListSessions(c.mgr.WorkDir())
+	rows, err := c.st.ListSessions()
 	if err != nil {
 		return nil, err
 	}
 	out := make([]SessionSummary, len(rows))
 	for i, r := range rows {
-		out[i] = SessionSummary{ID: r.ID, Title: r.Title, UpdatedAt: r.UpdatedAt}
+		s := SessionSummary{
+			ID:           r.ID,
+			Title:        r.Title,
+			UpdatedAt:    r.UpdatedAt,
+			WorkDir:      r.WorkDir,
+			PromptTokens: r.LastPromptTokens,
+		}
+		// Pull the context window the same way resume does — from the session's
+		// stored record, where the models.dev-derived value was persisted. The
+		// lightweight ListSessions query omits it, so read the full row per entry.
+		if full, err := c.st.GetSession(r.ID); err == nil {
+			s.ContextWindow = full.ContextWindow
+		}
+		out[i] = s
 	}
 	return out, nil
 }

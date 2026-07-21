@@ -1,6 +1,9 @@
 package ui
 
 import (
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -22,13 +25,16 @@ const (
 )
 
 // PaletteItem is one selectable entry in the palette list. An entry occupies one
-// row normally, or two when Detail is set (Detail renders as a dim second line).
+// row normally, or two when Detail or DetailRight is set (they render on a dim
+// second line, Detail left-aligned and DetailRight right-aligned).
 type PaletteItem struct {
-	Label  string // primary line, left-aligned (supports color tags)
-	Sub    string // dim secondary text shown right-aligned on the primary line
-	Detail string // optional dim second line; empty means a single-row entry
-	Value  string // opaque payload passed to callbacks
-	Action func() // called on Enter in menu mode
+	Label       string // primary line, left-aligned (supports color tags)
+	Sub         string // dim secondary text shown right-aligned on the primary line
+	Detail      string // optional dim second line, left-aligned; empty means single-row unless DetailRight is set
+	DetailRight string // optional dim second-line text, right-aligned
+	DetailPath  bool   // when set, Detail is a filesystem path shortened to fit its column
+	Value       string // opaque payload passed to callbacks
+	Action      func() // called on Enter in menu mode
 }
 
 type paletteEndpointInfo struct {
@@ -37,9 +43,12 @@ type paletteEndpointInfo struct {
 }
 
 type paletteSessionInfo struct {
-	ID        string
-	Title     string
-	UpdatedAt int64
+	ID            string
+	Title         string
+	UpdatedAt     int64
+	WorkDir       string
+	ContextWindow int64
+	PromptTokens  int64
 }
 
 // CommandPalette is a VS-Code-style Ctrl+P overlay drawn as a centered box.
@@ -534,10 +543,26 @@ func (cp *CommandPalette) drawItems(screen tcell.Screen, x, y, w, h int, selSt, 
 			}
 		}
 
-		// Optional dim second line.
-		if item.Detail != "" {
+		// Optional dim second line: Detail left-aligned, DetailRight right-aligned.
+		if item.Detail != "" || item.DetailRight != "" {
 			subFg, _, _ := subSt.Decompose()
-			tview.Print(screen, item.Detail, inner, rowY+1, textRight-inner, tview.AlignLeft, subFg)
+
+			leftEnd := textRight // exclusive right bound for the left text
+			if item.DetailRight != "" {
+				rightW := tview.TaggedStringWidth(item.DetailRight)
+				rightStart := textRight - rightW
+				tview.Print(screen, item.DetailRight, rightStart, rowY+1, rightW, tview.AlignLeft, subFg)
+				leftEnd = rightStart - 1 // keep a 1-col gap before the right text
+			}
+
+			left := item.Detail
+			availW := leftEnd - inner
+			if availW > 0 {
+				if item.DetailPath {
+					left = shortenPath(left, availW)
+				}
+				tview.Print(screen, left, inner, rowY+1, availW, tview.AlignLeft, subFg)
+			}
 		}
 
 		rowY += ih
@@ -551,7 +576,8 @@ func (cp *CommandPalette) drawItems(screen tcell.Screen, x, y, w, h int, selSt, 
 
 // itemHeight returns the number of rows the filtered entry at fi occupies.
 func (cp *CommandPalette) itemHeight(fi int) int {
-	if cp.items[cp.filtered[fi]].Detail != "" {
+	it := cp.items[cp.filtered[fi]]
+	if it.Detail != "" || it.DetailRight != "" {
 		return 2
 	}
 	return 1
@@ -735,9 +761,12 @@ func (cp *CommandPalette) switchMode(m paletteMode) {
 					title = "(untitled)"
 				}
 				cp.items[i] = PaletteItem{
-					Label: title,
-					Sub:   formatSessionTime(s.UpdatedAt),
-					Value: s.ID,
+					Label:       title,
+					Sub:         fmt.Sprintf("[%s]%s[-]", TC.Accent, formatSessionTime(s.UpdatedAt)),
+					Detail:      s.WorkDir,
+					DetailPath:  true,
+					DetailRight: formatContextUsage(s.ContextWindow, s.PromptTokens),
+					Value:       s.ID,
 				}
 			}
 		}
@@ -952,4 +981,116 @@ func formatSessionTime(ms int64) string {
 		return t.Format("Jan 2")
 	}
 	return t.Format("Jan 2 2006")
+}
+
+// formatContextUsage summarizes how full a session's context is: a percentage of
+// the context window when it is known, otherwise the raw prompt-token count.
+// Empty when the session has recorded no prompt tokens yet.
+func formatContextUsage(window, promptTokens int64) string {
+	if promptTokens <= 0 {
+		return ""
+	}
+	if window > 0 {
+		pct := float64(promptTokens) / float64(window) * 100
+		if pct > 100 {
+			pct = 100
+		}
+		return fmt.Sprintf("%.1f%% context", pct)
+	}
+	return humanTokens(promptTokens) + " token"
+}
+
+// shortenPath renders a directory path to fit maxW display columns. It prefers a
+// home-abbreviated absolute path ("~/…"), or a path relative to the current
+// working directory when that is shorter and still points inside it. When that
+// is still too wide it collapses interior segments to their first letter starting
+// from the second segment (e.g. ~/w/p/hyphae), and finally hard-truncates with a
+// leading ellipsis.
+func shortenPath(dir string, maxW int) string {
+	if dir == "" || maxW <= 0 {
+		return ""
+	}
+	disp := hpath(dir)
+	if cwd, err := os.Getwd(); err == nil {
+		if rel := rpath(dir, cwd); rel != "" && tview.TaggedStringWidth(rel) < tview.TaggedStringWidth(disp) {
+			disp = rel
+		}
+	}
+	if tview.TaggedStringWidth(disp) <= maxW {
+		return disp
+	}
+	disp = collapseFromSecond(disp)
+	if tview.TaggedStringWidth(disp) <= maxW {
+		return disp
+	}
+	return truncPathLeft(disp, maxW)
+}
+
+// hpath abbreviates a leading home directory in p to "~".
+func hpath(p string) string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return p
+	}
+	if p == home {
+		return "~"
+	}
+	if rel, ok := strings.CutPrefix(p, home+string(os.PathSeparator)); ok {
+		return "~" + string(os.PathSeparator) + rel
+	}
+	return p
+}
+
+// rpath returns p relative to base when p is strictly inside base; otherwise "".
+func rpath(p, base string) string {
+	if base == "" {
+		return ""
+	}
+	rel, err := filepath.Rel(base, p)
+	if err != nil || rel == "." || strings.HasPrefix(rel, "..") {
+		return ""
+	}
+	return rel
+}
+
+// collapseFromSecond abbreviates each interior segment of a slash path to its
+// first character, starting from the second segment and keeping the first and
+// final segments intact. e.g. ~/works/proj/hyphae → ~/w/p/hyphae.
+func collapseFromSecond(p string) string {
+	sep := string(os.PathSeparator)
+	segs := strings.Split(p, sep)
+	if len(segs) <= 2 {
+		return p
+	}
+	last := len(segs) - 1
+	for i := 1; i < last; i++ {
+		if segs[i] == "" {
+			continue
+		}
+		segs[i] = string([]rune(segs[i])[0])
+	}
+	return strings.Join(segs, sep)
+}
+
+// truncPathLeft keeps the tail of s within maxW columns, prefixing an ellipsis
+// when characters are dropped.
+func truncPathLeft(s string, maxW int) string {
+	if tview.TaggedStringWidth(s) <= maxW {
+		return s
+	}
+	if maxW <= 1 {
+		return "…"
+	}
+	r := []rune(s)
+	budget := maxW - 1 // reserve one column for the ellipsis
+	w, i := 0, len(r)
+	for i > 0 {
+		cw := tview.TaggedStringWidth(string(r[i-1]))
+		if w+cw > budget {
+			break
+		}
+		w += cw
+		i--
+	}
+	return "…" + string(r[i:])
 }
