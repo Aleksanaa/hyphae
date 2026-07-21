@@ -14,14 +14,14 @@ import (
 type paletteMode int
 
 const (
-	paletteModeMenu          paletteMode = iota // top-level command list
-	paletteModeAddEndpoint                      // form: name + base_url + api_key
-	paletteModeDelEndpoint                      // list of endpoints to delete
-	paletteModeSelectModel                      // list of models to pick
-	paletteModeResumeSession                    // list of past sessions to resume
-	paletteModeHotkeys                          // list of keyboard shortcuts
-	paletteModeSelectTheme                      // list of color themes to pick
-	paletteModeConfirm                          // prompt + choice buttons (a dialog)
+	paletteModeMenu            paletteMode = iota // top-level command list
+	paletteModeAddEndpoint                        // form: name + base_url + api_key (add or edit)
+	paletteModeManageEndpoints                    // list: add new + existing endpoints
+	paletteModeSelectModel                        // list of models to pick
+	paletteModeResumeSession                      // list of past sessions to resume
+	paletteModeHotkeys                            // list of keyboard shortcuts
+	paletteModeSelectTheme                        // list of color themes to pick
+	paletteModeConfirm                            // prompt + choice buttons (a dialog)
 )
 
 // PaletteItem is one selectable entry in the palette list. An entry occupies one
@@ -40,6 +40,7 @@ type PaletteItem struct {
 type paletteEndpointInfo struct {
 	Name    string
 	BaseURL string
+	APIKey  string
 }
 
 type paletteSessionInfo struct {
@@ -59,12 +60,16 @@ type CommandPalette struct {
 	visible bool
 	mode    paletteMode
 
-	// tview-native input: query bar and three add-endpoint form fields.
-	queryField *tview.InputField
-	nameField  *tview.InputField
-	urlField   *tview.InputField
-	keyField   *tview.InputField
-	activeForm int // 0=name 1=url 2=key
+	// tview-native input: query bar and the three add-endpoint fields. keyField
+	// holds the real api key for editing/paste but is never drawn directly — the
+	// api-key row is rendered masked (see drawFormKey).
+	queryField   *tview.InputField
+	nameField    *tview.InputField
+	urlField     *tview.InputField
+	keyField     *tview.InputField
+	activeForm   int    // 0=name 1=url 2=key 3=delete button (edit mode only)
+	editEndpoint string // original name when editing an existing endpoint; "" when adding new
+	keyExisting  string // the endpoint's stored api key when editing; shown masked as a grey hint
 
 	// item list state
 	menuItems []PaletteItem
@@ -73,9 +78,11 @@ type CommandPalette struct {
 	sel       int
 	top       int // first visible filtered index (persistent scroll position)
 
-	// dialog state (paletteModeConfirm): a prompt above the choice items
+	// dialog state (paletteModeConfirm): a prompt above the choice items, plus the
+	// step-back action (Esc / backdrop click) for the current dialog.
 	dialogTitle string
 	dialogLines []string
+	dialogBack  func()
 
 	// scrollbar is the shared Scrollbar primitive, driven in content-row units.
 	// The palette owns it directly (like its input fields) rather than through a
@@ -84,16 +91,16 @@ type CommandPalette struct {
 	trackH    int // scrollbar/list viewport height in rows, set each Draw
 
 	// callbacks wired by App
-	onClose         func()
-	onBack          func() // step back a level (like Esc); backdrop click
-	onAddEndpoint   func(name, baseURL, apiKey string)
-	onDelEndpoint   func(name string)
-	onSelectModel   func(model string)
-	onSelectTheme   func(id string)
-	onResumeSession func(id, workDir string)
-	getEndpoints    func() []paletteEndpointInfo
-	getSessions     func() []paletteSessionInfo
-	getHotkeyItems  func() []PaletteItem
+	onClose          func()
+	onBack           func() // step back a level (like Esc); backdrop click
+	onAddEndpoint    func(origName, name, baseURL, apiKey string)
+	onDeleteEndpoint func(name, url string) // raises the delete-confirm dialog
+	onSelectModel    func(model string)
+	onSelectTheme    func(id string)
+	onResumeSession  func(id, workDir string)
+	getEndpoints     func() []paletteEndpointInfo
+	getSessions      func() []paletteSessionInfo
+	getHotkeyItems   func() []PaletteItem
 }
 
 func NewCommandPalette() *CommandPalette {
@@ -152,9 +159,9 @@ func (cp *CommandPalette) Restyle() {
 // ── Focus delegation ─────────────────────────────────────────────────────────
 
 // Focus sets hasFocus on the palette itself (so Pages routes events here via
-// InputHandler) and additionally sets hasFocus on the active sub-field (so its
-// TextArea shows the cursor).  We call sub-field.Focus with a no-op delegate to
-// avoid a recursive app.SetFocus that would blur the palette again.
+// InputHandler) and additionally sets hasFocus on the active sub-field (so it
+// shows the cursor).  We call sub-field.Focus with a no-op delegate to avoid a
+// recursive app.SetFocus that would blur the palette again.
 func (cp *CommandPalette) Focus(delegate func(p tview.Primitive)) {
 	cp.Box.Focus(delegate) // sets cp.Box.hasFocus = true
 	// Clear stale cursor from all sub-fields then light up the active one.
@@ -164,7 +171,10 @@ func (cp *CommandPalette) Focus(delegate func(p tview.Primitive)) {
 	cp.urlField.Blur()
 	cp.keyField.Blur()
 	if cp.mode == paletteModeAddEndpoint {
-		cp.activeFormField().Focus(noop)
+		// The Delete button (index 3) is not a field, so leave the cursor off.
+		if f := cp.activeFormPrimitive(); f != nil {
+			f.Focus(noop)
+		}
 	} else {
 		cp.queryField.Focus(noop)
 	}
@@ -172,10 +182,9 @@ func (cp *CommandPalette) Focus(delegate func(p tview.Primitive)) {
 
 // ── public API ────────────────────────────────────────────────────────────────
 
-func (cp *CommandPalette) IsVisible() bool                    { return cp.visible }
-func (cp *CommandPalette) GetMode() paletteMode               { return cp.mode }
-func (cp *CommandPalette) QueryField() *tview.InputField      { return cp.queryField }
-func (cp *CommandPalette) ActiveFormField() *tview.InputField { return cp.activeFormField() }
+func (cp *CommandPalette) IsVisible() bool               { return cp.visible }
+func (cp *CommandPalette) GetMode() paletteMode          { return cp.mode }
+func (cp *CommandPalette) QueryField() *tview.InputField { return cp.queryField }
 
 func (cp *CommandPalette) Open() {
 	cp.visible = true
@@ -203,12 +212,14 @@ func (cp *CommandPalette) SwitchMode(m paletteMode) { cp.switchMode(m) }
 
 // ShowDialog switches the palette into a confirm dialog: a prompt (one entry per
 // line) above a list of choices. Each choice is a PaletteItem whose Action runs
-// when it is confirmed (Enter or double-click). The palette must already be
-// visible (dialogs are raised mid-flow, e.g. from a list selection).
-func (cp *CommandPalette) ShowDialog(title string, lines []string, choices []PaletteItem) {
+// when it is confirmed (Enter or double-click). onBack is the step-back action
+// (Esc / backdrop click). The palette must already be visible (dialogs are raised
+// mid-flow, e.g. from a list selection).
+func (cp *CommandPalette) ShowDialog(title string, lines []string, choices []PaletteItem, onBack func()) {
 	cp.mode = paletteModeConfirm
 	cp.dialogTitle = title
 	cp.dialogLines = lines
+	cp.dialogBack = onBack
 	cp.items = choices
 	cp.sel = 0
 	cp.top = 0
@@ -216,10 +227,61 @@ func (cp *CommandPalette) ShowDialog(title string, lines []string, choices []Pal
 	cp.refilter()
 }
 
+// DialogBack runs the current dialog's step-back action (Esc / backdrop click).
+func (cp *CommandPalette) DialogBack() {
+	if cp.dialogBack != nil {
+		cp.dialogBack()
+	}
+}
+
+// ReopenEndpointForm returns to the endpoint edit form without clearing its
+// fields — used to step back from the delete-confirm dialog raised over it.
+func (cp *CommandPalette) ReopenEndpointForm() {
+	cp.mode = paletteModeAddEndpoint
+	cp.queryField.SetText("")
+	cp.refilter()
+}
+
+// EditEndpoint opens the endpoint form pre-filled with an existing endpoint's
+// values, in edit mode (a Delete button appears and saving updates in place).
+func (cp *CommandPalette) EditEndpoint(name, baseURL, apiKey string) {
+	cp.mode = paletteModeAddEndpoint
+	cp.editEndpoint = name
+	cp.activeForm = 0
+	cp.nameField.SetText(name)
+	cp.urlField.SetText(baseURL)
+	// The api key is not pre-filled as editable text: it shows masked as a grey
+	// hint (see drawFormKey), and is kept on save unless the user types a new one.
+	cp.keyExisting = apiKey
+	cp.keyField.SetText("")
+	cp.items = nil
+	cp.sel = 0
+	cp.queryField.SetText("")
+	cp.refilter()
+}
+
+// maxFormIndex is the highest focusable form index: 3 (with Delete button) when
+// editing, 2 (three fields only) when adding a new endpoint.
+func (cp *CommandPalette) maxFormIndex() int {
+	if cp.editEndpoint != "" {
+		return 3
+	}
+	return 2
+}
+
+// formRows is the number of content rows the endpoint form occupies: the name,
+// base url, and api key rows, plus a blank spacer and a Delete button when editing.
+func (cp *CommandPalette) formRows() int {
+	if cp.editEndpoint != "" {
+		return 5
+	}
+	return 3
+}
+
 func (cp *CommandPalette) SetCallbacks(
 	onClose func(),
-	onAddEndpoint func(name, baseURL, apiKey string),
-	onDelEndpoint func(name string),
+	onAddEndpoint func(origName, name, baseURL, apiKey string),
+	onDeleteEndpoint func(name, url string),
 	onSelectModel func(model string),
 	onSelectTheme func(id string),
 	onResumeSession func(id, workDir string),
@@ -229,7 +291,7 @@ func (cp *CommandPalette) SetCallbacks(
 ) {
 	cp.onClose = onClose
 	cp.onAddEndpoint = onAddEndpoint
-	cp.onDelEndpoint = onDelEndpoint
+	cp.onDeleteEndpoint = onDeleteEndpoint
 	cp.onSelectModel = onSelectModel
 	cp.onSelectTheme = onSelectTheme
 	cp.onResumeSession = onResumeSession
@@ -251,7 +313,7 @@ func (cp *CommandPalette) NavigateDown() {
 }
 
 func (cp *CommandPalette) NextFormField() {
-	if cp.activeForm < 2 {
+	if cp.activeForm < cp.maxFormIndex() {
 		cp.activeForm++
 	}
 }
@@ -276,11 +338,12 @@ func (cp *CommandPalette) InputHandler() func(*tcell.EventKey, func(tview.Primit
 		if cp.mode == paletteModeConfirm {
 			return // a dialog has no text field; navigation is handled globally
 		}
-		var field *tview.InputField
+		var field tview.Primitive = cp.queryField
 		if cp.mode == paletteModeAddEndpoint {
-			field = cp.activeFormField()
-		} else {
-			field = cp.queryField
+			field = cp.activeFormPrimitive()
+			if field == nil {
+				return // Delete button has no text field
+			}
 		}
 		if h := field.InputHandler(); h != nil {
 			h(event, setFocus)
@@ -349,13 +412,27 @@ func (cp *CommandPalette) MouseHandler() func(tview.MouseAction, *tcell.EventMou
 		}
 
 		if cp.mode == paletteModeAddEndpoint {
-			if row < 3 {
-				switch action {
-				case tview.MouseLeftDown:
-					setFocus(cp)
-				case tview.MouseLeftClick:
-					cp.activeForm = row
-					setFocus(cp)
+			// Rows: 0=name 1=url 2=key 3=blank 4=delete.
+			idx := -1
+			switch {
+			case row < 3:
+				idx = row
+			case cp.editEndpoint != "" && row == 4:
+				idx = 3
+			}
+			if idx < 0 {
+				return true, nil
+			}
+			switch action {
+			case tview.MouseLeftDown:
+				setFocus(cp)
+			case tview.MouseLeftClick:
+				cp.activeForm = idx
+				setFocus(cp)
+			case tview.MouseLeftDoubleClick:
+				if idx == 3 { // Delete button
+					cp.activeForm = 3
+					cp.confirm()
 				}
 			}
 			return true, nil
@@ -374,6 +451,11 @@ func (cp *CommandPalette) MouseHandler() func(tview.MouseAction, *tcell.EventMou
 		case tview.MouseLeftDoubleClick:
 			cp.sel = fi
 			cp.confirm()
+			// A confirm may switch modes (e.g. list → form) without closing;
+			// re-focus the palette so the new mode's field/cursor lights up.
+			if cp.visible {
+				setFocus(cp)
+			}
 		}
 		return true, nil
 	})
@@ -432,7 +514,7 @@ func (cp *CommandPalette) Draw(screen tcell.Screen) {
 	}
 	h := 4 + visRows
 	if cp.mode == paletteModeAddEndpoint {
-		h = 4 + 3
+		h = 4 + cp.formRows()
 	}
 	if h < paletteMinH {
 		h = paletteMinH
@@ -529,22 +611,77 @@ func (cp *CommandPalette) drawDialogPrompt(screen tcell.Screen, x, y, w int, st 
 }
 
 func (cp *CommandPalette) drawFormFields(screen tcell.Screen, x, y, w int, bg tcell.Color) {
-	formLabels := []string{"name     ❯ ", "base url ❯ ", "api key  ❯ "}
-	fields := []*tview.InputField{cp.nameField, cp.urlField, cp.keyField}
-	for i, field := range fields {
-		rowY := y + i
-		if i == cp.activeForm {
-			field.SetLabelColor(Theme.Accent)
-			field.SetBackgroundColor(bg)
-			field.SetFieldBackgroundColor(bg)
-			field.SetRect(x+2, rowY, w-4, 1)
-			field.Draw(screen)
-		} else {
-			labelSt := tcell.StyleDefault.Foreground(Theme.Muted).Background(bg)
-			col := x + 2
-			used := drawText(screen, formLabels[i], col, rowY, w-4, labelSt)
-			drawText(screen, field.GetText(), col+used, rowY, x+w-2-col-used, labelSt)
+	// name (row 0) and base url (row 1) are plain single-line inputs.
+	cp.drawFormInput(screen, cp.nameField, "name     ❯ ", x, y, w, bg, cp.activeForm == 0)
+	cp.drawFormInput(screen, cp.urlField, "base url ❯ ", x, y+1, w, bg, cp.activeForm == 1)
+
+	// api key (row 2) is masked (never draws keyField directly).
+	cp.drawFormKey(screen, x, y+2, w, bg, cp.activeForm == 2)
+
+	// Delete button (edit mode only) at row 4, after a blank spacer row.
+	if cp.editEndpoint != "" {
+		rowY := y + 4
+		if cp.activeForm == 3 {
+			selSt := tcell.StyleDefault.Background(paletteSelBg).Foreground(Theme.Text)
+			for col := x + 1; col < x+w-1; col++ {
+				screen.SetContent(col, rowY, ' ', nil, selSt)
+			}
 		}
+		label := fmt.Sprintf("[%s]Delete endpoint[-]", TC.ErrorColor)
+		tview.Print(screen, label, x+2, rowY, w-4, tview.AlignLeft, Theme.Text)
+	}
+}
+
+// drawFormInput draws a single-line form input: the focused field renders
+// natively (with its cursor); the rest are drawn dimmed with a manual label.
+func (cp *CommandPalette) drawFormInput(screen tcell.Screen, f *tview.InputField, label string, x, rowY, w int, bg tcell.Color, active bool) {
+	if active {
+		f.SetLabelColor(Theme.Accent)
+		f.SetBackgroundColor(bg)
+		f.SetFieldBackgroundColor(bg)
+		f.SetRect(x+2, rowY, w-4, 1)
+		f.Draw(screen)
+		return
+	}
+	labelSt := tcell.StyleDefault.Foreground(Theme.Muted).Background(bg)
+	col := x + 2
+	used := drawText(screen, label, col, rowY, w-4, labelSt)
+	drawText(screen, f.GetText(), col+used, rowY, x+w-2-col-used, labelSt)
+}
+
+// drawFormKey renders the masked api-key row. keyField holds the real value; the
+// display is always masked (see maskAPIKey). When the field is empty during an
+// edit, the stored key is shown masked as a grey hint; typing replaces it.
+func (cp *CommandPalette) drawFormKey(screen tcell.Screen, x, rowY, w int, bg tcell.Color, active bool) {
+	labelColor := Theme.Muted
+	if active {
+		labelColor = Theme.Accent
+	}
+	labelSt := tcell.StyleDefault.Foreground(labelColor).Background(bg)
+	col := x + 2
+	used := drawText(screen, "api key  ❯ ", col, rowY, w-4, labelSt)
+	valX := col + used
+	valW := x + w - 2 - valX
+	if valW < 1 {
+		return
+	}
+
+	real := cp.keyField.GetText()
+	if real == "" {
+		// Empty: show the stored key masked as a grey hint (edit mode only).
+		if cp.keyExisting != "" {
+			hint := truncMiddle(maskAPIKey(cp.keyExisting), valW)
+			drawText(screen, hint, valX, rowY, valW, tcell.StyleDefault.Foreground(Theme.Muted).Background(bg))
+		}
+		if active {
+			screen.ShowCursor(valX, rowY)
+		}
+		return
+	}
+	masked := truncMiddle(maskAPIKey(real), valW)
+	vused := drawText(screen, masked, valX, rowY, valW, tcell.StyleDefault.Foreground(Theme.Text).Background(bg))
+	if active {
+		screen.ShowCursor(min(valX+vused, x+w-2), rowY)
 	}
 }
 
@@ -767,14 +904,18 @@ func (cp *CommandPalette) itemAtRow(relRow, visH int) int {
 
 // ── internal helpers ──────────────────────────────────────────────────────────
 
-func (cp *CommandPalette) activeFormField() *tview.InputField {
+// activeFormPrimitive returns the focused form field (name input or url/key text
+// area), or nil when the Delete button (index 3) is focused.
+func (cp *CommandPalette) activeFormPrimitive() tview.Primitive {
 	switch cp.activeForm {
 	case 0:
 		return cp.nameField
 	case 1:
 		return cp.urlField
-	default:
+	case 2:
 		return cp.keyField
+	default:
+		return nil
 	}
 }
 
@@ -788,17 +929,20 @@ func (cp *CommandPalette) switchMode(m paletteMode) {
 		cp.items = cp.menuItems
 
 	case paletteModeAddEndpoint:
+		cp.editEndpoint = ""
+		cp.keyExisting = ""
 		cp.activeForm = 0
 		cp.nameField.SetText("")
 		cp.urlField.SetText("")
 		cp.keyField.SetText("")
 		cp.items = nil
 
-	case paletteModeDelEndpoint:
+	case paletteModeManageEndpoints:
 		eps := cp.getEndpoints()
-		cp.items = make([]PaletteItem, len(eps))
-		for i, ep := range eps {
-			cp.items[i] = PaletteItem{Label: ep.Name, Sub: ep.BaseURL, Value: ep.Name}
+		cp.items = make([]PaletteItem, 0, len(eps)+1)
+		cp.items = append(cp.items, PaletteItem{Label: fmt.Sprintf("[%s]+ Add new endpoint[-]", TC.SystemColor), Sub: "register a new API endpoint"})
+		for _, ep := range eps {
+			cp.items = append(cp.items, PaletteItem{Label: ep.Name, Sub: ep.BaseURL, Value: ep.Name})
 		}
 
 	case paletteModeSelectModel:
@@ -857,26 +1001,43 @@ func (cp *CommandPalette) confirm() {
 		}
 
 	case paletteModeAddEndpoint:
+		if cp.editEndpoint != "" && cp.activeForm == 3 { // Delete button
+			// Confirm before deleting; the callback raises the dialog.
+			if cp.onDeleteEndpoint != nil {
+				cp.onDeleteEndpoint(cp.editEndpoint, cp.urlField.GetText())
+			}
+			return
+		}
 		name := strings.TrimSpace(cp.nameField.GetText())
 		baseURL := strings.TrimSpace(cp.urlField.GetText())
 		apiKey := strings.TrimSpace(cp.keyField.GetText())
+		if apiKey == "" && cp.editEndpoint != "" {
+			apiKey = cp.keyExisting // left untouched: keep the stored key
+		}
 		if name == "" || baseURL == "" || apiKey == "" {
 			return
 		}
 		if cp.onAddEndpoint != nil {
-			cp.onAddEndpoint(name, baseURL, apiKey)
+			cp.onAddEndpoint(cp.editEndpoint, name, baseURL, apiKey)
 		}
 		cp.Close()
 
-	case paletteModeDelEndpoint:
+	case paletteModeManageEndpoints:
 		if len(cp.filtered) == 0 {
 			return
 		}
 		item := cp.items[cp.filtered[cp.sel]]
-		if cp.onDelEndpoint != nil {
-			cp.onDelEndpoint(item.Value)
+		if item.Value == "" { // "+ Add new endpoint"
+			cp.switchMode(paletteModeAddEndpoint)
+			return
 		}
-		cp.Close()
+		// Open the pre-filled form for the chosen endpoint.
+		for _, ep := range cp.getEndpoints() {
+			if ep.Name == item.Value {
+				cp.EditEndpoint(ep.Name, ep.BaseURL, ep.APIKey)
+				break
+			}
+		}
 
 	case paletteModeSelectModel:
 		if len(cp.filtered) == 0 {
@@ -943,8 +1104,7 @@ func topLevelItems() []PaletteItem {
 		{Label: "New session", Sub: "save current and start fresh"},
 		{Label: "Compact conversation", Sub: "summarize and compress history"},
 		{Label: "Toggle plan mode", Sub: "explore and plan without making changes"},
-		{Label: "Add endpoint", Sub: "register a new API endpoint"},
-		{Label: "Delete endpoint", Sub: "remove a saved endpoint"},
+		{Label: "Manage endpoints", Sub: "add, edit, or remove API endpoints"},
 		{Label: "Select model", Sub: "choose model from an endpoint"},
 		{Label: "Switch theme", Sub: "change the color scheme"},
 		{Label: "Hotkeys", Sub: "view and trigger keyboard shortcuts"},
@@ -1013,9 +1173,12 @@ func dimColor(c, fallback tcell.Color, t float64) tcell.Color {
 func (cp *CommandPalette) modeTitle() string {
 	switch cp.mode {
 	case paletteModeAddEndpoint:
+		if cp.editEndpoint != "" {
+			return "edit endpoint"
+		}
 		return "add endpoint"
-	case paletteModeDelEndpoint:
-		return "delete endpoint"
+	case paletteModeManageEndpoints:
+		return "manage endpoints"
 	case paletteModeSelectModel:
 		return "select model"
 	case paletteModeResumeSession:
@@ -1065,6 +1228,42 @@ func formatContextUsage(window, promptTokens int64) string {
 		return fmt.Sprintf("%.1f%% context", pct)
 	}
 	return humanTokens(promptTokens) + " token"
+}
+
+// maskAPIKey obscures an api key for display: everything up to and including the
+// last '-' is kept, and the remainder has all but its final 4 characters replaced
+// with '*' (e.g. "sk-a-b-c-XXXXXXdddd" → "sk-a-b-c-******dddd"). Keys with no '-'
+// are masked as a whole; a tail of 4 or fewer characters is left as-is.
+func maskAPIKey(key string) string {
+	if key == "" {
+		return ""
+	}
+	prefix, suffix := "", key
+	if i := strings.LastIndexByte(key, '-'); i >= 0 {
+		prefix, suffix = key[:i+1], key[i+1:]
+	}
+	r := []rune(suffix)
+	if len(r) <= 4 {
+		return prefix + suffix
+	}
+	return prefix + strings.Repeat("*", len(r)-4) + string(r[len(r)-4:])
+}
+
+// truncMiddle shortens s to at most maxW columns by collapsing its middle into a
+// single ellipsis, keeping the head and tail (so a masked key keeps both its
+// prefix and its last visible characters). Rune-based; fine for ASCII keys.
+func truncMiddle(s string, maxW int) string {
+	if tview.TaggedStringWidth(s) <= maxW {
+		return s
+	}
+	if maxW <= 1 {
+		return "…"
+	}
+	r := []rune(s)
+	keep := maxW - 1
+	head := keep / 2
+	tail := keep - head
+	return string(r[:head]) + "…" + string(r[len(r)-tail:])
 }
 
 // shortenPath renders a directory path to fit maxW display columns. It uses the

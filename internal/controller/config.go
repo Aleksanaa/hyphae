@@ -17,6 +17,19 @@ func (c *Controller) AddEndpoint(name, baseURL, apiKey string) error {
 	return c.cfg.Save()
 }
 
+// UpdateEndpoint replaces the endpoint named origName in place (keeping its
+// position) with the given fields and saves. Falls back to appending when
+// origName is not found.
+func (c *Controller) UpdateEndpoint(origName, name, baseURL, apiKey string) error {
+	for i, ep := range c.cfg.Endpoints {
+		if ep.Name == origName {
+			c.cfg.Endpoints[i] = config.Endpoint{Name: name, BaseURL: baseURL, APIKey: apiKey}
+			return c.cfg.Save()
+		}
+	}
+	return c.AddEndpoint(name, baseURL, apiKey)
+}
+
 // RemoveEndpoint deletes an endpoint by name from the config and saves it.
 func (c *Controller) RemoveEndpoint(name string) error {
 	eps := c.cfg.Endpoints

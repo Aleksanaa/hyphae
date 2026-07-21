@@ -250,7 +250,7 @@ func New(cfg *config.Config) *App {
 func (a *App) Run() error {
 	if tc := a.activeContent(); tc != nil {
 		if len(a.cfg.Endpoints) == 0 {
-			tc.Status.SetError("no endpoint configured — press Ctrl+P to add one")
+			tc.Status.SetError("no endpoint configured — press Ctrl+P and choose Manage endpoints")
 		} else if a.cfg.Model == "" {
 			tc.Status.SetError("no model selected — press Ctrl+P to select one")
 		}
@@ -774,6 +774,10 @@ func (a *App) resumeSession(id string) {
 // or cancel and return to the session list.
 func (a *App) showWorkdirDialog(id, orig, cwd string) {
 	p := a.layout.Palette
+	back := func() {
+		p.SwitchMode(paletteModeResumeSession)
+		a.tapp.SetFocus(p)
+	}
 	choices := []PaletteItem{
 		{
 			Label:      fmt.Sprintf("[%s]Keep original path[-]", TC.SuccessColor),
@@ -796,14 +800,58 @@ func (a *App) showWorkdirDialog(id, orig, cwd string) {
 		},
 		{
 			Label:  "Cancel, don't resume session",
-			Action: func() { p.SwitchMode(paletteModeResumeSession) },
+			Action: back,
 		},
 	}
 	p.ShowDialog("resume where?", []string{
 		"This session was last used in another directory.",
 		"Run it there, or switch it to the current directory?",
-	}, choices)
+	}, choices, back)
 	a.tapp.SetFocus(p)
+}
+
+// showDeleteEndpointDialog confirms deletion of an endpoint. Confirming removes it
+// and returns to the endpoint list; cancelling (a choice, Esc, or backdrop) returns
+// to the edit form with its fields intact.
+func (a *App) showDeleteEndpointDialog(name, url string) {
+	p := a.layout.Palette
+	back := func() {
+		p.ReopenEndpointForm()
+		a.tapp.SetFocus(p)
+	}
+	choices := []PaletteItem{
+		{
+			Label:  fmt.Sprintf("[%s]No... fat fingered it[-]", TC.SuccessColor),
+			Action: back,
+		},
+		{
+			Label: fmt.Sprintf("[%s]Yes, captain![-]", TC.ErrorColor),
+			Action: func() {
+				a.deleteEndpoint(name)
+				p.SwitchMode(paletteModeManageEndpoints)
+				a.tapp.SetFocus(p)
+			},
+		},
+	}
+	p.ShowDialog("delete endpoint?", []string{
+		fmt.Sprintf("You are deleting [%s]%s[-]", TC.Accent, name),
+		fmt.Sprintf("[%s]%s[-]", TC.Muted, url),
+		"Are you sure?",
+	}, choices, back)
+	a.tapp.SetFocus(p)
+}
+
+// deleteEndpoint removes an endpoint by name and reports the outcome.
+func (a *App) deleteEndpoint(name string) {
+	if err := a.ctrl.RemoveEndpoint(name); err != nil {
+		if tc := a.activeContent(); tc != nil {
+			tc.Status.SetError("save failed: " + err.Error())
+		}
+	} else {
+		if tc := a.activeContent(); tc != nil {
+			tc.Status.SetMessage(fmt.Sprintf("endpoint %q removed", name))
+		}
+	}
 }
 
 // newSession persists the current session (if any) and switches to a blank one.
@@ -824,29 +872,29 @@ func (a *App) setupPalette() {
 				a.tapp.SetFocus(tc.Input.TextArea)
 			}
 		},
-		// onAddEndpoint
-		func(name, baseURL, apiKey string) {
-			if err := a.ctrl.AddEndpoint(name, baseURL, apiKey); err != nil {
+		// onAddEndpoint — origName is "" when adding, or the endpoint being edited.
+		func(origName, name, baseURL, apiKey string) {
+			var err error
+			verb := "added"
+			if origName != "" {
+				err = a.ctrl.UpdateEndpoint(origName, name, baseURL, apiKey)
+				verb = "updated"
+			} else {
+				err = a.ctrl.AddEndpoint(name, baseURL, apiKey)
+			}
+			if err != nil {
 				if tc := a.activeContent(); tc != nil {
 					tc.Status.SetError("save failed: " + err.Error())
 				}
 			} else {
 				if tc := a.activeContent(); tc != nil {
-					tc.Status.SetMessage(fmt.Sprintf("endpoint %q added", name))
+					tc.Status.SetMessage(fmt.Sprintf("endpoint %q %s", name, verb))
 				}
 			}
 		},
-		// onDelEndpoint
-		func(name string) {
-			if err := a.ctrl.RemoveEndpoint(name); err != nil {
-				if tc := a.activeContent(); tc != nil {
-					tc.Status.SetError("save failed: " + err.Error())
-				}
-			} else {
-				if tc := a.activeContent(); tc != nil {
-					tc.Status.SetMessage(fmt.Sprintf("endpoint %q removed", name))
-				}
-			}
+		// onDeleteEndpoint — raises a confirm dialog before removing.
+		func(name, url string) {
+			a.showDeleteEndpointDialog(name, url)
 		},
 		// onSelectModel — value is "endpointName\x00modelID", resolved to the
 		// full Model (with context window and pricing) from the last listing.
@@ -898,7 +946,7 @@ func (a *App) setupPalette() {
 			eps := a.cfg.Endpoints
 			out := make([]paletteEndpointInfo, len(eps))
 			for i, ep := range eps {
-				out[i] = paletteEndpointInfo{Name: ep.Name, BaseURL: ep.BaseURL}
+				out[i] = paletteEndpointInfo{Name: ep.Name, BaseURL: ep.BaseURL, APIKey: ep.APIKey}
 			}
 			return out
 		},
@@ -1005,11 +1053,10 @@ func (a *App) openPalette() {
 	p.menuItems[1].Action = func() { p.Close(); a.newSession() }
 	p.menuItems[2].Action = func() { p.Close(); a.compactConversation() }
 	p.menuItems[3].Action = func() { p.Close(); a.togglePlanMode() }
-	p.menuItems[4].Action = func() { p.switchMode(paletteModeAddEndpoint) }
-	p.menuItems[5].Action = func() { p.switchMode(paletteModeDelEndpoint) }
-	p.menuItems[6].Action = a.enterSelectModel
-	p.menuItems[7].Action = func() { p.switchMode(paletteModeSelectTheme) }
-	p.menuItems[8].Action = func() { p.switchMode(paletteModeHotkeys) }
+	p.menuItems[4].Action = func() { p.switchMode(paletteModeManageEndpoints) }
+	p.menuItems[5].Action = a.enterSelectModel
+	p.menuItems[6].Action = func() { p.switchMode(paletteModeSelectTheme) }
+	p.menuItems[7].Action = func() { p.switchMode(paletteModeHotkeys) }
 	p.Open()
 	a.layout.ShowPalette()
 	a.tapp.SetFocus(p)
@@ -1098,8 +1145,11 @@ func (a *App) paletteBack() {
 	p := a.layout.Palette
 	switch p.GetMode() {
 	case paletteModeConfirm:
-		// Cancelling the resume-workdir dialog returns to the session list.
-		p.SwitchMode(paletteModeResumeSession)
+		// Each dialog defines its own step-back target (session list, edit form, …).
+		p.DialogBack()
+	case paletteModeAddEndpoint:
+		// The endpoint form is reached from the manage-endpoints list; step back to it.
+		p.SwitchMode(paletteModeManageEndpoints)
 		a.tapp.SetFocus(p)
 	case paletteModeMenu:
 		p.Close()
