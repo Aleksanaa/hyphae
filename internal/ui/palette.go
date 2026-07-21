@@ -22,6 +22,7 @@ const (
 	paletteModeResumeSession                    // list of past sessions to resume
 	paletteModeHotkeys                          // list of keyboard shortcuts
 	paletteModeSelectTheme                      // list of color themes to pick
+	paletteModeConfirm                          // prompt + choice buttons (a dialog)
 )
 
 // PaletteItem is one selectable entry in the palette list. An entry occupies one
@@ -73,6 +74,10 @@ type CommandPalette struct {
 	sel       int
 	top       int // first visible filtered index (persistent scroll position)
 
+	// dialog state (paletteModeConfirm): a prompt above the choice items
+	dialogTitle string
+	dialogLines []string
+
 	// scrollbar is the shared Scrollbar primitive, driven in content-row units.
 	// The palette owns it directly (like its input fields) rather than through a
 	// tview layout, driving its Draw and forwarding mouse events to it.
@@ -86,7 +91,7 @@ type CommandPalette struct {
 	onDelEndpoint   func(name string)
 	onSelectModel   func(model string)
 	onSelectTheme   func(id string)
-	onResumeSession func(id string)
+	onResumeSession func(id, workDir string)
 	getEndpoints    func() []paletteEndpointInfo
 	getSessions     func() []paletteSessionInfo
 	getHotkeyItems  func() []PaletteItem
@@ -197,13 +202,28 @@ func (cp *CommandPalette) SetBackFunc(fn func()) { cp.onBack = fn }
 // handleGlobalKey.
 func (cp *CommandPalette) SwitchMode(m paletteMode) { cp.switchMode(m) }
 
+// ShowDialog switches the palette into a confirm dialog: a prompt (one entry per
+// line) above a list of choices. Each choice is a PaletteItem whose Action runs
+// when it is confirmed (Enter or double-click). The palette must already be
+// visible (dialogs are raised mid-flow, e.g. from a list selection).
+func (cp *CommandPalette) ShowDialog(title string, lines []string, choices []PaletteItem) {
+	cp.mode = paletteModeConfirm
+	cp.dialogTitle = title
+	cp.dialogLines = lines
+	cp.items = choices
+	cp.sel = 0
+	cp.top = 0
+	cp.queryField.SetText("")
+	cp.refilter()
+}
+
 func (cp *CommandPalette) SetCallbacks(
 	onClose func(),
 	onAddEndpoint func(name, baseURL, apiKey string),
 	onDelEndpoint func(name string),
 	onSelectModel func(model string),
 	onSelectTheme func(id string),
-	onResumeSession func(id string),
+	onResumeSession func(id, workDir string),
 	getEndpoints func() []paletteEndpointInfo,
 	getSessions func() []paletteSessionInfo,
 	getHotkeyItems func() []PaletteItem,
@@ -253,6 +273,9 @@ func (cp *CommandPalette) InputHandler() func(*tcell.EventKey, func(tview.Primit
 	return cp.WrapInputHandler(func(event *tcell.EventKey, setFocus func(tview.Primitive)) {
 		if !cp.visible {
 			return
+		}
+		if cp.mode == paletteModeConfirm {
+			return // a dialog has no text field; navigation is handled globally
 		}
 		var field *tview.InputField
 		if cp.mode == paletteModeAddEndpoint {
@@ -317,6 +340,14 @@ func (cp *CommandPalette) MouseHandler() func(tview.MouseAction, *tcell.EventMou
 		}
 
 		row := my - contentY
+
+		// In a dialog the choices sit below the prompt; map the click accordingly.
+		if pr := cp.dialogPromptRows(); pr > 0 {
+			row -= pr
+			if row < 0 {
+				return true, nil
+			}
+		}
 
 		if cp.mode == paletteModeAddEndpoint {
 			if row < 3 {
@@ -396,7 +427,7 @@ func (cp *CommandPalette) Draw(screen tcell.Screen) {
 		w = sw - 4
 	}
 
-	visRows := cp.contentRows()
+	visRows := cp.contentRows() + cp.dialogPromptRows()
 	if cp.mode == paletteModeAddEndpoint {
 		visRows = 0
 	}
@@ -447,9 +478,12 @@ func (cp *CommandPalette) Draw(screen tcell.Screen) {
 	selMutedSt := tcell.StyleDefault.Background(paletteSelBg).Foreground(Theme.Muted)
 
 	// Query row (y+1).
-	if cp.mode == paletteModeAddEndpoint {
+	switch cp.mode {
+	case paletteModeAddEndpoint:
 		drawText(screen, "fill in fields below, Enter to confirm", x+2, y+1, w-4, mutedSt)
-	} else {
+	case paletteModeConfirm:
+		drawText(screen, "↑↓ choose · Enter confirm · Esc cancel", x+2, y+1, w-4, mutedSt)
+	default:
 		cp.queryField.SetBackgroundColor(bg)
 		cp.queryField.SetFieldBackgroundColor(bg)
 		cp.queryField.SetRect(x+1, y+1, w-2, 1)
@@ -466,10 +500,32 @@ func (cp *CommandPalette) Draw(screen tcell.Screen) {
 	// Content area (y+3 .. y+h-2).
 	itemsH := h - 4
 	cp.trackH = itemsH
-	if cp.mode == paletteModeAddEndpoint {
+	switch cp.mode {
+	case paletteModeAddEndpoint:
 		cp.drawFormFields(screen, x, y+3, w, bg)
-	} else {
+	case paletteModeConfirm:
+		pr := cp.dialogPromptRows()
+		cp.drawDialogPrompt(screen, x, y+3, w, textSt)
+		cp.drawItems(screen, x, y+3+pr, w, itemsH-pr, selSt, selMutedSt, mutedSt, textSt)
+	default:
 		cp.drawItems(screen, x, y+3, w, itemsH, selSt, selMutedSt, mutedSt, textSt)
+	}
+}
+
+// dialogPromptRows is the number of content rows the dialog prompt occupies
+// (one per line plus a trailing blank), or 0 outside dialog mode.
+func (cp *CommandPalette) dialogPromptRows() int {
+	if cp.mode != paletteModeConfirm || len(cp.dialogLines) == 0 {
+		return 0
+	}
+	return len(cp.dialogLines) + 1
+}
+
+// drawDialogPrompt renders the dialog's prompt lines above its choices.
+func (cp *CommandPalette) drawDialogPrompt(screen tcell.Screen, x, y, w int, st tcell.Style) {
+	fg, _, _ := st.Decompose()
+	for i, line := range cp.dialogLines {
+		tview.Print(screen, line, x+2, y+i, w-4, tview.AlignLeft, fg)
 	}
 }
 
@@ -766,7 +822,7 @@ func (cp *CommandPalette) switchMode(m paletteMode) {
 					Detail:      s.WorkDir,
 					DetailPath:  true,
 					DetailRight: formatContextUsage(s.ContextWindow, s.PromptTokens),
-					Value:       s.ID,
+					Value:       s.ID + "\x00" + s.WorkDir,
 				}
 			}
 		}
@@ -841,10 +897,12 @@ func (cp *CommandPalette) confirm() {
 		if item.Value == "" {
 			return // "no saved sessions" placeholder
 		}
+		// Value is "id\x00workDir"; the callback decides whether to resume
+		// directly or raise a dialog, so we don't Close() here.
+		id, workDir, _ := strings.Cut(item.Value, "\x00")
 		if cp.onResumeSession != nil {
-			cp.onResumeSession(item.Value)
+			cp.onResumeSession(id, workDir)
 		}
-		cp.Close()
 
 	case paletteModeSelectTheme:
 		if len(cp.filtered) == 0 {
@@ -855,6 +913,14 @@ func (cp *CommandPalette) confirm() {
 			cp.onSelectTheme(item.Value)
 		}
 		cp.Close()
+
+	case paletteModeConfirm:
+		if len(cp.filtered) == 0 {
+			return
+		}
+		if item := cp.items[cp.filtered[cp.sel]]; item.Action != nil {
+			item.Action()
+		}
 	}
 }
 
@@ -959,6 +1025,8 @@ func (cp *CommandPalette) modeTitle() string {
 		return "hotkeys"
 	case paletteModeSelectTheme:
 		return "switch theme"
+	case paletteModeConfirm:
+		return cp.dialogTitle
 	default:
 		return "command palette"
 	}

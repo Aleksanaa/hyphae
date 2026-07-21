@@ -92,6 +92,9 @@ func (c *Controller) ResumeSession(id string) (*session.Session, SessionInfo, er
 		return nil, SessionInfo{}, err
 	}
 
+	// Default to the current directory; the stored work dir (restored from the
+	// session row below) overrides it so a resumed session runs where it was
+	// created, not where hyphae happens to be launched from.
 	workDir, _ := os.Getwd()
 	sess := session.NewSession(id, workDir)
 
@@ -176,6 +179,9 @@ func (c *Controller) ResumeSession(id string) (*session.Session, SessionInfo, er
 		info.TotalCost = row.TotalCost
 		info.PromptTokens = row.LastPromptTokens
 		info.PlanMode = row.PlanMode
+		if row.WorkDir != "" {
+			sess.WorkDir = row.WorkDir
+		}
 		info.Model = Model{
 			Endpoint:      row.ActiveEndpoint,
 			ID:            row.Model,
@@ -219,6 +225,18 @@ func (c *Controller) ResumeSession(id string) (*session.Session, SessionInfo, er
 	}
 
 	return sess, info, nil
+}
+
+// SetSessionWorkDir changes a session's working directory in memory and persists
+// it, so subsequent tool/shell execution (which runs in sess.WorkDir) and future
+// resumes use the new location. No-ops for an unknown session.
+func (c *Controller) SetSessionWorkDir(id, workDir string) {
+	if sess, ok := c.mgr.Get(id); ok {
+		sess.WorkDir = workDir
+	}
+	if c.st != nil {
+		_ = c.st.UpdateSessionWorkDir(id, workDir) //nolint:errcheck
+	}
 }
 
 // toolStatusFromLoaded builds a RoleTool status item from a loaded row's tool

@@ -769,6 +769,43 @@ func (a *App) resumeSession(id string) {
 	a.switchTab(sess.ID)
 }
 
+// showWorkdirDialog asks, when resuming a session created elsewhere, whether to
+// run it in its original directory, adopt the current one (persisting the change),
+// or cancel and return to the session list.
+func (a *App) showWorkdirDialog(id, orig, cwd string) {
+	p := a.layout.Palette
+	choices := []PaletteItem{
+		{
+			Label:      fmt.Sprintf("[%s]Keep original path[-]", TC.SuccessColor),
+			Detail:     orig,
+			DetailPath: true,
+			Action: func() {
+				a.resumeSession(id)
+				p.Close()
+			},
+		},
+		{
+			Label:      fmt.Sprintf("[%s]Change to current path[-]", TC.ErrorColor),
+			Detail:     cwd,
+			DetailPath: true,
+			Action: func() {
+				a.resumeSession(id)
+				a.ctrl.SetSessionWorkDir(id, cwd)
+				p.Close()
+			},
+		},
+		{
+			Label:  "Cancel, don't resume session",
+			Action: func() { p.SwitchMode(paletteModeResumeSession) },
+		},
+	}
+	p.ShowDialog("resume where?", []string{
+		"This session was last used in another directory.",
+		"Run it there, or switch it to the current directory?",
+	}, choices)
+	a.tapp.SetFocus(p)
+}
+
 // newSession persists the current session (if any) and switches to a blank one.
 func (a *App) newSession() {
 	a.persistActive()
@@ -844,9 +881,17 @@ func (a *App) setupPalette() {
 			a.restyle()
 		},
 		// onResumeSession
-		func(id string) {
-			a.layout.HidePalette()
-			a.resumeSession(id)
+		func(id, workDir string) {
+			cwd, _ := os.Getwd()
+			// Resume straight away when the session is already open, or its stored
+			// directory is unknown or matches where we are. Otherwise ask whether to
+			// run it in its original directory or the current one.
+			if _, open := a.tabByID[id]; open || workDir == "" || workDir == cwd {
+				a.resumeSession(id)
+				a.layout.Palette.Close()
+				return
+			}
+			a.showWorkdirDialog(id, workDir, cwd)
 		},
 		// getEndpoints
 		func() []paletteEndpointInfo {
@@ -1051,11 +1096,16 @@ func (a *App) openModelSelect() {
 // and the menu closes. Shared by Esc and the backdrop click.
 func (a *App) paletteBack() {
 	p := a.layout.Palette
-	if p.GetMode() != paletteModeMenu {
+	switch p.GetMode() {
+	case paletteModeConfirm:
+		// Cancelling the resume-workdir dialog returns to the session list.
+		p.SwitchMode(paletteModeResumeSession)
+		a.tapp.SetFocus(p)
+	case paletteModeMenu:
+		p.Close()
+	default:
 		p.SwitchMode(paletteModeMenu)
 		a.tapp.SetFocus(p)
-	} else {
-		p.Close()
 	}
 }
 

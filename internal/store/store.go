@@ -232,6 +232,15 @@ func (s *Store) UpdateSessionTitle(id, title string) error {
 	return err
 }
 
+// UpdateSessionWorkDir updates the working directory and bumps updated_at.
+func (s *Store) UpdateSessionWorkDir(id, workDir string) error {
+	_, err := s.db.Exec(
+		`UPDATE sessions SET work_dir = ?, updated_at = ? WHERE id = ?`,
+		workDir, now(), id,
+	)
+	return err
+}
+
 // ListSessions returns all sessions ordered newest first, across every work dir.
 func (s *Store) ListSessions() ([]SessionRow, error) {
 	rows, err := s.db.Query(
