@@ -689,10 +689,30 @@ func (cv *ChatView) buildText(width int) {
 	// as an expandable status.
 	writeFlatLine := func(line string, sessIdx, toolIdx int) {
 		line = stabilizeWidth(line)
-		b.WriteString(strings.Repeat(" ", lay.off+2))
-		b.WriteString(line)
-		b.WriteString("\n")
-		addEntry(renderMsg{role: session.RoleTool, content: line}, sessIdx, toolIdx, lay.off+2, tview.TaggedStringWidth(line), 1, nil)
+		base := strings.Repeat(" ", lay.off+2)
+		// Wrap overlong status lines instead of letting TextView char-wrap them:
+		// each wrapped row must be counted as its own doc-line, else every entry
+		// below desyncs. Continuation rows hang-indent to align after the "apex "
+		// label and re-open the muted color the wrap split off.
+		const hang = "     " // width of "apex "
+		rows := tview.WordWrap(line, max(1, lay.band-2-len(hang)))
+		if len(rows) == 0 {
+			rows = []string{""}
+		}
+		boxW := 0
+		for i, r := range rows {
+			b.WriteString(base)
+			w := tview.TaggedStringWidth(r)
+			if i > 0 {
+				b.WriteString(hang)
+				fmt.Fprintf(&b, "[%s]", TC.Muted)
+				w += len(hang)
+			}
+			b.WriteString(r)
+			b.WriteString("\n")
+			boxW = max(boxW, w)
+		}
+		addEntry(renderMsg{role: session.RoleTool, content: line}, sessIdx, toolIdx, lay.off+2, boxW, len(rows), nil)
 	}
 	renderBox := func(entry renderMsg, sessIdx, toolIdx int) {
 		entry.content = stabilizeWidth(entry.content)
