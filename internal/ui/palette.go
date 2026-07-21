@@ -3,7 +3,6 @@ package ui
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -1068,10 +1067,9 @@ func formatContextUsage(window, promptTokens int64) string {
 	return humanTokens(promptTokens) + " token"
 }
 
-// shortenPath renders a directory path to fit maxW display columns. It prefers a
-// home-abbreviated absolute path ("~/…"), or a path relative to the current
-// working directory when that is shorter and still points inside it. When that
-// is still too wide it collapses interior segments to their first letter starting
+// shortenPath renders a directory path to fit maxW display columns. It uses the
+// home-abbreviated absolute path ("~/…"), falling back to absolute. When that is
+// still too wide it collapses interior segments to their first letter starting
 // from the second segment (e.g. ~/w/p/hyphae), and finally hard-truncates with a
 // leading ellipsis.
 func shortenPath(dir string, maxW int) string {
@@ -1079,11 +1077,6 @@ func shortenPath(dir string, maxW int) string {
 		return ""
 	}
 	disp := hpath(dir)
-	if cwd, err := os.Getwd(); err == nil {
-		if rel := rpath(dir, cwd); rel != "" && tview.TaggedStringWidth(rel) < tview.TaggedStringWidth(disp) {
-			disp = rel
-		}
-	}
 	if tview.TaggedStringWidth(disp) <= maxW {
 		return disp
 	}
@@ -1107,18 +1100,6 @@ func hpath(p string) string {
 		return "~" + string(os.PathSeparator) + rel
 	}
 	return p
-}
-
-// rpath returns p relative to base when p is strictly inside base; otherwise "".
-func rpath(p, base string) string {
-	if base == "" {
-		return ""
-	}
-	rel, err := filepath.Rel(base, p)
-	if err != nil || rel == "." || strings.HasPrefix(rel, "..") {
-		return ""
-	}
-	return rel
 }
 
 // collapseFromSecond abbreviates each interior segment of a slash path to its
