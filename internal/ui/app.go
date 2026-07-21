@@ -458,7 +458,23 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 	// Ctrl+Z suspends to the background like an ordinary shell program. In raw
 	// mode tcell delivers it as a key event instead of raising SIGTSTP, so we
 	// raise it ourselves after restoring the terminal.
+	//
+	// Exception: when the message input is focused and non-empty, Ctrl+Z acts
+	// as undo (the TextArea's built-in behavior). We forward the key to the
+	// widget and check whether it actually undid anything — tview's undo is a
+	// no-op when the stack is empty, and there is no public way to query it, so
+	// we detect the change by comparing the text. If nothing was undone we fall
+	// through to suspend, preserving Ctrl+Z's shell behavior.
 	if event.Key() == tcell.KeyCtrlZ {
+		if tc != nil && a.tapp.GetFocus() == tc.Input.TextArea && tc.Input.GetTextLength() > 0 {
+			before := tc.Input.GetText()
+			if h := tc.Input.TextArea.InputHandler(); h != nil {
+				h(event, func(p tview.Primitive) { a.tapp.SetFocus(p) })
+			}
+			if tc.Input.GetText() != before {
+				return nil // undo happened; consume the key
+			}
+		}
 		a.suspend()
 		return nil
 	}
