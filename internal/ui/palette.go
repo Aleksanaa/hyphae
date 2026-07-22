@@ -1169,11 +1169,9 @@ func (cp *CommandPalette) switchMode(m paletteMode) {
 		cp.items = append(cp.items, PaletteItem{Label: fmt.Sprintf("[%s]+ Add new permission[-]", TC.SystemColor), Sub: "grant file or web access"})
 		for _, p := range perms {
 			cp.items = append(cp.items, PaletteItem{
-				Label:      permTypeLabel(p.Type),
-				Sub:        "enter to view",
-				Detail:     p.Scope,
-				DetailPath: p.Type != "web_fetch", // URL prefixes shouldn't be path-shortened
-				Value:      p.Type + "\x00" + p.Scope,
+				Label: p.Scope, // path/URL on the left, in the default (white) text color
+				Sub:   permTypeLabel(p.Type),
+				Value: p.Type + "\x00" + p.Scope,
 			})
 		}
 
@@ -1186,16 +1184,16 @@ func (cp *CommandPalette) switchMode(m paletteMode) {
 	cp.refilter()
 }
 
-// permTypeLabel renders a grant type as a colored label: readwrite is the
-// powerful one (amber), reads and fetches are dim/blue.
+// permTypeLabel renders a grant type as a colored label, keyed to how much power
+// it confers: readonly green (safe), web_fetch yellow, readwrite red (dangerous).
 func permTypeLabel(gtype string) string {
 	switch gtype {
 	case "readwrite":
-		return fmt.Sprintf("[%s]readwrite[-]", TC.PendingColor)
+		return fmt.Sprintf("[%s]readwrite[-]", TC.ErrorColor)
 	case "web_fetch":
-		return fmt.Sprintf("[%s]web_fetch[-]", TC.SystemColor)
+		return fmt.Sprintf("[%s]web_fetch[-]", TC.PendingColor)
 	default:
-		return fmt.Sprintf("[%s]readonly[-]", TC.Muted)
+		return fmt.Sprintf("[%s]readonly[-]", TC.SuccessColor)
 	}
 }
 
