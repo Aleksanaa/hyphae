@@ -2,6 +2,7 @@ package controller
 
 import (
 	"encoding/json"
+	"os"
 
 	"github.com/aleksanaa/hyphae/internal/agent"
 )
@@ -55,11 +56,8 @@ func (c *Controller) AddPermission(gtype, path string) string {
 	if sess, ok := c.mgr.Get(id); ok {
 		workDir = sess.WorkDir
 	}
-	ag := c.agentFor(id)
-	scope := ag.AddGrant(gtype, path, workDir)
-	if c.st != nil {
-		c.st.UpdateSessionPermissions(id, encodePermissions(ag.Grants())) //nolint:errcheck
-	}
+	scope := c.agentFor(id).AddGrant(gtype, path, workDir)
+	c.persistPermissions(id)
 	return scope
 }
 
@@ -70,13 +68,10 @@ func (c *Controller) RevokePermission(gtype, scope string) {
 	if id == "" {
 		return
 	}
-	ag := c.agentFor(id)
-	if !ag.RevokeGrant(agent.Grant{Type: gtype, Scope: scope}) {
+	if !c.agentFor(id).RevokeGrant(agent.Grant{Type: gtype, Scope: scope}) {
 		return
 	}
-	if c.st != nil {
-		c.st.UpdateSessionPermissions(id, encodePermissions(ag.Grants())) //nolint:errcheck
-	}
+	c.persistPermissions(id)
 	// Tell the model on its next turn that this access is gone.
 	if sess, ok := c.mgr.Get(id); ok {
 		sess.AddReminder(agent.PermissionRevokedReminder(gtype, scope))
@@ -84,7 +79,10 @@ func (c *Controller) RevokePermission(gtype, scope string) {
 }
 
 // persistPermissions writes the current grants of a session's agent to storage.
-// Called at turn end so grants added via request_access survive a restart.
+// Called at turn end (so request_access grants survive a restart) and right after
+// a palette add/revoke. It ensures the session row exists first: a fresh session
+// gets its row only at the first turn-end PersistSession, and an UPDATE against a
+// missing row is silently dropped, so a grant made before then would be lost.
 func (c *Controller) persistPermissions(sessionID string) {
 	if c.st == nil {
 		return
@@ -95,5 +93,13 @@ func (c *Controller) persistPermissions(sessionID string) {
 	if ag == nil {
 		return
 	}
+	workDir := ""
+	if sess, ok := c.mgr.Get(sessionID); ok {
+		workDir = sess.WorkDir
+	}
+	if workDir == "" {
+		workDir, _ = os.Getwd()
+	}
+	c.st.CreateSession(sessionID, workDir)                                   //nolint:errcheck
 	c.st.UpdateSessionPermissions(sessionID, encodePermissions(ag.Grants())) //nolint:errcheck
 }

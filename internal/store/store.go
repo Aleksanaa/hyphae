@@ -141,7 +141,10 @@ var migrations = []migration{
 	{4, "plan_mode_col", sqlAddPlanMode},
 	{5, "session_model_col", sqlAddSessionModel},
 	{6, "messages_status_label", sqlAddStatusLabel},
-	{7, "session_permissions", sqlAddPermissions},
+	// id 7 is intentionally skipped: an earlier "session_effort_col" migration
+	// shipped under id 7 on some DBs, and migrate() dedupes by id — reusing 7
+	// would make those DBs skip this one, leaving the permissions column absent.
+	{8, "session_permissions", sqlAddPermissions},
 }
 
 func (s *Store) migrate() error {
