@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 
 	"github.com/aleksanaa/hyphae/internal/session"
+	"github.com/aleksanaa/hyphae/internal/strutil"
 	starlarkjson "github.com/aleksanaa/hyphae/internal/third_party/starlark/lib/json"
 	starlarkmath "github.com/aleksanaa/hyphae/internal/third_party/starlark/lib/math"
 	starlarktime "github.com/aleksanaa/hyphae/internal/third_party/starlark/lib/time"
@@ -318,11 +319,7 @@ func toolDisplayTarget(firstParam string, argsMap map[string]any) string {
 		}
 		return b
 	}
-	rr := []rune(raw)
-	if len(rr) > 30 {
-		return string(rr[:29]) + "…"
-	}
-	return raw
+	return strutil.Truncate(raw, 30)
 }
 
 // runScript executes a Starlark program with all agent operations available as
@@ -588,10 +585,7 @@ func buildScriptEnv(ctx context.Context, ch chan<- Event, workDir string, counte
 			}
 		}
 		question, _ := m["question"].(string)
-		target := question
-		if rr := []rune(target); len(rr) > 30 {
-			target = string(rr[:29]) + "…"
-		}
+		target := strutil.Truncate(question, 30)
 		emitStatusEvent(session.StatusEvent{Kind: session.StatusEventDoing, Verb: "is asking", Target: target})
 		te := &ToolEvent{
 			CallID:         fmt.Sprintf("script:%d", counter.Add(1)),

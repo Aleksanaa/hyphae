@@ -9,6 +9,7 @@ import (
 	"github.com/aleksanaa/hyphae/internal/agent"
 	"github.com/aleksanaa/hyphae/internal/session"
 	"github.com/aleksanaa/hyphae/internal/store"
+	"github.com/aleksanaa/hyphae/internal/strutil"
 )
 
 // SessionInfo carries the billing and display metadata for a resumed session.
@@ -154,11 +155,7 @@ func (c *Controller) ResumeSession(id string) (*session.Session, SessionInfo, er
 		}
 		userRounds++
 		if sess.Title == "" && m.Content != "" {
-			t := m.Content
-			if len(t) > 40 {
-				t = t[:37] + "…"
-			}
-			sess.Title = t
+			sess.Title = strutil.Truncate(m.Content, 40)
 		}
 	}
 	// Only settle the title if the session already crossed the generation

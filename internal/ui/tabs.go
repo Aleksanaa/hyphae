@@ -8,6 +8,7 @@ import (
 	"github.com/rivo/tview"
 
 	"github.com/aleksanaa/hyphae/internal/session"
+	"github.com/aleksanaa/hyphae/internal/strutil"
 )
 
 // scrollIndW is the screen width of the "…" scroll indicator on either side.
@@ -123,11 +124,7 @@ func (tb *TabBar) computeBodyWidth(tab TabInfo) int {
 	if title == "" {
 		title = "new session"
 	}
-	r := []rune(title)
-	if len(r) > 20 {
-		r = r[:19]
-		title = string(r) + "…"
-	}
+	title = strutil.Truncate(title, 20)
 	title = tview.Escape(title)
 
 	isActive := tab.ID == tb.activeID
@@ -289,11 +286,7 @@ func (tb *TabBar) Draw(screen tcell.Screen) {
 			if title == "" {
 				title = "new session"
 			}
-			r := []rune(title)
-			if len(r) > 20 {
-				r = r[:19]
-				title = string(r) + "…"
-			}
+			title = strutil.Truncate(title, 20)
 			title = tview.Escape(title)
 
 			var fgTag, bgTag string

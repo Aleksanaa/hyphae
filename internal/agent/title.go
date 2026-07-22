@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	openai "github.com/openai/openai-go/v3"
+
+	"github.com/aleksanaa/hyphae/internal/strutil"
 )
 
 //go:embed title.md
@@ -54,8 +56,5 @@ func cleanTitle(raw string) string {
 	if line == "" {
 		return ""
 	}
-	if r := []rune(line); len(r) > maxTitleLen {
-		line = string(r[:maxTitleLen-1]) + "…"
-	}
-	return line
+	return strutil.Truncate(line, maxTitleLen)
 }

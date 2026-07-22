@@ -6,6 +6,8 @@ import (
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 	"github.com/rivo/uniseg"
+
+	"github.com/aleksanaa/hyphae/internal/strutil"
 )
 
 // ApprovalHeight is the fixed row count of the approval bar when visible.
@@ -176,14 +178,14 @@ func (av *ApprovalView) Draw(screen tcell.Screen) {
 	col := inner
 	used := drawText(screen, av.argLabel+" ❯ ", col, y+1, innerW, mutedSt)
 	col += used
-	drawText(screen, truncateStr(av.argValue, innerW-used), col, y+1, innerW-used, shellSt)
+	drawText(screen, strutil.Truncate(av.argValue, innerW-used), col, y+1, innerW-used, shellSt)
 
 	// ── row 2: reason: <reasoning> ────────────────────────────────────────
 	if av.reasoning != "" {
 		col = inner
 		used = drawText(screen, "reason: ", col, y+2, innerW, mutedSt)
 		col += used
-		drawText(screen, truncateStr(av.reasoning, innerW-used), col, y+2, innerW-used, textSt)
+		drawText(screen, strutil.Truncate(av.reasoning, innerW-used), col, y+2, innerW-used, textSt)
 	}
 
 	// ── row 3: [ Allow ]   [ Deny: <denyField> ] ──────────────────────────
@@ -322,15 +324,4 @@ func drawText(screen tcell.Screen, text string, col, row, maxCols int, st tcell.
 		used += rw
 	}
 	return used
-}
-
-func truncateStr(s string, n int) string {
-	if n <= 0 {
-		return ""
-	}
-	r := []rune(s)
-	if len(r) <= n {
-		return s
-	}
-	return string(r[:n-1]) + "…"
 }

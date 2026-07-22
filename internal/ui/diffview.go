@@ -6,6 +6,8 @@ import (
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
+
+	"github.com/aleksanaa/hyphae/internal/strutil"
 )
 
 // DiffViewHeight is the fixed row count of the diff approval view when visible.
@@ -233,7 +235,7 @@ func (dv *DiffView) Draw(screen tcell.Screen) {
 	col := inner
 	for i, fc := range dv.files {
 		isActive := i == dv.activeFile
-		label := " " + truncateStr(fc.Path, 40) + " "
+		label := " " + strutil.Truncate(fc.Path, 40) + " "
 		labelW := tview.TaggedStringWidth(tview.Escape(label))
 		if col+labelW > inner+innerW {
 			break
@@ -297,7 +299,7 @@ func (dv *DiffView) Draw(screen tcell.Screen) {
 		col = inner
 		used := drawText(screen, "reason: ", col, reasonY, innerW, mutedSt)
 		col += used
-		drawText(screen, truncateStr(dv.reasoning, innerW-used), col, reasonY, innerW-used, textSt)
+		drawText(screen, strutil.Truncate(dv.reasoning, innerW-used), col, reasonY, innerW-used, textSt)
 	}
 
 	// ── row sepY+2: buttons ───────────────────────────────────────────────

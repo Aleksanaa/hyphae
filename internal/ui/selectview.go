@@ -3,6 +3,8 @@ package ui
 import (
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
+
+	"github.com/aleksanaa/hyphae/internal/strutil"
 )
 
 // SelectView is a pick-one prompt shown when the agent calls ask_user.
@@ -160,7 +162,7 @@ func (sv *SelectView) Draw(screen tcell.Screen) {
 			if isSelected {
 				optSt = st
 			}
-			drawText(screen, truncateStr(sv.options[i], remaining), col, row, remaining, optSt)
+			drawText(screen, strutil.Truncate(sv.options[i], remaining), col, row, remaining, optSt)
 		} else {
 			fieldW := remaining
 			if fieldW > 0 {

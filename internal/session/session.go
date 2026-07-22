@@ -4,6 +4,8 @@ import (
 	"crypto/rand"
 	"fmt"
 	"sync"
+
+	"github.com/aleksanaa/hyphae/internal/strutil"
 )
 
 func newID() string {
@@ -267,11 +269,7 @@ func (s *Session) AddMessage(m Message) int {
 	s.msgs = append(s.msgs, m)
 	// Use first user message as title
 	if s.Title == "" && m.Role == RoleUser && m.Content != "" {
-		t := m.Content
-		if len(t) > 40 {
-			t = t[:37] + "…"
-		}
-		s.Title = t
+		s.Title = strutil.Truncate(m.Content, 40)
 	}
 	return idx
 }

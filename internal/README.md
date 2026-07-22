@@ -1,11 +1,14 @@
 # Architecture
 
 hyphae is a terminal coding agent. The `internal/` tree is a strict layered
-architecture: each layer depends only on layers below it, and the three leaf
-packages (`config`, `session`, `store`) import nothing from this project.
+architecture: each layer depends only on layers below it. The leaf packages
+(`config`, `session`, `store`) import nothing from this project except the
+stdlib-only `strutil` foundation, which sits below every layer.
 
 ```
-config    session    store          ← leaves; import only stdlib
+          strutil                    ← foundation; stdlib-only string helpers
+             ↑
+config    session    store          ← leaves; import only stdlib + strutil
              ↑
            agent                     ← agent → session
              ↑
