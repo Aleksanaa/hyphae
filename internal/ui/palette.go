@@ -47,6 +47,7 @@ type paletteEndpointInfo struct {
 type paletteSkillInfo struct {
 	Name        string
 	Description string
+	Loaded      bool // currently loaded on the active session
 }
 
 type paletteSessionInfo struct {
@@ -109,6 +110,7 @@ type CommandPalette struct {
 	onSelectModel    func(model string)
 	onSelectTheme    func(id string)
 	onSelectSkill    func(name string) // force-load a skill for the next message
+	onUnloadSkill    func(name string) // unload a previously-loaded skill
 	onResumeSession  func(id, workDir string)
 	getEndpoints     func() []paletteEndpointInfo
 	getSessions      func() []paletteSessionInfo
@@ -298,6 +300,7 @@ func (cp *CommandPalette) SetCallbacks(
 	onSelectModel func(model string),
 	onSelectTheme func(id string),
 	onSelectSkill func(name string),
+	onUnloadSkill func(name string),
 	onResumeSession func(id, workDir string),
 	getEndpoints func() []paletteEndpointInfo,
 	getSessions func() []paletteSessionInfo,
@@ -310,6 +313,7 @@ func (cp *CommandPalette) SetCallbacks(
 	cp.onSelectModel = onSelectModel
 	cp.onSelectTheme = onSelectTheme
 	cp.onSelectSkill = onSelectSkill
+	cp.onUnloadSkill = onUnloadSkill
 	cp.onResumeSession = onResumeSession
 	cp.getEndpoints = getEndpoints
 	cp.getSessions = getSessions
@@ -1013,7 +1017,12 @@ func (cp *CommandPalette) switchMode(m paletteMode) {
 			for i, s := range skills {
 				// Descriptions may be multi-line (YAML block scalars); flatten to one line.
 				desc := strings.Join(strings.Fields(s.Description), " ")
-				cp.items[i] = PaletteItem{Label: s.Name, Detail: desc, Value: s.Name}
+				it := PaletteItem{Label: s.Name, Detail: desc, Value: s.Name}
+				if s.Loaded {
+					cp.loadedSkills[s.Name] = true
+					it.Sub = fmt.Sprintf("[%s]loaded[-]", TC.SuccessColor)
+				}
+				cp.items[i] = it
 			}
 		}
 	}
@@ -1111,15 +1120,24 @@ func (cp *CommandPalette) confirm() {
 		}
 		idx := cp.filtered[cp.sel]
 		item := cp.items[idx]
-		if item.Value == "" || cp.loadedSkills[item.Value] {
-			return // placeholder, or already loaded this session
+		if item.Value == "" {
+			return // "no skills found" placeholder
 		}
-		if cp.onSelectSkill != nil {
-			cp.onSelectSkill(item.Value)
+		// Toggle: a loaded skill unloads, an unloaded one loads. Stay open so
+		// several can be toggled in one pass (Esc to close).
+		if cp.loadedSkills[item.Value] {
+			if cp.onUnloadSkill != nil {
+				cp.onUnloadSkill(item.Value)
+			}
+			delete(cp.loadedSkills, item.Value)
+			cp.items[idx].Sub = ""
+		} else {
+			if cp.onSelectSkill != nil {
+				cp.onSelectSkill(item.Value)
+			}
+			cp.loadedSkills[item.Value] = true
+			cp.items[idx].Sub = fmt.Sprintf("[%s]loaded[-]", TC.SuccessColor)
 		}
-		// Stay open so several skills can be loaded; mark this one loaded (Esc to close).
-		cp.loadedSkills[item.Value] = true
-		cp.items[idx].Sub = fmt.Sprintf("[%s]loaded[-]", TC.SuccessColor)
 
 	case paletteModeConfirm:
 		if len(cp.filtered) == 0 {

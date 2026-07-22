@@ -930,7 +930,7 @@ func (a *App) setupPalette() {
 		},
 		// onSelectSkill — force-load the skill's body onto the next message.
 		func(name string) {
-			if err := a.ctrl.QueueSkill(name); err != nil {
+			if err := a.ctrl.LoadSkill(name); err != nil {
 				if tc := a.activeContent(); tc != nil {
 					tc.Status.SetError("skill load failed: " + err.Error())
 				}
@@ -938,6 +938,18 @@ func (a *App) setupPalette() {
 			}
 			if tc := a.activeContent(); tc != nil {
 				tc.Status.SetMessage(fmt.Sprintf("skill %q will load on your next message", name))
+			}
+		},
+		// onUnloadSkill — drop the skill; the model is told to stop using it.
+		func(name string) {
+			if err := a.ctrl.UnloadSkill(name); err != nil {
+				if tc := a.activeContent(); tc != nil {
+					tc.Status.SetError("skill unload failed: " + err.Error())
+				}
+				return
+			}
+			if tc := a.activeContent(); tc != nil {
+				tc.Status.SetMessage(fmt.Sprintf("skill %q unloaded", name))
 			}
 		},
 		// onResumeSession
@@ -988,9 +1000,10 @@ func (a *App) setupPalette() {
 		// getSkills
 		func() []paletteSkillInfo {
 			skills := a.ctrl.Skills()
+			active := a.ctrl.ActiveSkills()
 			out := make([]paletteSkillInfo, len(skills))
 			for i, s := range skills {
-				out[i] = paletteSkillInfo{Name: s.Name, Description: s.Description}
+				out[i] = paletteSkillInfo{Name: s.Name, Description: s.Description, Loaded: active[s.Name]}
 			}
 			return out
 		},

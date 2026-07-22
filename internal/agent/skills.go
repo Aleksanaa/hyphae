@@ -169,6 +169,14 @@ func SkillReminder(s Skill, body string) string {
 	return SystemReminder(block)
 }
 
+// SkillUnloadReminder tells the model a previously-loaded skill has been
+// unloaded and should no longer be used. For the palette unload path.
+func SkillUnloadReminder(s Skill) string {
+	return SystemReminder(fmt.Sprintf(
+		"The %q skill has been unloaded. Disregard its instructions and do not use it for the rest of this conversation unless it is loaded again.",
+		s.Name))
+}
+
 func escapeXML(s string) string {
 	s = strings.ReplaceAll(s, "&", "&amp;")
 	s = strings.ReplaceAll(s, "<", "&lt;")

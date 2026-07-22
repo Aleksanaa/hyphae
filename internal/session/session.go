@@ -174,6 +174,21 @@ func (s *Session) AddReminder(block string) {
 	s.pendingReminders = append(s.pendingReminders, block)
 }
 
+// RemoveReminder drops the first queued reminder equal to block, reporting
+// whether one was found. Used to cancel a still-pending reminder (e.g. a skill
+// load that is unloaded before it was ever sent).
+func (s *Session) RemoveReminder(block string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, r := range s.pendingReminders {
+		if r == block {
+			s.pendingReminders = append(s.pendingReminders[:i], s.pendingReminders[i+1:]...)
+			return true
+		}
+	}
+	return false
+}
+
 // TakeReminders returns and clears the queued one-shot reminders.
 func (s *Session) TakeReminders() []string {
 	s.mu.Lock()

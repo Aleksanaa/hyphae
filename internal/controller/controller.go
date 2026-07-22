@@ -117,7 +117,8 @@ type Controller struct {
 	sessionAgents    map[string]*agent.Agent // sessionID → its agent (own model, endpoint, and run namespace)
 	sendCancel       context.CancelFunc
 
-	skills []agent.Skill // global skills discovered at startup (see config.SkillsDir)
+	skills       []agent.Skill              // global skills discovered at startup (see config.SkillsDir)
+	activeSkills map[string]map[string]bool // sessionID → set of currently-loaded skill names
 }
 
 // New creates a Controller. ctx is the application-lifetime context; when it is
@@ -134,6 +135,7 @@ func New(mgr *session.Manager, cfg *config.Config, st *store.Store, ctx context.
 		lastPromptTokens: make(map[string]int64),
 		sessionModels:    make(map[string]Model),
 		sessionAgents:    make(map[string]*agent.Agent),
+		activeSkills:     make(map[string]map[string]bool),
 	}
 	c.loadSystemContext()
 	go c.eventForwarder()
