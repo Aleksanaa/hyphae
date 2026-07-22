@@ -534,7 +534,7 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 			}
 			return nil
 		case tcell.KeyUp:
-			if p.GetMode() == paletteModeAddEndpoint {
+			if p.IsFormMode() {
 				p.PrevFormField()
 				a.tapp.SetFocus(p)
 			} else {
@@ -542,7 +542,7 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 			}
 			return nil
 		case tcell.KeyDown:
-			if p.GetMode() == paletteModeAddEndpoint {
+			if p.IsFormMode() {
 				p.NextFormField()
 				a.tapp.SetFocus(p)
 			} else {
@@ -550,13 +550,13 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 			}
 			return nil
 		case tcell.KeyTab:
-			if p.GetMode() == paletteModeAddEndpoint {
+			if p.IsFormMode() {
 				p.NextFormField()
 				a.tapp.SetFocus(p)
 				return nil
 			}
 		case tcell.KeyBacktab:
-			if p.GetMode() == paletteModeAddEndpoint {
+			if p.IsFormMode() {
 				p.PrevFormField()
 				a.tapp.SetFocus(p)
 				return nil
@@ -841,6 +841,38 @@ func (a *App) showDeleteEndpointDialog(name, url string) {
 	a.tapp.SetFocus(p)
 }
 
+// showPermissionDialog shows a granted permission (its type and scope) with a
+// Delete button beneath it. Deleting revokes the grant and returns to the
+// permissions list; cancelling (Esc, backdrop, or the No choice) also returns.
+func (a *App) showPermissionDialog(gtype, scope string) {
+	p := a.layout.Palette
+	back := func() {
+		p.SwitchMode(paletteModeManagePermissions)
+		a.tapp.SetFocus(p)
+	}
+	choices := []PaletteItem{
+		{
+			Label: fmt.Sprintf("[%s]Delete permission[-]", TC.ErrorColor),
+			Action: func() {
+				a.ctrl.RevokePermission(gtype, scope)
+				if tc := a.activeContent(); tc != nil {
+					tc.Status.SetMessage(fmt.Sprintf("revoked %s access to %s", gtype, scope))
+				}
+				back()
+			},
+		},
+	}
+	kind := gtype
+	if gtype == "readwrite" {
+		kind = fmt.Sprintf("[%s]readwrite[-] (read + write)", TC.PendingColor)
+	}
+	p.ShowDialog("permission", []string{
+		fmt.Sprintf("type: %s", kind),
+		fmt.Sprintf("[%s]%s[-]", TC.Muted, scope),
+	}, choices, back)
+	a.tapp.SetFocus(p)
+}
+
 // deleteEndpoint removes an endpoint by name and reports the outcome.
 func (a *App) deleteEndpoint(name string) {
 	if err := a.ctrl.RemoveEndpoint(name); err != nil {
@@ -952,6 +984,24 @@ func (a *App) setupPalette() {
 				tc.Status.SetMessage(fmt.Sprintf("skill %q unloaded", name))
 			}
 		},
+		// onRevokePermission — drop a granted file/web access from the active session.
+		func(gtype, scope string) {
+			a.ctrl.RevokePermission(gtype, scope)
+			if tc := a.activeContent(); tc != nil {
+				tc.Status.SetMessage(fmt.Sprintf("revoked %s access to %s", gtype, scope))
+			}
+		},
+		// onAddPermission — grant a new permission from the palette (user is the authority).
+		func(gtype, path string) {
+			scope := a.ctrl.AddPermission(gtype, path)
+			if tc := a.activeContent(); tc != nil {
+				tc.Status.SetMessage(fmt.Sprintf("granted %s access to %s", gtype, scope))
+			}
+		},
+		// onViewPermission — raise the view/delete dialog for an existing permission.
+		func(gtype, scope string) {
+			a.showPermissionDialog(gtype, scope)
+		},
 		// onResumeSession
 		func(id, workDir string) {
 			cwd, _ := os.Getwd()
@@ -1004,6 +1054,15 @@ func (a *App) setupPalette() {
 			out := make([]paletteSkillInfo, len(skills))
 			for i, s := range skills {
 				out[i] = paletteSkillInfo{Name: s.Name, Description: s.Description, Loaded: active[s.Name]}
+			}
+			return out
+		},
+		// getPermissions — grants of the active session.
+		func() []palettePermInfo {
+			grants := a.ctrl.Permissions()
+			out := make([]palettePermInfo, len(grants))
+			for i, g := range grants {
+				out[i] = palettePermInfo{Type: g.Type, Scope: g.Scope}
 			}
 			return out
 		},
@@ -1090,8 +1149,9 @@ func (a *App) openPalette() {
 	p.menuItems[4].Action = func() { p.switchMode(paletteModeManageEndpoints) }
 	p.menuItems[5].Action = a.enterSelectModel
 	p.menuItems[6].Action = func() { p.switchMode(paletteModeSelectSkill) }
-	p.menuItems[7].Action = func() { p.switchMode(paletteModeSelectTheme) }
-	p.menuItems[8].Action = func() { p.switchMode(paletteModeHotkeys) }
+	p.menuItems[7].Action = func() { p.switchMode(paletteModeManagePermissions) }
+	p.menuItems[8].Action = func() { p.switchMode(paletteModeSelectTheme) }
+	p.menuItems[9].Action = func() { p.switchMode(paletteModeHotkeys) }
 	p.Open()
 	a.layout.ShowPalette()
 	a.tapp.SetFocus(p)
@@ -1185,6 +1245,10 @@ func (a *App) paletteBack() {
 	case paletteModeAddEndpoint:
 		// The endpoint form is reached from the manage-endpoints list; step back to it.
 		p.SwitchMode(paletteModeManageEndpoints)
+		a.tapp.SetFocus(p)
+	case paletteModeAddPermission:
+		// The permission form is reached from the manage-permissions list.
+		p.SwitchMode(paletteModeManagePermissions)
 		a.tapp.SetFocus(p)
 	case paletteModeMenu:
 		p.Close()

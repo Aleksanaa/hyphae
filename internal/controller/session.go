@@ -199,7 +199,9 @@ func (c *Controller) ResumeSession(id string) (*session.Session, SessionInfo, er
 			info.Model = c.defaultModel()
 		}
 		c.sessionModels[id] = info.Model
-		c.sessionAgents[id] = c.agentForModel(info.Model)
+		ag := c.agentForModel(info.Model)
+		ag.LoadGrants(decodePermissions(row.Permissions))
+		c.sessionAgents[id] = ag
 		c.mu.Unlock()
 
 		// Fill any missing context window / pricing for this session's model.
@@ -292,6 +294,7 @@ func (c *Controller) PersistSession(sess *session.Session, cost float64, promptT
 	c.st.CreateSession(sess.ID, workDir)                 //nolint:errcheck
 	c.st.UpdateSessionUsage(sess.ID, cost, promptTokens) //nolint:errcheck
 	c.st.UpdateSessionModel(sess.ID, model, ep)          //nolint:errcheck
+	c.persistPermissions(sess.ID)
 	for seq, msg := range msgs {
 		if msg.Partial {
 			continue

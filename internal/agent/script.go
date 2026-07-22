@@ -292,20 +292,20 @@ type scriptTool struct {
 	firstParam string
 	fn         func(context.Context, map[string]any, string) (starlark.Value, error)
 	activeVerb string // gerund shown during execution: "reading", "editing", "running"
-	wantVerb   string // infinitive shown before approval: "edit", "run"; empty = no approval
+	wantVerb   string // infinitive shown before approval: "read", "edit", "run"
 	doneVerb   string // past tense for summary: "read", "edited", "ran"
 	doneNounP  string // plural noun for count>1: "files", "commands", "queries"
 }
 
 var scriptTools = []scriptTool{
-	{"read_file", "path", starlarkReadFile, "is reading", "", "read", "files"},
+	{"read_file", "path", starlarkReadFile, "is reading", "read", "read", "files"},
 	{"write_file", "path", starlarkWriteFile, "is writing", "write", "wrote", "files"},
 	{"edit_file", "path", starlarkEditFile, "is editing", "edit", "edited", "files"},
-	{"list_directory", "path", starlarkListDirectory, "is listing", "", "listed", "dirs"},
+	{"list_directory", "path", starlarkListDirectory, "is listing", "list", "listed", "dirs"},
 	{"run_shell", "command", starlarkRunShell, "is running", "run", "ran", "commands"},
 	{"web_fetch", "url", starlarkWebFetch, "is fetching", "fetch", "fetched", "URLs"},
 	{"web_search", "query", starlarkWebSearch, "is searching", "search", "searched", "queries"},
-	{"search_files", "pattern", starlarkSearchFiles, "is searching files", "", "searched", "patterns"},
+	{"search_files", "pattern", starlarkSearchFiles, "is searching files", "search", "searched", "patterns"},
 }
 
 // toolDisplayTarget extracts a short display string for the primary argument.
@@ -326,7 +326,7 @@ func toolDisplayTarget(firstParam string, argsMap map[string]any) string {
 // built-in functions. The script's print() output is returned as the result.
 // Tools requiring user approval pause mid-script for confirmation.
 // anyToolsRan reports whether any built-in tool was invoked during execution.
-func runScript(ctx context.Context, ch chan<- Event, argsJSON, workDir string, ns starlark.StringDict) (output string, isErr bool, anyToolsRan bool) {
+func runScript(ctx context.Context, ch chan<- Event, argsJSON, workDir string, ns starlark.StringDict, grants *grantSet) (output string, isErr bool, anyToolsRan bool) {
 	var args struct {
 		Code string `json:"code"`
 	}
@@ -356,7 +356,7 @@ func runScript(ctx context.Context, ch chan<- Event, argsJSON, workDir string, n
 	}()
 
 	var called atomic.Bool
-	env := buildScriptEnv(ctx, ch, workDir, &counter, &called)
+	env := buildScriptEnv(ctx, ch, workDir, &counter, &called, grants)
 
 	// Merge persisted namespace into predeclared (built-ins win over namespace).
 	predeclared := make(starlark.StringDict, len(env)+len(ns))
@@ -446,7 +446,7 @@ func formatEvalError(e *starlark.EvalError, src string) string {
 // buildScriptEnv builds the predeclared Starlark environment: math and time
 // modules plus every operation wrapped as a built-in function.
 // called is set to true the first time any status event is emitted (i.e. a tool was invoked).
-func buildScriptEnv(ctx context.Context, ch chan<- Event, workDir string, counter *atomic.Int64, called *atomic.Bool) starlark.StringDict {
+func buildScriptEnv(ctx context.Context, ch chan<- Event, workDir string, counter *atomic.Int64, called *atomic.Bool, grants *grantSet) starlark.StringDict {
 	emitStatusEvent := func(ev session.StatusEvent) {
 		called.Store(true)
 		select {
@@ -522,9 +522,11 @@ func buildScriptEnv(ctx context.Context, ch chan<- Event, workDir string, counte
 				}
 			}
 			target := toolDisplayTarget(firstParam, argsMap)
-			if requiresApproval(toolName) {
-				if _, hasReasoning := argsMap["reasoning"]; !hasReasoning {
-					return nil, fmt.Errorf("%s: reasoning= is required — briefly explain to the user why you are performing this action", toolName)
+			// A call within the session's permissions runs immediately. Anything
+			// else pauses for the user to approve it (and requires reasoning).
+			if approvalNeeded(toolName, argsMap, workDir, grants) {
+				if strings.TrimSpace(str(argsMap, "reasoning")) == "" {
+					return nil, errors.New("this is outside your current permissions, so it needs the user's approval — pass reasoning= explaining why. For repeated access, call request_access(type=, target=, reasoning=) instead to gain standing permission: type=\"readonly\" when you'll read the same out-of-scope location more than once; type=\"web_fetch\" when you'll fetch several URLs under one prefix, not for a one-off fetch; type=\"readwrite\" only when the user has explicitly handed you full control of a directory or project")
 				}
 				jsonBytes, _ := json.Marshal(argsMap)
 				argsJSON := string(jsonBytes)
@@ -533,7 +535,6 @@ func buildScriptEnv(ctx context.Context, ch chan<- Event, workDir string, counte
 					Name:   toolName,
 				}
 				te.Reasoning, te.Input = extractReasoning(argsJSON)
-				delete(argsMap, "reasoning")
 				var diffErr error
 				te.FilePath, te.DiffPatch, diffErr = computeDiffForApproval(toolName, argsJSON, workDir)
 				if diffErr != nil {
@@ -566,6 +567,7 @@ func buildScriptEnv(ctx context.Context, ch chan<- Event, workDir string, counte
 			if activeVerb != "" {
 				emitStatusEvent(session.StatusEvent{Kind: session.StatusEventDoing, Verb: activeVerb, Target: target})
 			}
+			delete(argsMap, "reasoning") // never forwarded to the tool implementation
 			result, err := toolFn(ctx, argsMap, workDir)
 			if err == nil && doneVerb != "" {
 				emitStatusEvent(session.StatusEvent{Kind: session.StatusEventDone, Verb: doneVerb, NounP: doneNounP, Target: target})
@@ -607,6 +609,66 @@ func buildScriptEnv(ctx context.Context, ch chan<- Event, workDir string, counte
 		}
 		emitStatusEvent(session.StatusEvent{Kind: session.StatusEventDone, Verb: "asked", NounP: "questions", Target: target})
 		return starlark.String(answer), nil
+	})
+
+	// request_access: ask the user to widen access for the rest of the session.
+	// Emits an approval prompt; on allow, records a prefix-based grant so later
+	// reads (readonly), writes (readwrite), or fetches (web_fetch) under that
+	// scope proceed without asking again.
+	env["request_access"] = starlark.NewBuiltin("request_access", func(_ *starlark.Thread, _ *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+		m := kwargsToMap(kwargs)
+		if len(args) > 0 {
+			if _, exists := m["target"]; !exists {
+				m["target"] = starlarkToGo(args[0])
+			}
+		}
+		kind, _ := m["type"].(string)
+		target, _ := m["target"].(string)
+		reasoning := strings.TrimSpace(str(m, "reasoning"))
+		switch kind {
+		case "readonly", "readwrite", "web_fetch":
+		default:
+			return nil, fmt.Errorf(`request_access: type= must be "readonly", "readwrite", or "web_fetch"`)
+		}
+		if target == "" {
+			return nil, fmt.Errorf("request_access: target is required (a directory path, or a URL prefix for web_fetch)")
+		}
+		if reasoning == "" {
+			return nil, fmt.Errorf("request_access: reasoning= is required — explain why you need this access")
+		}
+		scope := grantScope(kind, target, workDir)
+
+		jsonBytes, _ := json.Marshal(map[string]any{"type": kind, "target": scope})
+		te := &ToolEvent{
+			CallID:    fmt.Sprintf("script:%d", counter.Add(1)),
+			Name:      "request_access",
+			Reasoning: reasoning,
+			Input:     string(jsonBytes),
+		}
+		emitStatusEvent(session.StatusEvent{Kind: session.StatusEventWants, Verb: "access", Target: scope})
+		respCh := make(chan ApprovalResult, 1)
+		select {
+		case ch <- Event{Type: EventToolApproval, Tool: te, RespCh: respCh}:
+		case <-ctx.Done():
+			return nil, fmt.Errorf("cancelled")
+		}
+		var approval ApprovalResult
+		select {
+		case approval = <-respCh:
+		case <-ctx.Done():
+			return nil, fmt.Errorf("cancelled")
+		}
+		if !approval.Allowed {
+			emitStatusEvent(session.StatusEvent{Kind: session.StatusEventRefused, Verb: "access", Target: scope})
+			msg := "denied by user"
+			if approval.DenyReason != "" {
+				msg += ": " + approval.DenyReason
+			}
+			return nil, fmt.Errorf("%s", msg)
+		}
+		granted := grants.grant(kind, target, workDir)
+		emitStatusEvent(session.StatusEvent{Kind: session.StatusEventDone, Verb: "granted", NounP: "grants", Target: scope})
+		return starlark.String(fmt.Sprintf("granted %s access to %s for the rest of this session", kind, granted)), nil
 	})
 
 	return env

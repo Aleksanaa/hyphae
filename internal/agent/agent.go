@@ -20,23 +20,14 @@ import (
 //go:embed plan_mode.md
 var planModePrompt string
 
-const systemPrompt = `You are a skilled coding assistant. You help the user read, write, and reason about code.
+// systemPrompt is the base system message, authored in system_prompt.md. The
+// embedded file's trailing newline is trimmed once at startup so the message
+// stays clean when systemExtra is appended.
+//
+//go:embed system_prompt.md
+var systemPromptRaw string
 
-You have one tool: run. It executes a Starlark program where every operation (reading files, editing files, running shell commands, searching, fetching URLs, asking the user) is available as a built-in function. Use run for all tasks — exploration, editing, verification, and multi-step workflows alike. Variables and functions defined at the top level persist across run calls for the lifetime of this session — reuse them directly instead of redefining to save tokens.
-
-For file edits, prefer edit_file over write_file — it takes an edits list of {old_string: ..., new_string: ...} dicts and applies them in order. Each old_string must appear exactly once; include enough surrounding context to make it unique.
-
-search_files(pattern) takes a regex and returns a list of {file, line, content} dicts — use Starlark to filter, group, or format results.
-
-Three modules are pre-loaded as globals (no import statement needed or supported):
-  math  — math.sqrt, math.pow, math.pi, math.log, math.sin, math.ceil, math.floor, ...
-  time  — time.now(), time.parse_duration("1h30m"), time.hour, time.minute, ...
-  json  — json.encode(v), json.decode(s), json.indent(s)
-
-Starlark is a sandboxed subset of Python. Supported: arithmetic, strings, lists, dicts, sets, comprehensions, for/while loops, if/else, mutable globals, recursive functions, and standard built-ins (len, range, int, float, str, bool, sorted, min, max, zip, enumerate, print, type, round, divmod, ...).
-Not supported: import, class, try/except, yield, global/nonlocal.
-
-Your replies render in a terminal UI. Avoid multi-codepoint emoji — flags (🇨🇳), ZWJ sequences (👨‍👩‍👧‍👦), skin-tone and variation-selector emoji — as terminals disagree on their width and they distort the layout. Plain text and simple single-codepoint symbols are fine.`
+var systemPrompt = strings.TrimSpace(systemPromptRaw)
 
 // systemExtra is appended to systemPrompt for every session's system message. It
 // holds the global user instructions and the available-skills index, assembled
@@ -130,6 +121,7 @@ type Agent struct {
 	client    openai.Client
 	model     string
 	namespace starlark.StringDict
+	grants    *grantSet // access granted at runtime via request_access; per-session
 }
 
 // New creates an Agent using the provided OpenAI client and model name.
@@ -138,8 +130,31 @@ func New(baseURL, apiKey, model string) *Agent {
 		option.WithBaseURL(baseURL),
 		option.WithAPIKey(apiKey),
 	)
-	return &Agent{client: client, model: model, namespace: make(starlark.StringDict)}
+	return &Agent{client: client, model: model, namespace: make(starlark.StringDict), grants: newGrantSet()}
 }
+
+// Grants returns the session's user grants (excluding the pre-registered
+// builtins), for persistence and the palette.
+func (a *Agent) Grants() []Grant { return a.grants.list() }
+
+// AllGrants returns every permission the session holds, including the
+// pre-registered builtins (working directory and skills directory), for display
+// to the model.
+func (a *Agent) AllGrants() []Grant { return a.grants.listAll() }
+
+// LoadGrants replaces the session's grants, e.g. when resuming from storage.
+func (a *Agent) LoadGrants(grants []Grant) { a.grants.load(grants) }
+
+// AddGrant records a grant requested directly by the user (e.g. via the palette),
+// normalizing the target the same way request_access does. kind is "readonly",
+// "readwrite", or "web_fetch"; workDir anchors relative directory targets. It
+// returns the normalized scope that was stored.
+func (a *Agent) AddGrant(kind, target, workDir string) string {
+	return a.grants.grant(kind, target, workDir)
+}
+
+// RevokeGrant removes one grant matching g exactly, reporting whether it existed.
+func (a *Agent) RevokeGrant(g Grant) bool { return a.grants.revoke(g) }
 
 // ModelInfo holds a model ID and its context window size (0 if unknown).
 type ModelInfo struct {
@@ -363,7 +378,7 @@ func (a *Agent) loop(ctx context.Context, sess *session.Session, ch chan<- Event
 				return
 			}
 
-			output, isErr, anyToolsRan := runScript(ctx, ch, tc.Function.Arguments, sess.WorkDir, a.namespace)
+			output, isErr, anyToolsRan := runScript(ctx, ch, tc.Function.Arguments, sess.WorkDir, a.namespace, a.grants)
 			te.Output = output
 			te.IsError = isErr
 			if !anyToolsRan {
@@ -412,14 +427,6 @@ func buildMessages(sess *session.Session) []openai.ChatCompletionMessageParamUni
 	history, _ := sess.Snapshot()
 	msgs, _ = appendHistory(msgs, history, startIdx)
 	return msgs
-}
-
-func requiresApproval(name string) bool {
-	switch name {
-	case "run_shell", "web_fetch", "write_file", "edit_file", "web_search":
-		return true
-	}
-	return false
 }
 
 func extractReasoning(argsJSON string) (reasoning, input string) {

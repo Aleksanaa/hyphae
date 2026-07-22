@@ -130,6 +130,10 @@ const sqlAddStatusLabel = `
 ALTER TABLE messages ADD COLUMN status_label TEXT NOT NULL DEFAULT '';
 `
 
+const sqlAddPermissions = `
+ALTER TABLE sessions ADD COLUMN permissions TEXT NOT NULL DEFAULT '';
+`
+
 var migrations = []migration{
 	{1, "initial", sqlInitial},
 	{2, "compact_session_cols", sqlAddCompactCols},
@@ -137,6 +141,7 @@ var migrations = []migration{
 	{4, "plan_mode_col", sqlAddPlanMode},
 	{5, "session_model_col", sqlAddSessionModel},
 	{6, "messages_status_label", sqlAddStatusLabel},
+	{7, "session_permissions", sqlAddPermissions},
 }
 
 func (s *Store) migrate() error {
@@ -209,6 +214,7 @@ type SessionRow struct {
 	PlanMode         bool
 	Model            string
 	ActiveEndpoint   string
+	Permissions      string // JSON-encoded []agent.Grant; empty when none
 	CreatedAt        int64
 	UpdatedAt        int64
 }
@@ -270,9 +276,9 @@ func (s *Store) GetSession(id string) (SessionRow, error) {
 	var title sql.NullString
 	var planMode int
 	err := s.db.QueryRow(
-		`SELECT id, work_dir, title, total_cost, context_window, input_price, output_price, last_prompt_tokens, compacted_summary, compact_at_seq, compact_seqs, plan_mode, model, active_endpoint, created_at, updated_at
+		`SELECT id, work_dir, title, total_cost, context_window, input_price, output_price, last_prompt_tokens, compacted_summary, compact_at_seq, compact_seqs, plan_mode, model, active_endpoint, permissions, created_at, updated_at
 		   FROM sessions WHERE id = ?`, id,
-	).Scan(&r.ID, &r.WorkDir, &title, &r.TotalCost, &r.ContextWindow, &r.InputPrice, &r.OutputPrice, &r.LastPromptTokens, &r.CompactedSummary, &r.CompactAtSeq, &r.CompactSeqs, &planMode, &r.Model, &r.ActiveEndpoint, &r.CreatedAt, &r.UpdatedAt)
+	).Scan(&r.ID, &r.WorkDir, &title, &r.TotalCost, &r.ContextWindow, &r.InputPrice, &r.OutputPrice, &r.LastPromptTokens, &r.CompactedSummary, &r.CompactAtSeq, &r.CompactSeqs, &planMode, &r.Model, &r.ActiveEndpoint, &r.Permissions, &r.CreatedAt, &r.UpdatedAt)
 	r.Title = title.String
 	r.PlanMode = planMode != 0
 	return r, err
@@ -283,6 +289,16 @@ func (s *Store) UpdateSessionModel(id, model, activeEndpoint string) error {
 	_, err := s.db.Exec(
 		`UPDATE sessions SET model = ?, active_endpoint = ?, updated_at = ? WHERE id = ?`,
 		model, activeEndpoint, now(), id,
+	)
+	return err
+}
+
+// UpdateSessionPermissions persists the session's access grants (JSON-encoded
+// []agent.Grant; empty string when none).
+func (s *Store) UpdateSessionPermissions(id, permissions string) error {
+	_, err := s.db.Exec(
+		`UPDATE sessions SET permissions = ?, updated_at = ? WHERE id = ?`,
+		permissions, now(), id,
 	)
 	return err
 }

@@ -16,16 +16,22 @@ import (
 type paletteMode int
 
 const (
-	paletteModeMenu            paletteMode = iota // top-level command list
-	paletteModeAddEndpoint                        // form: name + base_url + api_key (add or edit)
-	paletteModeManageEndpoints                    // list: add new + existing endpoints
-	paletteModeSelectModel                        // list of models to pick
-	paletteModeResumeSession                      // list of past sessions to resume
-	paletteModeHotkeys                            // list of keyboard shortcuts
-	paletteModeSelectTheme                        // list of color themes to pick
-	paletteModeSelectSkill                        // list of skills to force-load for the next message
-	paletteModeConfirm                            // prompt + choice buttons (a dialog)
+	paletteModeMenu              paletteMode = iota // top-level command list
+	paletteModeAddEndpoint                          // form: name + base_url + api_key (add or edit)
+	paletteModeManageEndpoints                      // list: add new + existing endpoints
+	paletteModeSelectModel                          // list of models to pick
+	paletteModeResumeSession                        // list of past sessions to resume
+	paletteModeHotkeys                              // list of keyboard shortcuts
+	paletteModeSelectTheme                          // list of color themes to pick
+	paletteModeSelectSkill                          // list of skills to force-load for the next message
+	paletteModeManagePermissions                    // list of granted permissions to review or revoke
+	paletteModeAddPermission                        // form: pick type + enter path to grant a permission
+	paletteModeConfirm                              // prompt + choice buttons (a dialog)
 )
+
+// permTypeOptions are the grant types offered when adding a permission, in the
+// order the selector cycles through them.
+var permTypeOptions = []string{"readonly", "readwrite", "web_fetch"}
 
 // PaletteItem is one selectable entry in the palette list. An entry occupies one
 // row normally, or two when Detail or DetailRight is set (they render on a dim
@@ -52,6 +58,11 @@ type paletteSkillInfo struct {
 	Loaded      bool // currently loaded on the active session
 }
 
+type palettePermInfo struct {
+	Type  string // "readonly" | "readwrite" | "web_fetch"
+	Scope string // directory path or URL prefix
+}
+
 type paletteSessionInfo struct {
 	ID            string
 	Title         string
@@ -72,13 +83,15 @@ type CommandPalette struct {
 	// tview-native input: query bar and the three add-endpoint fields. keyField
 	// holds the real api key for editing/paste but is never drawn directly — the
 	// api-key row is rendered masked (see drawFormKey).
-	queryField   *tview.InputField
-	nameField    *tview.InputField
-	urlField     *tview.InputField
-	keyField     *tview.InputField
-	activeForm   int    // 0=name 1=url 2=key 3=delete button (edit mode only)
-	editEndpoint string // original name when editing an existing endpoint; "" when adding new
-	keyExisting  string // the endpoint's stored api key when editing; shown masked as a grey hint
+	queryField    *tview.InputField
+	nameField     *tview.InputField
+	urlField      *tview.InputField
+	keyField      *tview.InputField
+	permPathField *tview.InputField // path/URL input for the add-permission form
+	permType      int               // selected index into permTypeOptions (add-permission form)
+	activeForm    int               // 0=name 1=url 2=key 3=delete button (edit mode only)
+	editEndpoint  string            // original name when editing an existing endpoint; "" when adding new
+	keyExisting   string            // the endpoint's stored api key when editing; shown masked as a grey hint
 
 	// item list state
 	menuItems []PaletteItem
@@ -105,19 +118,23 @@ type CommandPalette struct {
 	trackH    int // scrollbar/list viewport height in rows, set each Draw
 
 	// callbacks wired by App
-	onClose          func()
-	onBack           func() // step back a level (like Esc); backdrop click
-	onAddEndpoint    func(origName, name, baseURL, apiKey string)
-	onDeleteEndpoint func(name, url string) // raises the delete-confirm dialog
-	onSelectModel    func(model string)
-	onSelectTheme    func(id string)
-	onSelectSkill    func(name string) // force-load a skill for the next message
-	onUnloadSkill    func(name string) // unload a previously-loaded skill
-	onResumeSession  func(id, workDir string)
-	getEndpoints     func() []paletteEndpointInfo
-	getSessions      func() []paletteSessionInfo
-	getSkills        func() []paletteSkillInfo
-	getHotkeyItems   func() []PaletteItem
+	onClose            func()
+	onBack             func() // step back a level (like Esc); backdrop click
+	onAddEndpoint      func(origName, name, baseURL, apiKey string)
+	onDeleteEndpoint   func(name, url string) // raises the delete-confirm dialog
+	onSelectModel      func(model string)
+	onSelectTheme      func(id string)
+	onSelectSkill      func(name string)         // force-load a skill for the next message
+	onUnloadSkill      func(name string)         // unload a previously-loaded skill
+	onRevokePermission func(gtype, scope string) // revoke a granted permission
+	onAddPermission    func(gtype, path string)  // grant a new permission from the palette
+	onViewPermission   func(gtype, scope string) // raise the view/delete dialog for a permission
+	onResumeSession    func(id, workDir string)
+	getEndpoints       func() []paletteEndpointInfo
+	getSessions        func() []paletteSessionInfo
+	getSkills          func() []paletteSkillInfo
+	getPermissions     func() []palettePermInfo
+	getHotkeyItems     func() []PaletteItem
 }
 
 func NewCommandPalette() *CommandPalette {
@@ -141,6 +158,13 @@ func NewCommandPalette() *CommandPalette {
 	cp.nameField = mkField("name     ❯ ")
 	cp.urlField = mkField("base url ❯ ")
 	cp.keyField = mkField("api key  ❯ ")
+
+	cp.permPathField = mkField("path ❯ ")
+	cp.permPathField.SetDoneFunc(func(key tcell.Key) {
+		if key == tcell.KeyEnter {
+			cp.confirm()
+		}
+	})
 
 	// The list scrolls in content-row units (entries may be 1 or 2 rows tall);
 	// scrollTo receives a row offset which we map back to a filtered index.
@@ -171,6 +195,7 @@ func (cp *CommandPalette) Restyle() {
 	stylePaletteField(cp.nameField)
 	stylePaletteField(cp.urlField)
 	stylePaletteField(cp.keyField)
+	stylePaletteField(cp.permPathField)
 }
 
 // ── Focus delegation ─────────────────────────────────────────────────────────
@@ -277,18 +302,33 @@ func (cp *CommandPalette) EditEndpoint(name, baseURL, apiKey string) {
 	cp.refilter()
 }
 
-// maxFormIndex is the highest focusable form index: 3 (with Delete button) when
-// editing, 2 (three fields only) when adding a new endpoint.
+// isFormMode reports whether the palette is showing a text-entry form (endpoint
+// or permission) rather than a scrollable list or dialog. Form modes suppress the
+// query bar, the scrollbar, and list navigation.
+func (cp *CommandPalette) isFormMode() bool {
+	return cp.mode == paletteModeAddEndpoint || cp.mode == paletteModeAddPermission
+}
+
+// IsFormMode is the exported form-mode check used by app.go key routing.
+func (cp *CommandPalette) IsFormMode() bool { return cp.isFormMode() }
+
+// maxFormIndex is the highest focusable form index. Endpoint: 3 (with Delete
+// button) when editing, 2 (three fields) when adding. Permission: 1 (type + path).
 func (cp *CommandPalette) maxFormIndex() int {
+	if cp.mode == paletteModeAddPermission {
+		return 1
+	}
 	if cp.editEndpoint != "" {
 		return 3
 	}
 	return 2
 }
 
-// formRows is the number of content rows the endpoint form occupies: the name,
-// base url, and api key rows, plus a blank spacer and a Delete button when editing.
+// formRows is the number of content rows the active form occupies.
 func (cp *CommandPalette) formRows() int {
+	if cp.mode == paletteModeAddPermission {
+		return 2 // type selector + path input
+	}
 	if cp.editEndpoint != "" {
 		return 5
 	}
@@ -303,10 +343,14 @@ func (cp *CommandPalette) SetCallbacks(
 	onSelectTheme func(id string),
 	onSelectSkill func(name string),
 	onUnloadSkill func(name string),
+	onRevokePermission func(gtype, scope string),
+	onAddPermission func(gtype, path string),
+	onViewPermission func(gtype, scope string),
 	onResumeSession func(id, workDir string),
 	getEndpoints func() []paletteEndpointInfo,
 	getSessions func() []paletteSessionInfo,
 	getSkills func() []paletteSkillInfo,
+	getPermissions func() []palettePermInfo,
 	getHotkeyItems func() []PaletteItem,
 ) {
 	cp.onClose = onClose
@@ -316,10 +360,14 @@ func (cp *CommandPalette) SetCallbacks(
 	cp.onSelectTheme = onSelectTheme
 	cp.onSelectSkill = onSelectSkill
 	cp.onUnloadSkill = onUnloadSkill
+	cp.onRevokePermission = onRevokePermission
+	cp.onAddPermission = onAddPermission
+	cp.onViewPermission = onViewPermission
 	cp.onResumeSession = onResumeSession
 	cp.getEndpoints = getEndpoints
 	cp.getSessions = getSessions
 	cp.getSkills = getSkills
+	cp.getPermissions = getPermissions
 	cp.getHotkeyItems = getHotkeyItems
 }
 
@@ -361,11 +409,22 @@ func (cp *CommandPalette) InputHandler() func(*tcell.EventKey, func(tview.Primit
 		if cp.mode == paletteModeConfirm {
 			return // a dialog has no text field; navigation is handled globally
 		}
+		// In the permission form, ←/→ on the type row cycles the grant type.
+		if cp.mode == paletteModeAddPermission && cp.activeForm == 0 {
+			switch event.Key() {
+			case tcell.KeyLeft:
+				cp.permType = (cp.permType - 1 + len(permTypeOptions)) % len(permTypeOptions)
+				return
+			case tcell.KeyRight:
+				cp.permType = (cp.permType + 1) % len(permTypeOptions)
+				return
+			}
+		}
 		var field tview.Primitive = cp.queryField
-		if cp.mode == paletteModeAddEndpoint {
+		if cp.isFormMode() {
 			field = cp.activeFormPrimitive()
 			if field == nil {
-				return // Delete button has no text field
+				return // a non-field row (Delete button, type selector)
 			}
 		}
 		if h := field.InputHandler(); h != nil {
@@ -395,12 +454,12 @@ func (cp *CommandPalette) MouseHandler() func(tview.MouseAction, *tcell.EventMou
 		// Wheel scrolls the list by moving the selection (which drives the offset).
 		switch action {
 		case tview.MouseScrollUp:
-			if cp.mode != paletteModeAddEndpoint {
+			if !cp.isFormMode() {
 				cp.NavigateUp()
 			}
 			return true, nil
 		case tview.MouseScrollDown:
-			if cp.mode != paletteModeAddEndpoint {
+			if !cp.isFormMode() {
 				cp.NavigateDown()
 			}
 			return true, nil
@@ -412,7 +471,7 @@ func (cp *CommandPalette) MouseHandler() func(tview.MouseAction, *tcell.EventMou
 		// A press on the scrollbar column is forwarded to the shared Scrollbar
 		// primitive, which owns click/drag handling. Returning its capture value
 		// lets tview route the rest of the drag straight to it (see WrapMouseHandler).
-		showBar := cp.mode != paletteModeAddEndpoint && cp.contentRows() > itemsH
+		showBar := !cp.isFormMode() && cp.contentRows() > itemsH
 		if showBar && action == tview.MouseLeftDown && mx == x+w-2 && my >= contentY && my < contentY+itemsH {
 			return cp.scrollbar.MouseHandler()(action, event, setFocus)
 		}
@@ -432,6 +491,24 @@ func (cp *CommandPalette) MouseHandler() func(tview.MouseAction, *tcell.EventMou
 			if row < 0 {
 				return true, nil
 			}
+		}
+
+		if cp.mode == paletteModeAddPermission {
+			// Rows: 0=type selector, 1=path. A click on the type row also cycles it.
+			if row == 0 || row == 1 {
+				switch action {
+				case tview.MouseLeftDown:
+					setFocus(cp)
+				case tview.MouseLeftClick:
+					cp.activeForm = row
+					setFocus(cp)
+				case tview.MouseLeftDoubleClick:
+					if row == 0 {
+						cp.permType = (cp.permType + 1) % len(permTypeOptions)
+					}
+				}
+			}
+			return true, nil
 		}
 
 		if cp.mode == paletteModeAddEndpoint {
@@ -532,11 +609,11 @@ func (cp *CommandPalette) Draw(screen tcell.Screen) {
 	}
 
 	visRows := cp.contentRows() + cp.dialogPromptRows()
-	if cp.mode == paletteModeAddEndpoint {
+	if cp.isFormMode() {
 		visRows = 0
 	}
 	h := 4 + visRows
-	if cp.mode == paletteModeAddEndpoint {
+	if cp.isFormMode() {
 		h = 4 + cp.formRows()
 	}
 	if h < paletteMinH {
@@ -585,6 +662,8 @@ func (cp *CommandPalette) Draw(screen tcell.Screen) {
 	switch cp.mode {
 	case paletteModeAddEndpoint:
 		drawText(screen, "fill in fields below, Enter to confirm", x+2, y+1, w-4, mutedSt)
+	case paletteModeAddPermission:
+		drawText(screen, "←/→ pick type · type path · Enter to add", x+2, y+1, w-4, mutedSt)
 	case paletteModeConfirm:
 		drawText(screen, "↑↓ choose · Enter confirm · Esc cancel", x+2, y+1, w-4, mutedSt)
 	default:
@@ -607,6 +686,8 @@ func (cp *CommandPalette) Draw(screen tcell.Screen) {
 	switch cp.mode {
 	case paletteModeAddEndpoint:
 		cp.drawFormFields(screen, x, y+3, w, bg)
+	case paletteModeAddPermission:
+		cp.drawPermFormFields(screen, x, y+3, w, bg)
 	case paletteModeConfirm:
 		pr := cp.dialogPromptRows()
 		cp.drawDialogPrompt(screen, x, y+3, w, textSt)
@@ -653,6 +734,48 @@ func (cp *CommandPalette) drawFormFields(screen tcell.Screen, x, y, w int, bg tc
 		label := fmt.Sprintf("[%s]Delete endpoint[-]", TC.ErrorColor)
 		tview.Print(screen, label, x+2, rowY, w-4, tview.AlignLeft, Theme.Text)
 	}
+}
+
+// drawPermFormFields draws the add-permission form: a type selector on row 0 that
+// shows all three choices with the active one highlighted (←/→ moves it), and the
+// path input on row 1.
+func (cp *CommandPalette) drawPermFormFields(screen tcell.Screen, x, y, w int, bg tcell.Color) {
+	focused := cp.activeForm == 0
+
+	labelColor := Theme.Muted
+	if focused {
+		labelColor = Theme.Accent // focused field label uses Accent, like the endpoint form
+	}
+	col := x + 2
+	col += drawText(screen, "type ❯ ", col, y, w-4, tcell.StyleDefault.Foreground(labelColor).Background(bg))
+
+	// All three types are shown side by side; the active one is a highlighted pill.
+	activeSt := tcell.StyleDefault.Foreground(Theme.Text).Background(paletteSelBg)
+	inactiveSt := tcell.StyleDefault.Foreground(Theme.Muted).Background(bg)
+	rightBound := x + w - 2
+	for i, opt := range permTypeOptions {
+		if i > 0 {
+			col += drawText(screen, "  ", col, y, rightBound-col, inactiveSt)
+		}
+		if i == cp.permType {
+			col += drawText(screen, " "+opt+" ", col, y, rightBound-col, activeSt)
+		} else {
+			col += drawText(screen, opt, col, y, rightBound-col, inactiveSt)
+		}
+	}
+
+	if focused {
+		hint := "←/→"
+		hw := tview.TaggedStringWidth(hint)
+		drawText(screen, hint, rightBound-hw, y, hw, tcell.StyleDefault.Foreground(Theme.Muted).Background(bg))
+	}
+
+	// Row 1: path input (reuses the shared single-line form input renderer).
+	label := "path ❯ "
+	if permTypeOptions[cp.permType] == "web_fetch" {
+		label = "url  ❯ "
+	}
+	cp.drawFormInput(screen, cp.permPathField, label, x, y+1, w, bg, cp.activeForm == 1)
 }
 
 // drawFormInput draws a single-line form input: the focused field renders
@@ -936,6 +1059,12 @@ func (cp *CommandPalette) itemAtRow(relRow, visH int) int {
 // activeFormPrimitive returns the focused form field (name input or url/key text
 // area), or nil when the Delete button (index 3) is focused.
 func (cp *CommandPalette) activeFormPrimitive() tview.Primitive {
+	if cp.mode == paletteModeAddPermission {
+		if cp.activeForm == 1 {
+			return cp.permPathField
+		}
+		return nil // the type selector row has no text field
+	}
 	switch cp.activeForm {
 	case 0:
 		return cp.nameField
@@ -1033,8 +1162,41 @@ func (cp *CommandPalette) switchMode(m paletteMode) {
 				cp.items[i] = it
 			}
 		}
+
+	case paletteModeManagePermissions:
+		perms := cp.getPermissions()
+		cp.items = make([]PaletteItem, 0, len(perms)+1)
+		cp.items = append(cp.items, PaletteItem{Label: fmt.Sprintf("[%s]+ Add new permission[-]", TC.SystemColor), Sub: "grant file or web access"})
+		for _, p := range perms {
+			cp.items = append(cp.items, PaletteItem{
+				Label:      permTypeLabel(p.Type),
+				Sub:        "enter to view",
+				Detail:     p.Scope,
+				DetailPath: p.Type != "web_fetch", // URL prefixes shouldn't be path-shortened
+				Value:      p.Type + "\x00" + p.Scope,
+			})
+		}
+
+	case paletteModeAddPermission:
+		cp.permType = 0
+		cp.activeForm = 0
+		cp.permPathField.SetText("")
+		cp.items = nil
 	}
 	cp.refilter()
+}
+
+// permTypeLabel renders a grant type as a colored label: readwrite is the
+// powerful one (amber), reads and fetches are dim/blue.
+func permTypeLabel(gtype string) string {
+	switch gtype {
+	case "readwrite":
+		return fmt.Sprintf("[%s]readwrite[-]", TC.PendingColor)
+	case "web_fetch":
+		return fmt.Sprintf("[%s]web_fetch[-]", TC.SystemColor)
+	default:
+		return fmt.Sprintf("[%s]readonly[-]", TC.Muted)
+	}
 }
 
 func (cp *CommandPalette) confirm() {
@@ -1147,6 +1309,31 @@ func (cp *CommandPalette) confirm() {
 			cp.items[idx].Sub = fmt.Sprintf("[%s]loaded[-]", TC.SuccessColor)
 		}
 
+	case paletteModeManagePermissions:
+		if len(cp.filtered) == 0 {
+			return
+		}
+		item := cp.items[cp.filtered[cp.sel]]
+		if item.Value == "" { // "+ Add new permission"
+			cp.switchMode(paletteModeAddPermission)
+			return
+		}
+		// Existing permission: open its view/delete dialog.
+		gtype, scope, _ := strings.Cut(item.Value, "\x00")
+		if cp.onViewPermission != nil {
+			cp.onViewPermission(gtype, scope)
+		}
+
+	case paletteModeAddPermission:
+		path := strings.TrimSpace(cp.permPathField.GetText())
+		if path == "" {
+			return // nothing to grant yet
+		}
+		if cp.onAddPermission != nil {
+			cp.onAddPermission(permTypeOptions[cp.permType], path)
+		}
+		cp.switchMode(paletteModeManagePermissions)
+
 	case paletteModeConfirm:
 		if len(cp.filtered) == 0 {
 			return
@@ -1180,6 +1367,7 @@ func topLevelItems() []PaletteItem {
 		{Label: "Manage endpoints", Sub: "add, edit, or remove API endpoints"},
 		{Label: "Select model", Sub: "choose model from an endpoint"},
 		{Label: "Load skills", Sub: "load a skill for the next message"},
+		{Label: "Manage permissions", Sub: "review or revoke granted file/web access"},
 		{Label: "Switch theme", Sub: "change the color scheme"},
 		{Label: "Hotkeys", Sub: "view and trigger keyboard shortcuts"},
 	}
@@ -1263,6 +1451,10 @@ func (cp *CommandPalette) modeTitle() string {
 		return "switch theme"
 	case paletteModeSelectSkill:
 		return "load skills"
+	case paletteModeManagePermissions:
+		return "manage permissions"
+	case paletteModeAddPermission:
+		return "add permission"
 	case paletteModeConfirm:
 		return cp.dialogTitle
 	default:

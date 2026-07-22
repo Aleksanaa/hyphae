@@ -150,6 +150,9 @@ func (c *Controller) loadSystemContext() {
 	instr, _ := os.ReadFile(config.GlobalInstructionsPath())
 	c.skills = agent.LoadSkills(config.SkillsDir())
 	agent.SetSystemContext(string(instr), c.skills)
+	// Reads are confined to each session's working directory plus the skills
+	// directory, so the model can load the SKILL.md files it is told about.
+	agent.SetReadRoots(config.SkillsDir())
 }
 
 // eventForwarder relays events from incoming to ch via an in-memory queue so

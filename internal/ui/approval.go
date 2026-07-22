@@ -115,6 +115,24 @@ func (av *ApprovalView) Show(toolName, argsJSON, reasoning string) {
 			} else {
 				av.argValue = argsJSON
 			}
+		case "request_access":
+			av.argLabel = "grant"
+			kind, _ := args["type"].(string)
+			tgt, _ := args["target"].(string)
+			av.argValue = kind + " → " + tgt
+		case "read_file", "write_file", "edit_file", "list_directory":
+			av.argLabel = "path"
+			if v, ok := args["path"].(string); ok && v != "" {
+				av.argValue = v
+			} else {
+				av.argValue = "."
+			}
+		case "search_files":
+			av.argLabel = "search"
+			av.argValue, _ = args["pattern"].(string)
+			if path, ok := args["path"].(string); ok && path != "" {
+				av.argValue += "  in  " + path
+			}
 		default:
 			av.argLabel = "args"
 			av.argValue = argsJSON

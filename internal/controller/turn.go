@@ -120,6 +120,13 @@ func (c *Controller) SendMessage(text string) {
 	}
 	reminders = append(reminders, sess.TakeReminders()...)
 
+	ag := c.agentFor(sess.ID)
+	// Always show the model its current permissions (builtins + grants) so it
+	// knows what it can access without asking.
+	if block := agent.PermissionsLabel(ag.AllGrants(), sess.WorkDir); block != "" {
+		reminders = append(reminders, block)
+	}
+
 	var sentLabel string
 	if len(reminders) > 0 {
 		sentLabel = strings.Join(reminders, "\n") + "\n"
@@ -137,8 +144,6 @@ func (c *Controller) SendMessage(text string) {
 	c.mu.Lock()
 	c.sendCancel = cancel
 	c.mu.Unlock()
-
-	ag := c.agentFor(sess.ID)
 
 	agCh := ag.Send(ctx, sess)
 	go c.processAgentEvents(sess.ID, agCh, &turnState{})
