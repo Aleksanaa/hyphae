@@ -21,6 +21,7 @@ const (
 	paletteModeResumeSession                      // list of past sessions to resume
 	paletteModeHotkeys                            // list of keyboard shortcuts
 	paletteModeSelectTheme                        // list of color themes to pick
+	paletteModeSelectSkill                        // list of skills to force-load for the next message
 	paletteModeConfirm                            // prompt + choice buttons (a dialog)
 )
 
@@ -41,6 +42,11 @@ type paletteEndpointInfo struct {
 	Name    string
 	BaseURL string
 	APIKey  string
+}
+
+type paletteSkillInfo struct {
+	Name        string
+	Description string
 }
 
 type paletteSessionInfo struct {
@@ -78,6 +84,11 @@ type CommandPalette struct {
 	sel       int
 	top       int // first visible filtered index (persistent scroll position)
 
+	// loadedSkills marks which skills were force-loaded during the current
+	// select-skill session, so their row shows a green "loaded" and re-selecting
+	// them does not queue a duplicate reminder. Reset each time the mode is entered.
+	loadedSkills map[string]bool
+
 	// dialog state (paletteModeConfirm): a prompt above the choice items, plus the
 	// step-back action (Esc / backdrop click) for the current dialog.
 	dialogTitle string
@@ -97,9 +108,11 @@ type CommandPalette struct {
 	onDeleteEndpoint func(name, url string) // raises the delete-confirm dialog
 	onSelectModel    func(model string)
 	onSelectTheme    func(id string)
+	onSelectSkill    func(name string) // force-load a skill for the next message
 	onResumeSession  func(id, workDir string)
 	getEndpoints     func() []paletteEndpointInfo
 	getSessions      func() []paletteSessionInfo
+	getSkills        func() []paletteSkillInfo
 	getHotkeyItems   func() []PaletteItem
 }
 
@@ -284,9 +297,11 @@ func (cp *CommandPalette) SetCallbacks(
 	onDeleteEndpoint func(name, url string),
 	onSelectModel func(model string),
 	onSelectTheme func(id string),
+	onSelectSkill func(name string),
 	onResumeSession func(id, workDir string),
 	getEndpoints func() []paletteEndpointInfo,
 	getSessions func() []paletteSessionInfo,
+	getSkills func() []paletteSkillInfo,
 	getHotkeyItems func() []PaletteItem,
 ) {
 	cp.onClose = onClose
@@ -294,9 +309,11 @@ func (cp *CommandPalette) SetCallbacks(
 	cp.onDeleteEndpoint = onDeleteEndpoint
 	cp.onSelectModel = onSelectModel
 	cp.onSelectTheme = onSelectTheme
+	cp.onSelectSkill = onSelectSkill
 	cp.onResumeSession = onResumeSession
 	cp.getEndpoints = getEndpoints
 	cp.getSessions = getSessions
+	cp.getSkills = getSkills
 	cp.getHotkeyItems = getHotkeyItems
 }
 
@@ -985,6 +1002,20 @@ func (cp *CommandPalette) switchMode(m paletteMode) {
 			}
 			cp.items[i] = PaletteItem{Label: c.Name, Sub: sub, Detail: c.Blocks, Value: c.ID}
 		}
+
+	case paletteModeSelectSkill:
+		skills := cp.getSkills()
+		cp.loadedSkills = make(map[string]bool)
+		if len(skills) == 0 {
+			cp.items = []PaletteItem{{Label: fmt.Sprintf("[%s]no skills found[-]", TC.Muted)}}
+		} else {
+			cp.items = make([]PaletteItem, len(skills))
+			for i, s := range skills {
+				// Descriptions may be multi-line (YAML block scalars); flatten to one line.
+				desc := strings.Join(strings.Fields(s.Description), " ")
+				cp.items[i] = PaletteItem{Label: s.Name, Detail: desc, Value: s.Name}
+			}
+		}
 	}
 	cp.refilter()
 }
@@ -1074,6 +1105,22 @@ func (cp *CommandPalette) confirm() {
 		}
 		cp.Close()
 
+	case paletteModeSelectSkill:
+		if len(cp.filtered) == 0 {
+			return
+		}
+		idx := cp.filtered[cp.sel]
+		item := cp.items[idx]
+		if item.Value == "" || cp.loadedSkills[item.Value] {
+			return // placeholder, or already loaded this session
+		}
+		if cp.onSelectSkill != nil {
+			cp.onSelectSkill(item.Value)
+		}
+		// Stay open so several skills can be loaded; mark this one loaded (Esc to close).
+		cp.loadedSkills[item.Value] = true
+		cp.items[idx].Sub = fmt.Sprintf("[%s]loaded[-]", TC.SuccessColor)
+
 	case paletteModeConfirm:
 		if len(cp.filtered) == 0 {
 			return
@@ -1106,6 +1153,7 @@ func topLevelItems() []PaletteItem {
 		{Label: "Toggle plan mode", Sub: "explore and plan without making changes"},
 		{Label: "Manage endpoints", Sub: "add, edit, or remove API endpoints"},
 		{Label: "Select model", Sub: "choose model from an endpoint"},
+		{Label: "Load skills", Sub: "load a skill for the next message"},
 		{Label: "Switch theme", Sub: "change the color scheme"},
 		{Label: "Hotkeys", Sub: "view and trigger keyboard shortcuts"},
 	}
@@ -1187,6 +1235,8 @@ func (cp *CommandPalette) modeTitle() string {
 		return "hotkeys"
 	case paletteModeSelectTheme:
 		return "switch theme"
+	case paletteModeSelectSkill:
+		return "load skills"
 	case paletteModeConfirm:
 		return cp.dialogTitle
 	default:

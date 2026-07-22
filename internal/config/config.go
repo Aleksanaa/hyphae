@@ -69,3 +69,17 @@ func configPath() string {
 	dir, _ := os.UserConfigDir()
 	return filepath.Join(dir, "hyphae", "config.toml")
 }
+
+// GlobalInstructionsPath returns the path to the global user-instructions file
+// (<UserConfigDir>/hyphae/AGENTS.md). These instructions apply to every session.
+func GlobalInstructionsPath() string {
+	dir, _ := os.UserConfigDir()
+	return filepath.Join(dir, "hyphae", "AGENTS.md")
+}
+
+// SkillsDir returns the directory holding global skills
+// (<UserConfigDir>/hyphae/skills).
+func SkillsDir() string {
+	dir, _ := os.UserConfigDir()
+	return filepath.Join(dir, "hyphae", "skills")
+}

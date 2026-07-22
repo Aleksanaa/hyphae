@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	openai "github.com/openai/openai-go/v3"
@@ -36,6 +37,27 @@ Starlark is a sandboxed subset of Python. Supported: arithmetic, strings, lists,
 Not supported: import, class, try/except, yield, global/nonlocal.
 
 Your replies render in a terminal UI. Avoid multi-codepoint emoji — flags (🇨🇳), ZWJ sequences (👨‍👩‍👧‍👦), skin-tone and variation-selector emoji — as terminals disagree on their width and they distort the layout. Plain text and simple single-codepoint symbols are fine.`
+
+// systemExtra is appended to systemPrompt for every session's system message. It
+// holds the global user instructions and the available-skills index, assembled
+// once at startup by SetSystemContext. Empty until then, so absent config files
+// leave the system prompt byte-identical to the base const.
+var systemExtra string
+
+// SetSystemContext assembles the per-process system-prompt suffix from the global
+// user instructions and the discovered skills. Call once at startup, before any
+// turn runs.
+func SetSystemContext(globalInstructions string, skills []Skill) {
+	var b strings.Builder
+	if s := strings.TrimSpace(globalInstructions); s != "" {
+		b.WriteString("\n\nThe user has provided global instructions that apply to every session. Follow them.\n")
+		b.WriteString("<user_instructions>\n")
+		b.WriteString(s)
+		b.WriteString("\n</user_instructions>")
+	}
+	b.WriteString(FormatSkills(skills))
+	systemExtra = b.String()
+}
 
 // EventType classifies an agent event sent to the UI.
 type EventType string
@@ -373,7 +395,7 @@ func (a *Agent) loop(ctx context.Context, sess *session.Session, ch chan<- Event
 }
 
 func buildMessages(sess *session.Session) []openai.ChatCompletionMessageParamUnion {
-	msgs := []openai.ChatCompletionMessageParamUnion{openai.SystemMessage(systemPrompt)}
+	msgs := []openai.ChatCompletionMessageParamUnion{openai.SystemMessage(systemPrompt + systemExtra)}
 
 	summary, compactSeqs := sess.GetCompact()
 	startIdx := 0

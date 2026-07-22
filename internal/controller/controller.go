@@ -116,6 +116,8 @@ type Controller struct {
 	sessionModels    map[string]Model        // sessionID → its model (identity, context, pricing)
 	sessionAgents    map[string]*agent.Agent // sessionID → its agent (own model, endpoint, and run namespace)
 	sendCancel       context.CancelFunc
+
+	skills []agent.Skill // global skills discovered at startup (see config.SkillsDir)
 }
 
 // New creates a Controller. ctx is the application-lifetime context; when it is
@@ -133,8 +135,19 @@ func New(mgr *session.Manager, cfg *config.Config, st *store.Store, ctx context.
 		sessionModels:    make(map[string]Model),
 		sessionAgents:    make(map[string]*agent.Agent),
 	}
+	c.loadSystemContext()
 	go c.eventForwarder()
 	return c
+}
+
+// loadSystemContext reads the global user instructions and skills from the config
+// directory and installs them into the agent's system prompt. Called once at
+// construction. Missing files are fine — the system prompt is unchanged when both
+// are absent.
+func (c *Controller) loadSystemContext() {
+	instr, _ := os.ReadFile(config.GlobalInstructionsPath())
+	c.skills = agent.LoadSkills(config.SkillsDir())
+	agent.SetSystemContext(string(instr), c.skills)
 }
 
 // eventForwarder relays events from incoming to ch via an in-memory queue so
