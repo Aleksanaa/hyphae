@@ -11,9 +11,12 @@ import (
 // Height varies with option count; use SelectViewHeight to compute it.
 type SelectView struct {
 	*tview.Box
-	question    string
-	options     []string
-	cursor      int // 0..len(options); len(options) == custom-text row
+	question string
+	options  []string
+	cursor   int // 0..len(options); len(options) == custom-text row
+	// clickArmed gates confirm-on-double-click to the row the double-click's own
+	// first click landed on; see the identical note in ApprovalView.
+	clickArmed  bool
 	customField *tview.InputField
 	visible     bool
 	onSubmit    func(string)
@@ -69,6 +72,7 @@ func (sv *SelectView) Show(question string, options []string) {
 	sv.question = question
 	sv.options = options
 	sv.cursor = 0
+	sv.clickArmed = false
 	sv.customField.SetText("")
 	sv.visible = true
 }
@@ -245,6 +249,7 @@ func (sv *SelectView) MouseHandler() func(tview.MouseAction, *tcell.EventMouse, 
 		grabFocus := func() (bool, tview.Primitive) {
 			switch action {
 			case tview.MouseLeftDown, tview.MouseLeftClick, tview.MouseLeftDoubleClick:
+				sv.clickArmed = false // a click off the option rows disarms confirm
 				setFocus(sv)
 				return true, nil
 			}
@@ -270,14 +275,28 @@ func (sv *SelectView) MouseHandler() func(tview.MouseAction, *tcell.EventMouse, 
 			} else {
 				sv.customField.Blur()
 			}
+			sv.clickArmed = true
 			setFocus(sv)
 			return true, nil
 		case tview.MouseLeftDoubleClick:
+			// Confirm only when this double-click's own first click already
+			// selected this same row; otherwise treat it as a plain select
+			// (a fast cross-row tap tview merged into a double-click).
+			if sv.clickArmed && sv.cursor == optRow {
+				if sv.cursor == len(sv.options) {
+					sv.customField.Focus(func(tview.Primitive) {})
+				}
+				sv.confirm()
+				return true, nil
+			}
 			sv.cursor = optRow
 			if sv.cursor == len(sv.options) {
 				sv.customField.Focus(func(tview.Primitive) {})
+			} else {
+				sv.customField.Blur()
 			}
-			sv.confirm()
+			sv.clickArmed = true
+			setFocus(sv)
 			return true, nil
 		}
 		return grabFocus()

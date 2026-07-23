@@ -46,6 +46,9 @@ type DiffView struct {
 	scrollTop   int
 	visible     bool
 	btnSelected string // "allow" | "deny"
+	// clickArmed gates confirm-on-double-click to the button the double-click's own
+	// first click landed on; see the identical note in ApprovalView.
+	clickArmed bool
 
 	// deny text is managed by a native InputField.
 	denyField *tview.InputField
@@ -123,6 +126,7 @@ func (dv *DiffView) Show(toolName, reasoning string, files []DiffFileChange) {
 	dv.scrollTop = 0
 	dv.visible = true
 	dv.btnSelected = "allow"
+	dv.clickArmed = false
 	dv.denyField.SetText("")
 
 	dv.cacheW = 0
@@ -529,6 +533,7 @@ func (dv *DiffView) MouseHandler() func(tview.MouseAction, *tcell.EventMouse, fu
 		grabFocus := func() (bool, tview.Primitive) {
 			switch action {
 			case tview.MouseLeftDown, tview.MouseLeftClick, tview.MouseLeftDoubleClick:
+				dv.clickArmed = false // a click off the buttons disarms confirm
 				setFocus(dv)
 				return true, nil
 			}
@@ -582,11 +587,20 @@ func (dv *DiffView) MouseHandler() func(tview.MouseAction, *tcell.EventMouse, fu
 			return true, nil
 		case tview.MouseLeftClick:
 			dv.btnSelected = side
+			dv.clickArmed = true
 			setFocus(dv)
 			return true, nil
 		case tview.MouseLeftDoubleClick:
+			// Confirm only when this double-click's own first click already
+			// selected this same button; otherwise treat it as a plain select
+			// (a fast cross-target tap tview merged into a double-click).
+			if dv.clickArmed && dv.btnSelected == side {
+				dv.confirm()
+				return true, nil
+			}
 			dv.btnSelected = side
-			dv.confirm()
+			dv.clickArmed = true
+			setFocus(dv)
 			return true, nil
 		}
 		return grabFocus()

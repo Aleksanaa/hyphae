@@ -501,7 +501,11 @@ func (cp *CommandPalette) MouseHandler() func(tview.MouseAction, *tcell.EventMou
 					cp.activeForm = row
 					setFocus(cp)
 				case tview.MouseLeftDoubleClick:
-					if row == 0 {
+					// Only cycle when the double-click's own first click already
+					// activated this row; a fast cross-row tap (tview reports it as
+					// a double-click because its detection ignores position) leaves
+					// activeForm on the other row, so it just selects instead.
+					if row == 0 && cp.activeForm == 0 {
 						cp.permType = (cp.permType + 1) % len(permTypeOptions)
 					}
 				}
@@ -528,8 +532,12 @@ func (cp *CommandPalette) MouseHandler() func(tview.MouseAction, *tcell.EventMou
 				cp.activeForm = idx
 				setFocus(cp)
 			case tview.MouseLeftDoubleClick:
-				if idx == 3 { // Delete button
-					cp.activeForm = 3
+				// Delete is destructive, so require the double-click's own first
+				// click to have already selected the delete button (activeForm==3).
+				// A fast cross-field tap ending on delete — which tview reports as
+				// a double-click because its detection ignores position — leaves
+				// activeForm elsewhere and is treated as a plain select instead.
+				if idx == 3 && cp.activeForm == 3 { // Delete button
 					cp.confirm()
 				}
 			}
@@ -547,7 +555,17 @@ func (cp *CommandPalette) MouseHandler() func(tview.MouseAction, *tcell.EventMou
 			cp.sel = fi
 			setFocus(cp)
 		case tview.MouseLeftDoubleClick:
-			cp.sel = fi
+			// A genuine double-click lands on the row its own first click just
+			// selected. Two fast taps on *different* rows also reach here because
+			// tview's double-click test is purely time-based (500ms) and ignores
+			// position — common on touchscreens, where discrete taps land within
+			// the interval. In that case cp.sel still points at the first row, so
+			// treat it as a plain select of the second row rather than a confirm.
+			if fi != cp.sel {
+				cp.sel = fi
+				setFocus(cp)
+				return true, nil
+			}
 			cp.confirm()
 			// A confirm may switch modes (e.g. list → form) without closing;
 			// re-focus the palette so the new mode's field/cursor lights up.

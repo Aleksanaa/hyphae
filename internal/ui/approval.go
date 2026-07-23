@@ -39,6 +39,12 @@ type ApprovalView struct {
 	args      []argLine
 	reasoning string
 	selected  string // "allow" | "deny"
+	// clickArmed records that the last mouse event was a single-click on the
+	// currently-selected button, so a following double-click can only confirm the
+	// same button its own first click landed on. tview reports two fast clicks on
+	// different targets as a double-click (its detection ignores position), which
+	// on a touchscreen could otherwise approve/deny unintentionally.
+	clickArmed bool
 
 	// deny text is managed by a native InputField (handles cursor, CJK, wide chars).
 	denyField *tview.InputField
@@ -117,6 +123,7 @@ func (av *ApprovalView) Show(toolName string, args map[string]any, reasoning str
 	}
 	av.reasoning = reasoning
 	av.selected = "allow"
+	av.clickArmed = false
 	av.denyField.SetText("")
 	av.visible = true
 }
@@ -395,6 +402,7 @@ func (av *ApprovalView) MouseHandler() func(tview.MouseAction, *tcell.EventMouse
 		grabFocus := func() (bool, tview.Primitive) {
 			switch action {
 			case tview.MouseLeftDown, tview.MouseLeftClick, tview.MouseLeftDoubleClick:
+				av.clickArmed = false // a click off the buttons disarms confirm
 				setFocus(av)
 				return true, nil
 			}
@@ -428,11 +436,20 @@ func (av *ApprovalView) MouseHandler() func(tview.MouseAction, *tcell.EventMouse
 			return true, nil
 		case tview.MouseLeftClick:
 			av.selected = side
+			av.clickArmed = true
 			setFocus(av)
 			return true, nil
 		case tview.MouseLeftDoubleClick:
+			// Confirm only when this double-click's own first click already
+			// selected this same button; otherwise treat it as a plain select
+			// (a fast cross-target tap tview merged into a double-click).
+			if av.clickArmed && av.selected == side {
+				av.confirm()
+				return true, nil
+			}
 			av.selected = side
-			av.confirm()
+			av.clickArmed = true
+			setFocus(av)
 			return true, nil
 		}
 		return grabFocus()

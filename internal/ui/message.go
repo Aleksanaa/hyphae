@@ -642,4 +642,3 @@ func (cv *ChatView) renderMessageBox(b *strings.Builder, msg renderMsg, lay conv
 func apexLabel(desc string) string {
 	return fmt.Sprintf("[%s]apex[-][%s] %s[-]", TC.ApexDim, TC.Muted, desc)
 }
-

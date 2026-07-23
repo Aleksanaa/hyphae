@@ -549,6 +549,14 @@ func (cv *ChatView) handleDoubleClick(docLine int) {
 	if idx < 0 || idx >= len(cv.entries) {
 		return
 	}
+	// Only act when this double-click's own first click already selected this
+	// message. tview reports two fast clicks on different messages as a double-
+	// click too (its detection ignores position), so without this a stray tap
+	// sequence on a touchscreen would toggle the wrong box. The single-click
+	// handler commits selectedIdx, so a genuine double-click satisfies this.
+	if idx != cv.selectedIdx {
+		return
+	}
 	e := cv.entries[idx]
 	if e.toolIdx == toolIdxCompact {
 		divIdx := e.sessIdx
