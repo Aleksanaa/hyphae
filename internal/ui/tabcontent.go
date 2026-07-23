@@ -62,8 +62,8 @@ func (tc *TabContent) HideApproval() {
 	tc.body.ResizeItem(tc.Approval, 0, 0)
 }
 
-func (tc *TabContent) ShowDiffView() {
-	tc.body.ResizeItem(tc.DiffView, DiffViewHeight, 0)
+func (tc *TabContent) ShowDiffView(height int) {
+	tc.body.ResizeItem(tc.DiffView, height, 0)
 }
 
 func (tc *TabContent) HideDiffView() {

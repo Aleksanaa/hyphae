@@ -10,11 +10,13 @@ import (
 	"github.com/aleksanaa/hyphae/internal/strutil"
 )
 
-// DiffViewHeight is the fixed row count of the diff approval view when visible.
-const DiffViewHeight = 18
+// contentH is the number of diff rows visible at once (a fixed scroll viewport).
+const contentH = 11
 
-// contentH is the number of diff rows visible at once.
-const contentH = DiffViewHeight - 7
+// diffChromeH is every row of the view except the diff viewport and the wrapped
+// reasoning block: top border, file tabs, separator, footer separator, buttons,
+// bottom border. Height = diffChromeH + contentH + reasoning lines.
+const diffChromeH = 6
 
 // diffNumPrefixW is the column width of the line-number + indicator prefix.
 // Format: "OOOO NNNN I " = 4+1+4+1+1+1 = 12 columns.
@@ -127,6 +129,14 @@ func (dv *DiffView) Show(toolName, reasoning string, files []DiffFileChange) {
 	dv.cachedLines = nil
 }
 
+// Height returns the row count needed to render the view at availWidth columns:
+// the fixed chrome + diff viewport + the wrapped reasoning block. Call after Show.
+func (dv *DiffView) Height(availWidth int) int {
+	innerW := max(1, availWidth-4)
+	reasoningLines := len(wrapFieldLines("reason", dv.reasoning, innerW, maxReasoningLines))
+	return diffChromeH + contentH + reasoningLines
+}
+
 func (dv *DiffView) SetCallbacks(onAllow func(), onDeny func(string)) {
 	dv.onAllow = onAllow
 	dv.onDeny = onDeny
@@ -210,7 +220,7 @@ func (dv *DiffView) Draw(screen tcell.Screen) {
 	if !dv.visible {
 		return
 	}
-	x, y, w, _ := dv.GetRect()
+	x, y, w, h := dv.GetRect()
 	if w < 30 {
 		return
 	}
@@ -293,17 +303,14 @@ func (dv *DiffView) Draw(screen tcell.Screen) {
 		screen.SetContent(col, sepY, horiz, nil, borderSt)
 	}
 
-	// ── row sepY+1: reasoning ─────────────────────────────────────────────
-	reasonY := sepY + 1
+	// ── rows sepY+1..: reasoning, wrapped (buttons pinned to the last row) ──
+	buttonRow := y + h - 2
 	if dv.reasoning != "" {
-		col = inner
-		used := drawText(screen, "reason: ", col, reasonY, innerW, mutedSt)
-		col += used
-		drawText(screen, strutil.Truncate(dv.reasoning, innerW-used), col, reasonY, innerW-used, textSt)
+		drawWrappedField(screen, "reason", dv.reasoning, inner, sepY+1, buttonRow, innerW, maxReasoningLines, mutedSt, textSt)
 	}
 
-	// ── row sepY+2: buttons ───────────────────────────────────────────────
-	dv.drawButtons(screen, sepY+2, inner, innerW, bg)
+	// ── buttons ────────────────────────────────────────────────────────────
+	dv.drawButtons(screen, buttonRow, inner, innerW, bg)
 
 }
 
@@ -528,7 +535,7 @@ func (dv *DiffView) MouseHandler() func(tview.MouseAction, *tcell.EventMouse, fu
 			return false, nil
 		}
 
-		x, y, w, _ := dv.GetRect()
+		x, y, w, h := dv.GetRect()
 
 		contentStartY := y + 3
 		contentEndY := y + 3 + contentH - 1
@@ -551,7 +558,7 @@ func (dv *DiffView) MouseHandler() func(tview.MouseAction, *tcell.EventMouse, fu
 			return grabFocus()
 		}
 
-		btnY := y + DiffViewHeight - 2
+		btnY := y + h - 2
 		if my != btnY {
 			return grabFocus()
 		}

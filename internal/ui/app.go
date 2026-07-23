@@ -397,7 +397,8 @@ func (a *App) handleControllerEvent(ev controller.Event) {
 				Lines: ParseUnifiedDiff(tool.DiffPatch),
 			}}
 			tc.DiffView.Show(tool.Name, tool.Reasoning, files)
-			tc.ShowDiffView()
+			_, _, chatW, _ := tc.Chat.GetInnerRect()
+			tc.ShowDiffView(tc.DiffView.Height(chatW + 1))
 			a.tapp.SetFocus(tc.DiffView)
 			tc.DiffView.SetCallbacks(
 				func() {

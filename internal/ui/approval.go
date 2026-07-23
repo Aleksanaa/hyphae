@@ -174,10 +174,10 @@ func (av *ApprovalView) Height(availWidth int) int {
 func (av *ApprovalView) contentLineCount(innerW int) int {
 	n := 0
 	for _, a := range av.args {
-		n += len(av.wrapArg(a.key, a.value, innerW, maxArgValueLines))
+		n += len(wrapFieldLines(a.key, a.value, innerW, maxArgValueLines))
 	}
 	if av.reasoning != "" {
-		n += len(av.wrapArg("reason", av.reasoning, innerW, maxReasoningLines))
+		n += len(wrapFieldLines("reason", av.reasoning, innerW, maxReasoningLines))
 	}
 	if n == 0 {
 		n = 1
@@ -185,10 +185,11 @@ func (av *ApprovalView) contentLineCount(innerW int) int {
 	return n
 }
 
-// wrapArg word-wraps value into lines sized for a "<key> ❯ " prefix (continuation
-// lines hang-indent under the value), capped at maxLines with an ellipsis on the
-// last kept line when it overflows.
-func (av *ApprovalView) wrapArg(key, value string, innerW, maxLines int) []string {
+// wrapFieldLines word-wraps value into lines sized for a "<key> ❯ " prefix
+// (continuation lines hang-indent under the value), capped at maxLines with an
+// ellipsis on the last kept line when it overflows. Shared by the approval bar
+// and the diff view so both render args/reasoning identically.
+func wrapFieldLines(key, value string, innerW, maxLines int) []string {
 	prefixW := uniseg.StringWidth(key + " ❯ ")
 	valW := max(1, innerW-prefixW)
 	lines := tview.WordWrap(tview.Escape(value), valW)
@@ -203,6 +204,25 @@ func (av *ApprovalView) wrapArg(key, value string, innerW, maxLines int) []strin
 		lines[maxLines-1] = truncateToWidth(lines[maxLines-1], valW-1) + "…"
 	}
 	return lines
+}
+
+// drawWrappedField draws a "<key> ❯ <value>" field starting at row, wrapping the
+// value with a hanging indent under it (see wrapFieldLines). Rows at or past
+// limit are clipped. Returns the next free row.
+func drawWrappedField(screen tcell.Screen, key, value string, inner, row, limit, innerW, maxLines int, keySt, valSt tcell.Style) int {
+	prefix := key + " ❯ "
+	prefixW := uniseg.StringWidth(prefix)
+	for j, ln := range wrapFieldLines(key, value, innerW, maxLines) {
+		if row >= limit {
+			break
+		}
+		if j == 0 {
+			drawText(screen, prefix, inner, row, innerW, keySt)
+		}
+		drawText(screen, ln, inner+prefixW, row, innerW-prefixW, valSt)
+		row++
+	}
+	return row
 }
 
 // truncateToWidth clips s to at most w display columns (no ellipsis added).
@@ -275,10 +295,10 @@ func (av *ApprovalView) Draw(screen tcell.Screen) {
 	// ── args + reasoning: each field one per line, wrapping as needed ──────
 	row := y + 1
 	for _, a := range av.args {
-		row = av.drawField(screen, a.key, a.value, inner, row, buttonRow, innerW, mutedSt, shellSt)
+		row = drawWrappedField(screen, a.key, a.value, inner, row, buttonRow, innerW, maxArgValueLines, mutedSt, shellSt)
 	}
 	if av.reasoning != "" {
-		av.drawField(screen, "reason", av.reasoning, inner, row, buttonRow, innerW, mutedSt, textSt)
+		drawWrappedField(screen, "reason", av.reasoning, inner, row, buttonRow, innerW, maxReasoningLines, mutedSt, textSt)
 	}
 
 	// ── buttons: [ Allow ]   [ Deny: <denyField> ] ────────────────────────
@@ -325,30 +345,6 @@ func (av *ApprovalView) Draw(screen tcell.Screen) {
 		drawText(screen, denySfx, col, buttonRow, len([]rune(denySfx)), denyBracketSt)
 	}
 
-}
-
-// drawField renders one "<key> ❯ <value>" field starting at row, wrapping the
-// value with a hanging indent under it. Rows at or past limit (the buttons row)
-// are clipped. Returns the next free row.
-func (av *ApprovalView) drawField(screen tcell.Screen, key, value string, inner, row, limit, innerW int, keySt, valSt tcell.Style) int {
-	prefix := key + " ❯ "
-	prefixW := uniseg.StringWidth(prefix)
-	maxLines := maxArgValueLines
-	if key == "reason" {
-		maxLines = maxReasoningLines
-	}
-	lines := av.wrapArg(key, value, innerW, maxLines)
-	for j, ln := range lines {
-		if row >= limit {
-			break
-		}
-		if j == 0 {
-			drawText(screen, prefix, inner, row, innerW, keySt)
-		}
-		drawText(screen, ln, inner+prefixW, row, innerW-prefixW, valSt)
-		row++
-	}
-	return row
 }
 
 // ── InputHandler ─────────────────────────────────────────────────────────────
