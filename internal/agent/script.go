@@ -220,6 +220,22 @@ func starlarkSearchFiles(ctx context.Context, args map[string]any, workDir strin
 		}
 	}
 
+	// exclude_glob drops matching files, matched like path_glob: a bare glob (no
+	// "/") against the base name, otherwise against the absolute slash path.
+	var excludeRe *regexp.Regexp
+	excludeBaseOnly := false
+	if eg := str(args, "exclude_glob"); eg != "" {
+		excludeBaseOnly = !strings.Contains(eg, "/")
+		excludeInput := eg
+		if !excludeBaseOnly {
+			excludeInput = filepath.ToSlash(resolvePath(eg, workDir))
+		}
+		excludeRe, err = compileGlob(excludeInput, caseSensitive)
+		if err != nil {
+			return nil, fmt.Errorf("invalid exclude_glob: %w", err)
+		}
+	}
+
 	root := searchGlobRoot(pathGlob, workDir)
 
 	searchCtx, cancelSearch := context.WithCancel(ctx)
@@ -242,12 +258,23 @@ func starlarkSearchFiles(ctx context.Context, args map[string]any, workDir strin
 			break
 		}
 
-		target := filepath.ToSlash(f.Location)
+		slashPath := filepath.ToSlash(f.Location)
+		target := slashPath
 		if baseOnly {
 			target = f.Filename
 		}
 		if !globRe.MatchString(target) {
 			continue
+		}
+
+		if excludeRe != nil {
+			exTarget := slashPath
+			if excludeBaseOnly {
+				exTarget = f.Filename
+			}
+			if excludeRe.MatchString(exTarget) {
+				continue
+			}
 		}
 
 		// Display path: working-dir-relative when inside it, absolute otherwise.

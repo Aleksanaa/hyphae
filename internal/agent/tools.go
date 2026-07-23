@@ -30,7 +30,7 @@ Built-ins (first arg positional, rest keyword-only):
   run_shell(command) → string (combined stdout+stderr)
   web_fetch(url, format=?) → string   format: "markdown"|"text"|"html"
   web_search(query, max_results=?) → list of {title, url, snippet} dicts
-  search_files(path_glob, content_regex=?, case_sensitive=?) → list of dicts. path_glob picks files by path ("**" spans directories; a bare glob like "*.go" matches the base name at any depth); use an absolute, ~, or working-dir-relative path to search other directories (subject to your read permissions). With content_regex each matching line is returned as {file, line, content}; without it each matched file is returned as {file}.
+  search_files(path_glob, content_regex=?, exclude_glob=?, case_sensitive=?) → list of dicts. path_glob picks files by path ("**" spans directories; a bare glob like "*.go" matches the base name at any depth); use an absolute, ~, or working-dir-relative path to search other directories (subject to your read permissions). exclude_glob drops files whose path (or base name, for a bare glob) matches it, e.g. "**/testdata/**" or "*_test.go". With content_regex each matching line is returned as {file, line, content}; without it each matched file is returned as {file}.
   ask_user(question, options=) → string (selected option or free text)
   request_access(target, type=, reasoning=) → string   type: "readonly"|"readwrite"|"web_fetch"
 
