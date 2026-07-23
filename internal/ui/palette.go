@@ -8,8 +8,6 @@ import (
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
-
-	"github.com/aleksanaa/hyphae/internal/strutil"
 )
 
 // paletteMode controls what the palette is showing.
@@ -898,13 +896,11 @@ func (cp *CommandPalette) drawItems(screen tcell.Screen, x, y, w, h int, selSt, 
 			if availW > 0 {
 				if item.DetailPath {
 					left = shortenPath(left, availW)
-				} else {
-					// Single-line row with no wrapping: bound the text so an
-					// overlong Detail (e.g. a skill description) ends in "…"
-					// rather than being hard-clipped. Assumes plain text (no
-					// color tags) when long, which holds for our Detail users.
-					left = strutil.Truncate(left, availW)
 				}
+				// tview.Print bounds the text to availW natively and honors color
+				// tags, so we don't pre-truncate: a rune-based truncation would
+				// miscount wide chars and could slice through a color tag, which
+				// breaks the styling of an overlong Detail.
 				tview.Print(screen, left, inner, rowY+1, availW, tview.AlignLeft, subFg)
 			}
 		}
