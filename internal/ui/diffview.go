@@ -512,6 +512,22 @@ func (dv *DiffView) MouseHandler() func(tview.MouseAction, *tcell.EventMouse, fu
 			return false, nil
 		}
 		mx, my := event.Position()
+		// A click outside the view must fall through so a later sibling (input,
+		// chat) can take it — mirror tview's default Box.MouseHandler InRect gate.
+		if !dv.InRect(mx, my) {
+			return false, nil
+		}
+		// A left-click anywhere in the view grabs focus, so it becomes keyboard-
+		// active even when the buttons themselves aren't the target.
+		grabFocus := func() (bool, tview.Primitive) {
+			switch action {
+			case tview.MouseLeftDown, tview.MouseLeftClick, tview.MouseLeftDoubleClick:
+				setFocus(dv)
+				return true, nil
+			}
+			return false, nil
+		}
+
 		x, y, w, _ := dv.GetRect()
 
 		contentStartY := y + 3
@@ -532,11 +548,12 @@ func (dv *DiffView) MouseHandler() func(tview.MouseAction, *tcell.EventMouse, fu
 				dv.clampScroll()
 				return true, nil
 			}
+			return grabFocus()
 		}
 
 		btnY := y + DiffViewHeight - 2
 		if my != btnY {
-			return false, nil
+			return grabFocus()
 		}
 		inner := x + 2
 		allowEnd := inner + 9
@@ -549,7 +566,7 @@ func (dv *DiffView) MouseHandler() func(tview.MouseAction, *tcell.EventMouse, fu
 		case mx >= denyStart && mx < x+w-2:
 			side = "deny"
 		default:
-			return false, nil
+			return grabFocus()
 		}
 
 		switch action {
@@ -565,6 +582,6 @@ func (dv *DiffView) MouseHandler() func(tview.MouseAction, *tcell.EventMouse, fu
 			dv.confirm()
 			return true, nil
 		}
-		return false, nil
+		return grabFocus()
 	})
 }

@@ -234,13 +234,29 @@ func (sv *SelectView) MouseHandler() func(tview.MouseAction, *tcell.EventMouse, 
 		if !sv.visible {
 			return false, nil
 		}
-		_, my := event.Position()
+		mx, my := event.Position()
+		// A click outside the prompt must fall through so a later sibling (input,
+		// chat) can take it — mirror tview's default Box.MouseHandler InRect gate.
+		if !sv.InRect(mx, my) {
+			return false, nil
+		}
+		// A left-click anywhere in the prompt grabs focus, so it becomes keyboard-
+		// active even when an option row isn't the target.
+		grabFocus := func() (bool, tview.Primitive) {
+			switch action {
+			case tview.MouseLeftDown, tview.MouseLeftClick, tview.MouseLeftDoubleClick:
+				setFocus(sv)
+				return true, nil
+			}
+			return false, nil
+		}
+
 		_, y, _, _ := sv.GetRect()
 
 		optRow := my - (y + 3)
 		total := len(sv.options) + 1
 		if optRow < 0 || optRow >= total {
-			return false, nil
+			return grabFocus()
 		}
 
 		switch action {
@@ -264,6 +280,6 @@ func (sv *SelectView) MouseHandler() func(tview.MouseAction, *tcell.EventMouse, 
 			sv.confirm()
 			return true, nil
 		}
-		return false, nil
+		return grabFocus()
 	})
 }

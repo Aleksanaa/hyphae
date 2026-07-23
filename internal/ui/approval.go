@@ -389,10 +389,26 @@ func (av *ApprovalView) MouseHandler() func(tview.MouseAction, *tcell.EventMouse
 			return false, nil
 		}
 		mx, my := event.Position()
+		// A click outside the bar must fall through so a later sibling (input,
+		// chat) can take it — mirror tview's default Box.MouseHandler InRect gate.
+		if !av.InRect(mx, my) {
+			return false, nil
+		}
+		// A left-click anywhere in the bar grabs focus, so it becomes keyboard-
+		// active even when the buttons themselves aren't the target.
+		grabFocus := func() (bool, tview.Primitive) {
+			switch action {
+			case tview.MouseLeftDown, tview.MouseLeftClick, tview.MouseLeftDoubleClick:
+				setFocus(av)
+				return true, nil
+			}
+			return false, nil
+		}
+
 		x, y, w, h := av.GetRect()
 
 		if my != y+h-2 { // buttons live on the last inner row
-			return false, nil
+			return grabFocus()
 		}
 
 		inner := x + 2
@@ -407,7 +423,7 @@ func (av *ApprovalView) MouseHandler() func(tview.MouseAction, *tcell.EventMouse
 		case mx >= denyStart && mx < denyEnd:
 			side = "deny"
 		default:
-			return false, nil
+			return grabFocus()
 		}
 
 		switch action {
@@ -423,7 +439,7 @@ func (av *ApprovalView) MouseHandler() func(tview.MouseAction, *tcell.EventMouse
 			av.confirm()
 			return true, nil
 		}
-		return false, nil
+		return grabFocus()
 	})
 }
 
