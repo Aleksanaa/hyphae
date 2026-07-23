@@ -412,8 +412,9 @@ func (a *App) handleControllerEvent(ev controller.Event) {
 				},
 			)
 		} else {
-			tc.Approval.Show(tool.Name, tool.Input, tool.Reasoning)
-			tc.ShowApproval()
+			tc.Approval.Show(tool.Name, tool.Args, tool.Reasoning)
+			_, _, chatW, _ := tc.Chat.GetInnerRect()
+			tc.ShowApproval(tc.Approval.Height(chatW + 1))
 			a.tapp.SetFocus(tc.Approval)
 			tc.Approval.SetCallbacks(
 				func() {

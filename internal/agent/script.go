@@ -525,18 +525,19 @@ func buildScriptEnv(ctx context.Context, ch chan<- Event, workDir string, counte
 			// A call within the session's permissions runs immediately. Anything
 			// else pauses for the user to approve it (and requires reasoning).
 			if approvalNeeded(toolName, argsMap, workDir, grants) {
-				if strings.TrimSpace(str(argsMap, "reasoning")) == "" {
+				reasoning := strings.TrimSpace(str(argsMap, "reasoning"))
+				if reasoning == "" {
 					return nil, errors.New("this is outside your current permissions, so it needs the user's approval — pass reasoning= explaining why. For repeated access, call request_access(type=, target=, reasoning=) instead to gain standing permission: type=\"readonly\" when you'll read the same out-of-scope location more than once; type=\"web_fetch\" when you'll fetch several URLs under one prefix, not for a one-off fetch; type=\"readwrite\" only when the user has explicitly handed you full control of a directory or project")
 				}
-				jsonBytes, _ := json.Marshal(argsMap)
-				argsJSON := string(jsonBytes)
+				delete(argsMap, "reasoning") // shown as its own field, never listed as an arg
 				te := &ToolEvent{
-					CallID: fmt.Sprintf("script:%d", counter.Add(1)),
-					Name:   toolName,
+					CallID:    fmt.Sprintf("script:%d", counter.Add(1)),
+					Name:      toolName,
+					Args:      argsMap,
+					Reasoning: reasoning,
 				}
-				te.Reasoning, te.Input = extractReasoning(argsJSON)
 				var diffErr error
-				te.FilePath, te.DiffPatch, diffErr = computeDiffForApproval(toolName, argsJSON, workDir)
+				te.FilePath, te.DiffPatch, diffErr = computeDiffForApproval(toolName, argsMap, workDir)
 				if diffErr != nil {
 					return nil, diffErr
 				}
@@ -638,12 +639,11 @@ func buildScriptEnv(ctx context.Context, ch chan<- Event, workDir string, counte
 		}
 		scope := grantScope(kind, target, workDir)
 
-		jsonBytes, _ := json.Marshal(map[string]any{"type": kind, "target": scope})
 		te := &ToolEvent{
 			CallID:    fmt.Sprintf("script:%d", counter.Add(1)),
 			Name:      "request_access",
+			Args:      map[string]any{"type": kind, "target": scope},
 			Reasoning: reasoning,
-			Input:     string(jsonBytes),
 		}
 		emitStatusEvent(session.StatusEvent{Kind: session.StatusEventWants, Verb: "access", Target: scope})
 		respCh := make(chan ApprovalResult, 1)

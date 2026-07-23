@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -13,22 +12,18 @@ import (
 // before the approval prompt is shown. Returns a non-nil error when the edit
 // cannot be applied (e.g. old_string not found), in which case the caller
 // should auto-fail the tool call without showing the approval prompt.
-func computeDiffForApproval(toolName, argsJSON, workDir string) (filePath, patch string, err error) {
+func computeDiffForApproval(toolName string, args map[string]any, workDir string) (filePath, patch string, err error) {
 	switch toolName {
 	case "write_file":
-		fp, p := computeWriteDiff(argsJSON, workDir)
+		fp, p := computeWriteDiff(args, workDir)
 		return fp, p, nil
 	case "edit_file":
-		return computeEditDiff(argsJSON, workDir)
+		return computeEditDiff(args, workDir)
 	}
 	return "", "", nil
 }
 
-func computeWriteDiff(argsJSON, workDir string) (filePath, patch string) {
-	var args map[string]any
-	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
-		return "", ""
-	}
+func computeWriteDiff(args map[string]any, workDir string) (filePath, patch string) {
 	rel := str(args, "path")
 	path := resolvePath(rel, workDir)
 	newContent := str(args, "content")
@@ -40,11 +35,7 @@ func computeWriteDiff(argsJSON, workDir string) (filePath, patch string) {
 	return rel, generateUnifiedDiff(oldContent, newContent, rel)
 }
 
-func computeEditDiff(argsJSON, workDir string) (filePath, patch string, err error) {
-	var args map[string]any
-	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
-		return "", "", err
-	}
+func computeEditDiff(args map[string]any, workDir string) (filePath, patch string, err error) {
 	rel := str(args, "path")
 	path := resolvePath(rel, workDir)
 

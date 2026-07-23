@@ -2,24 +2,41 @@ package ui
 
 import (
 	"encoding/json"
+	"fmt"
+	"sort"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 	"github.com/rivo/uniseg"
-
-	"github.com/aleksanaa/hyphae/internal/strutil"
 )
 
-// ApprovalHeight is the fixed row count of the approval bar when visible.
-const ApprovalHeight = 5
+// minApprovalHeight is the smallest row count the approval bar renders at (border
+// + one content line + the buttons row). Taller when args/reasoning wrap; the
+// live height is computed by Height.
+const minApprovalHeight = 5
+
+// Per-field wrap caps, so a pathological argument (e.g. a giant blob that slipped
+// past the diff path) can't grow the bar without bound and swallow the chat.
+const (
+	maxArgValueLines  = 8
+	maxReasoningLines = 12
+)
+
+// argLine is one key/value pair displayed in the approval bar, in the order the
+// bar shows them (see sortArgKeys).
+type argLine struct {
+	key   string
+	value string
+}
 
 // ApprovalView is a confirmation bar for tool calls that don't produce a diff.
 // It sits between the chat and input in the layout. When hidden its height is 0.
+// It renders the call's arguments one per line (each wrapping as needed) plus the
+// model's reasoning (also wrapped); diff-producing calls go to DiffView instead.
 type ApprovalView struct {
 	*tview.Box
 	toolName  string
-	argLabel  string
-	argValue  string
+	args      []argLine
 	reasoning string
 	selected  string // "allow" | "deny"
 
@@ -88,63 +105,125 @@ func (av *ApprovalView) IsVisible() bool      { return av.visible }
 func (av *ApprovalView) GetSelected() string  { return av.selected }
 func (av *ApprovalView) SetSelected(s string) { av.selected = s }
 
-func (av *ApprovalView) Show(toolName, argsJSON, reasoning string) {
+// Show populates the bar from a tool call's structured arguments and reasoning
+// (reasoning already excluded from args upstream); every field is listed one per
+// line in sortArgKeys order.
+func (av *ApprovalView) Show(toolName string, args map[string]any, reasoning string) {
 	av.toolName = toolName
 	av.SetTitle(" " + toolName + " ")
-	var args map[string]any
-	if err := json.Unmarshal([]byte(argsJSON), &args); err == nil {
-		switch toolName {
-		case "run_shell":
-			av.argLabel = "command"
-			if v, ok := args["command"].(string); ok {
-				av.argValue = v
-			} else {
-				av.argValue = argsJSON
-			}
-		case "web_fetch":
-			av.argLabel = "url"
-			if v, ok := args["url"].(string); ok {
-				av.argValue = v
-			} else {
-				av.argValue = argsJSON
-			}
-		case "web_search":
-			av.argLabel = "query"
-			if v, ok := args["query"].(string); ok {
-				av.argValue = v
-			} else {
-				av.argValue = argsJSON
-			}
-		case "request_access":
-			av.argLabel = "grant"
-			kind, _ := args["type"].(string)
-			tgt, _ := args["target"].(string)
-			av.argValue = kind + " → " + tgt
-		case "read_file", "write_file", "edit_file", "list_directory":
-			av.argLabel = "path"
-			if v, ok := args["path"].(string); ok && v != "" {
-				av.argValue = v
-			} else {
-				av.argValue = "."
-			}
-		case "search_files":
-			av.argLabel = "search"
-			av.argValue, _ = args["pattern"].(string)
-			if path, ok := args["path"].(string); ok && path != "" {
-				av.argValue += "  in  " + path
-			}
-		default:
-			av.argLabel = "args"
-			av.argValue = argsJSON
-		}
-	} else {
-		av.argLabel = "args"
-		av.argValue = argsJSON
+	av.args = av.args[:0]
+	for _, k := range sortArgKeys(args) {
+		av.args = append(av.args, argLine{key: k, value: formatArgValue(args[k])})
 	}
 	av.reasoning = reasoning
 	av.selected = "allow"
 	av.denyField.SetText("")
 	av.visible = true
+}
+
+// argKeyRank orders the common primary arguments first so the most relevant field
+// leads; everything else follows alphabetically (see sortArgKeys).
+var argKeyRank = map[string]int{
+	"command": 0, "url": 1, "query": 2, "pattern": 3,
+	"path": 4, "type": 5, "target": 6,
+}
+
+// sortArgKeys returns the arg keys in display order: ranked primaries first, then
+// the rest alphabetically. Deterministic, so the bar doesn't reshuffle on redraw.
+func sortArgKeys(args map[string]any) []string {
+	keys := make([]string, 0, len(args))
+	for k := range args {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		ri, oki := argKeyRank[keys[i]]
+		rj, okj := argKeyRank[keys[j]]
+		if oki != okj {
+			return oki
+		}
+		if oki && ri != rj {
+			return ri < rj
+		}
+		return keys[i] < keys[j]
+	})
+	return keys
+}
+
+// formatArgValue renders an argument value for display: strings as-is, everything
+// else (numbers, bools, lists) as compact JSON so it stays on readable lines.
+func formatArgValue(v any) string {
+	if s, ok := v.(string); ok {
+		return s
+	}
+	if b, err := json.Marshal(v); err == nil {
+		return string(b)
+	}
+	return fmt.Sprintf("%v", v)
+}
+
+// Height returns the row count needed to render the bar at availWidth columns:
+// borders + the wrapped arg/reasoning lines + the buttons row. Call after Show.
+func (av *ApprovalView) Height(availWidth int) int {
+	innerW := max(1, availWidth-4)
+	content := av.contentLineCount(innerW)
+	return content + 3 // top+bottom border + buttons row
+}
+
+// contentLineCount is the total wrapped-line count of the args and reasoning at
+// innerW columns (at least 1, so an empty bar still reserves a content row).
+func (av *ApprovalView) contentLineCount(innerW int) int {
+	n := 0
+	for _, a := range av.args {
+		n += len(av.wrapArg(a.key, a.value, innerW, maxArgValueLines))
+	}
+	if av.reasoning != "" {
+		n += len(av.wrapArg("reason", av.reasoning, innerW, maxReasoningLines))
+	}
+	if n == 0 {
+		n = 1
+	}
+	return n
+}
+
+// wrapArg word-wraps value into lines sized for a "<key> ❯ " prefix (continuation
+// lines hang-indent under the value), capped at maxLines with an ellipsis on the
+// last kept line when it overflows.
+func (av *ApprovalView) wrapArg(key, value string, innerW, maxLines int) []string {
+	prefixW := uniseg.StringWidth(key + " ❯ ")
+	valW := max(1, innerW-prefixW)
+	lines := tview.WordWrap(tview.Escape(value), valW)
+	if len(lines) == 0 {
+		lines = []string{""}
+	}
+	for i := range lines {
+		lines[i] = tview.Unescape(lines[i])
+	}
+	if len(lines) > maxLines {
+		lines = lines[:maxLines]
+		lines[maxLines-1] = truncateToWidth(lines[maxLines-1], valW-1) + "…"
+	}
+	return lines
+}
+
+// truncateToWidth clips s to at most w display columns (no ellipsis added).
+func truncateToWidth(s string, w int) string {
+	if w <= 0 {
+		return ""
+	}
+	used := 0
+	out := make([]rune, 0, len(s))
+	for _, r := range s {
+		rw := uniseg.StringWidth(string(r))
+		if rw == 0 {
+			rw = 1
+		}
+		if used+rw > w {
+			break
+		}
+		out = append(out, r)
+		used += rw
+	}
+	return string(out)
 }
 
 func (av *ApprovalView) SetCallbacks(onAllow func(), onDeny func(string)) {
@@ -180,7 +259,7 @@ func (av *ApprovalView) Draw(screen tcell.Screen) {
 		return
 	}
 	x, y, w, h := av.GetRect()
-	if w < 20 || h < ApprovalHeight {
+	if w < 20 || h < minApprovalHeight {
 		return
 	}
 
@@ -191,28 +270,24 @@ func (av *ApprovalView) Draw(screen tcell.Screen) {
 
 	inner := x + 2
 	innerW := w - 4
+	buttonRow := y + h - 2 // buttons pinned to the last inner row
 
-	// ── row 1: <label> ❯ <value> ──────────────────────────────────────────
-	col := inner
-	used := drawText(screen, av.argLabel+" ❯ ", col, y+1, innerW, mutedSt)
-	col += used
-	drawText(screen, strutil.Truncate(av.argValue, innerW-used), col, y+1, innerW-used, shellSt)
-
-	// ── row 2: reason: <reasoning> ────────────────────────────────────────
+	// ── args + reasoning: each field one per line, wrapping as needed ──────
+	row := y + 1
+	for _, a := range av.args {
+		row = av.drawField(screen, a.key, a.value, inner, row, buttonRow, innerW, mutedSt, shellSt)
+	}
 	if av.reasoning != "" {
-		col = inner
-		used = drawText(screen, "reason: ", col, y+2, innerW, mutedSt)
-		col += used
-		drawText(screen, strutil.Truncate(av.reasoning, innerW-used), col, y+2, innerW-used, textSt)
+		av.drawField(screen, "reason", av.reasoning, inner, row, buttonRow, innerW, mutedSt, textSt)
 	}
 
-	// ── row 3: [ Allow ]   [ Deny: <denyField> ] ──────────────────────────
+	// ── buttons: [ Allow ]   [ Deny: <denyField> ] ────────────────────────
 	allowSt := tcell.StyleDefault.Foreground(Theme.SuccessColor).Background(bg)
 	if av.selected == "allow" {
 		allowSt = tcell.StyleDefault.Background(approvalDarkGreen).Foreground(approvalWhite)
 	}
-	col = inner
-	col += drawText(screen, "[ Allow ]", col, y+3, innerW, allowSt)
+	col := inner
+	col += drawText(screen, "[ Allow ]", col, buttonRow, innerW, allowSt)
 
 	// gap
 	col = inner + 9 + 3
@@ -227,7 +302,7 @@ func (av *ApprovalView) Draw(screen tcell.Screen) {
 
 		const denyPfx = "[ Deny: "
 		const denySfx = " ]"
-		col += drawText(screen, denyPfx, col, y+3, denyW, denyBracketSt)
+		col += drawText(screen, denyPfx, col, buttonRow, denyW, denyBracketSt)
 
 		textAreaW := denyEnd - col - len([]rune(denySfx))
 		if textAreaW > 0 {
@@ -243,13 +318,37 @@ func (av *ApprovalView) Draw(screen tcell.Screen) {
 					tcell.StyleDefault.Foreground(Theme.Muted).Background(bg))
 			}
 			av.denyField.SetBackgroundColor(bg)
-			av.denyField.SetRect(col, y+3, textAreaW, 1)
+			av.denyField.SetRect(col, buttonRow, textAreaW, 1)
 			av.denyField.Draw(screen)
 			col += textAreaW
 		}
-		drawText(screen, denySfx, col, y+3, len([]rune(denySfx)), denyBracketSt)
+		drawText(screen, denySfx, col, buttonRow, len([]rune(denySfx)), denyBracketSt)
 	}
 
+}
+
+// drawField renders one "<key> ❯ <value>" field starting at row, wrapping the
+// value with a hanging indent under it. Rows at or past limit (the buttons row)
+// are clipped. Returns the next free row.
+func (av *ApprovalView) drawField(screen tcell.Screen, key, value string, inner, row, limit, innerW int, keySt, valSt tcell.Style) int {
+	prefix := key + " ❯ "
+	prefixW := uniseg.StringWidth(prefix)
+	maxLines := maxArgValueLines
+	if key == "reason" {
+		maxLines = maxReasoningLines
+	}
+	lines := av.wrapArg(key, value, innerW, maxLines)
+	for j, ln := range lines {
+		if row >= limit {
+			break
+		}
+		if j == 0 {
+			drawText(screen, prefix, inner, row, innerW, keySt)
+		}
+		drawText(screen, ln, inner+prefixW, row, innerW-prefixW, valSt)
+		row++
+	}
+	return row
 }
 
 // ── InputHandler ─────────────────────────────────────────────────────────────
@@ -290,9 +389,9 @@ func (av *ApprovalView) MouseHandler() func(tview.MouseAction, *tcell.EventMouse
 			return false, nil
 		}
 		mx, my := event.Position()
-		x, y, w, _ := av.GetRect()
+		x, y, w, h := av.GetRect()
 
-		if my != y+3 {
+		if my != y+h-2 { // buttons live on the last inner row
 			return false, nil
 		}
 

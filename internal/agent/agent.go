@@ -80,7 +80,7 @@ type ApprovalResult struct {
 type ToolEvent struct {
 	CallID    string
 	Name      string
-	Input     string // raw JSON args (reasoning stripped for display)
+	Args      map[string]any // structured arguments of a call awaiting approval (reasoning excluded)
 	Reasoning string
 	Output    string // filled in on EventToolDone
 	IsError   bool
@@ -361,7 +361,7 @@ func (a *Agent) loop(ctx context.Context, sess *session.Session, ch chan<- Event
 				return
 			}
 
-			te := &ToolEvent{CallID: tc.ID, Name: tc.Function.Name, Input: tc.Function.Arguments}
+			te := &ToolEvent{CallID: tc.ID, Name: tc.Function.Name}
 
 			// One tool status item per call; its index is where the controller
 			// records this call's structured status events.
@@ -427,17 +427,6 @@ func buildMessages(sess *session.Session) []openai.ChatCompletionMessageParamUni
 	history, _ := sess.Snapshot()
 	msgs, _ = appendHistory(msgs, history, startIdx)
 	return msgs
-}
-
-func extractReasoning(argsJSON string) (reasoning, input string) {
-	var args map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
-		return "", argsJSON
-	}
-	if r, ok := args["reasoning"]; ok {
-		json.Unmarshal(r, &reasoning)
-	}
-	return reasoning, argsJSON
 }
 
 // FormatSentLabel returns the timestamp tag for a user message.

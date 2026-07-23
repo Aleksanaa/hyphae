@@ -53,8 +53,8 @@ func (tc *TabContent) SetInputHeightForScreen(screenH int) {
 	tc.body.ResizeItem(tc.Input, h, 0)
 }
 
-func (tc *TabContent) ShowApproval() {
-	tc.body.ResizeItem(tc.Approval, ApprovalHeight, 0)
+func (tc *TabContent) ShowApproval(height int) {
+	tc.body.ResizeItem(tc.Approval, height, 0)
 }
 
 func (tc *TabContent) HideApproval() {
