@@ -193,35 +193,40 @@ func starlarkWebSearch(ctx context.Context, args map[string]any, _ string) (star
 }
 
 func starlarkSearchFiles(ctx context.Context, args map[string]any, workDir string) (starlark.Value, error) {
-	pattern := str(args, "pattern")
-	if pattern == "" {
-		return nil, fmt.Errorf("pattern is required")
+	pathGlob := str(args, "path_glob")
+	if pathGlob == "" {
+		return nil, fmt.Errorf(`path_glob is required (e.g. "**", "**/*.go", "src/**", "~/notes/**")`)
 	}
-
-	p := str(args, "path")
-	if p == "" {
-		p = workDir
-	} else {
-		p = resolvePath(p, workDir)
-	}
-
-	glob := str(args, "glob")
 	caseSensitive, _ := args["case_sensitive"].(bool)
 
-	reStr := pattern
-	if !caseSensitive {
-		reStr = "(?i)" + pattern
+	// A bare glob (no "/") matches the base name at any depth under the working
+	// directory; otherwise the glob is resolved to an absolute path and matched
+	// against absolute file paths, so it can reach any readable directory.
+	baseOnly := !strings.Contains(pathGlob, "/")
+	globInput := pathGlob
+	if !baseOnly {
+		globInput = filepath.ToSlash(resolvePath(pathGlob, workDir))
 	}
-	re, err := regexp.Compile(reStr)
+	globRe, err := compileGlob(globInput, caseSensitive)
 	if err != nil {
-		return nil, fmt.Errorf("invalid pattern: %w", err)
+		return nil, fmt.Errorf("invalid path_glob: %w", err)
 	}
+
+	var contentRe *regexp.Regexp
+	if cr := str(args, "content_regex"); cr != "" {
+		contentRe, err = compileRegex(cr, caseSensitive)
+		if err != nil {
+			return nil, fmt.Errorf("invalid content_regex: %w", err)
+		}
+	}
+
+	root := searchGlobRoot(pathGlob, workDir)
 
 	searchCtx, cancelSearch := context.WithCancel(ctx)
 	defer cancelSearch()
 
 	fileQueue := make(chan *gocodewalker.File, 1000)
-	walker := gocodewalker.NewParallelFileWalker([]string{p}, fileQueue)
+	walker := gocodewalker.NewParallelFileWalker([]string{root}, fileQueue)
 	walker.ExcludeDirectory = []string{".git", ".hg", ".svn"}
 
 	go func() {
@@ -230,7 +235,6 @@ func starlarkSearchFiles(ctx context.Context, args map[string]any, workDir strin
 	}()
 	go func() { _ = walker.Start() }()
 
-	const maxResults = 500
 	var elems []starlark.Value
 
 	for f := range fileQueue {
@@ -238,10 +242,26 @@ func starlarkSearchFiles(ctx context.Context, args map[string]any, workDir strin
 			break
 		}
 
-		if glob != "" {
-			if matched, _ := filepath.Match(glob, f.Filename); !matched {
-				continue
-			}
+		target := filepath.ToSlash(f.Location)
+		if baseOnly {
+			target = f.Filename
+		}
+		if !globRe.MatchString(target) {
+			continue
+		}
+
+		// Display path: working-dir-relative when inside it, absolute otherwise.
+		rel, err := filepath.Rel(workDir, f.Location)
+		if err != nil || strings.HasPrefix(rel, "..") {
+			rel = f.Location
+		}
+
+		// No content_regex: report the matched file itself.
+		if contentRe == nil {
+			d := new(starlark.Dict)
+			d.SetKey(starlark.String("file"), starlark.String(rel)) //nolint:errcheck
+			elems = append(elems, d)
+			continue
 		}
 
 		content, err := os.ReadFile(f.Location)
@@ -258,13 +278,8 @@ func starlarkSearchFiles(ctx context.Context, args map[string]any, workDir strin
 			continue
 		}
 
-		rel, err := filepath.Rel(workDir, f.Location)
-		if err != nil {
-			rel = f.Location
-		}
-
 		for lineNum, line := range strings.Split(string(content), "\n") {
-			if re.MatchString(line) {
+			if contentRe.MatchString(line) {
 				d := new(starlark.Dict)
 				d.SetKey(starlark.String("file"), starlark.String(rel))                              //nolint:errcheck
 				d.SetKey(starlark.String("line"), starlark.MakeInt(lineNum+1))                       //nolint:errcheck
@@ -272,14 +287,52 @@ func starlarkSearchFiles(ctx context.Context, args map[string]any, workDir strin
 				elems = append(elems, d)
 			}
 		}
-
-		if len(elems) >= maxResults {
-			cancelSearch()
-			break
-		}
 	}
 
 	return starlark.NewList(elems), nil
+}
+
+// compileRegex compiles a user-supplied regex, applying case-insensitivity
+// unless caseSensitive is set.
+func compileRegex(pattern string, caseSensitive bool) (*regexp.Regexp, error) {
+	if !caseSensitive {
+		pattern = "(?i)" + pattern
+	}
+	return regexp.Compile(pattern)
+}
+
+// compileGlob translates a shell-style glob into a whole-string-anchored regexp.
+// "**" spans path separators ("**/" also matches zero leading segments); "*" and
+// "?" stop at "/". Literal text is regexp-escaped.
+func compileGlob(glob string, caseSensitive bool) (*regexp.Regexp, error) {
+	var b strings.Builder
+	b.WriteString("^")
+	for i := 0; i < len(glob); i++ {
+		switch c := glob[i]; c {
+		case '*':
+			if i+1 < len(glob) && glob[i+1] == '*' {
+				i++ // consume the second '*'
+				if i+1 < len(glob) && glob[i+1] == '/' {
+					i++ // consume the '/': "**/" matches zero or more segments
+					b.WriteString("(?:.*/)?")
+				} else {
+					b.WriteString(".*")
+				}
+			} else {
+				b.WriteString("[^/]*")
+			}
+		case '?':
+			b.WriteString("[^/]")
+		default:
+			b.WriteString(regexp.QuoteMeta(string(c)))
+		}
+	}
+	b.WriteString("$")
+	reStr := b.String()
+	if !caseSensitive {
+		reStr = "(?i)" + reStr
+	}
+	return regexp.Compile(reStr)
 }
 
 // ── Script execution ──────────────────────────────────────────────────────────
@@ -305,7 +358,7 @@ var scriptTools = []scriptTool{
 	{"run_shell", "command", starlarkRunShell, "is running", "run", "ran", "commands"},
 	{"web_fetch", "url", starlarkWebFetch, "is fetching", "fetch", "fetched", "URLs"},
 	{"web_search", "query", starlarkWebSearch, "is searching", "search", "searched", "queries"},
-	{"search_files", "pattern", starlarkSearchFiles, "is searching files", "search", "searched", "patterns"},
+	{"search_files", "path_glob", starlarkSearchFiles, "is searching files", "search", "searched", "globs"},
 }
 
 // toolDisplayTarget extracts a short display string for the primary argument.
@@ -321,6 +374,12 @@ func toolDisplayTarget(firstParam string, argsMap map[string]any) string {
 	}
 	return strutil.Truncate(raw, 30)
 }
+
+// maxRunOutputBytes caps the print() output returned from a run call. Beyond it
+// the output is dropped (a notice is returned instead) so a runaway script can't
+// exhaust the context; the script's namespace persists across calls, so the model
+// can still fetch the data in smaller pieces on a later run. ~5000 lines of code.
+const maxRunOutputBytes = 256 * 1024
 
 // runScript executes a Starlark program with all agent operations available as
 // built-in functions. The script's print() output is returned as the result.
@@ -378,8 +437,15 @@ func runScript(ctx context.Context, ch chan<- Event, argsJSON, workDir string, n
 		}
 	}
 
+	// Drop over-large output (keeping any error trace, which is small) so it can't
+	// exhaust the context. The namespace survives, so the model can retrieve the
+	// data in smaller pieces on a follow-up run.
+	out := sb.String()
+	if sb.Len() > maxRunOutputBytes {
+		out = fmt.Sprintf("Error: the run output was not returned because it is %d bytes, over the %d-byte limit — returning it would exhaust the context. Any variables, functions, and other names the script defined are still stored in your namespace; retrieve the data another way in a follow-up run (e.g. slice or filter it, or print a summary or count).", sb.Len(), maxRunOutputBytes)
+	}
+
 	if err != nil {
-		out := sb.String()
 		var evalErr *starlark.EvalError
 		var parseErr syntax.Error
 		if errors.As(err, &evalErr) {
@@ -392,7 +458,7 @@ func runScript(ctx context.Context, ch chan<- Event, argsJSON, workDir string, n
 		return strings.TrimRight(out, "\n"), true, called.Load()
 	}
 
-	out := strings.TrimRight(sb.String(), "\n")
+	out = strings.TrimRight(out, "\n")
 	if out == "" {
 		return "(done)", false, called.Load()
 	}

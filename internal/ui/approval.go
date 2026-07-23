@@ -124,7 +124,7 @@ func (av *ApprovalView) Show(toolName string, args map[string]any, reasoning str
 // argKeyRank orders the common primary arguments first so the most relevant field
 // leads; everything else follows alphabetically (see sortArgKeys).
 var argKeyRank = map[string]int{
-	"command": 0, "url": 1, "query": 2, "pattern": 3,
+	"command": 0, "url": 1, "query": 2, "path_glob": 3,
 	"path": 4, "type": 5, "target": 6,
 }
 

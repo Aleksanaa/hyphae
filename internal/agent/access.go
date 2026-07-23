@@ -277,6 +277,35 @@ func dirScope(target, workDir string) string {
 	return abs
 }
 
+// searchGlobRoot resolves a search_files path_glob to the absolute directory the
+// walker roots at and whose read permission gates the call. A bare glob (no "/")
+// searches the working directory; otherwise the literal prefix before the first
+// wildcard segment is the root (home- and workdir-resolved). A glob with no
+// wildcards at all falls back to the parent of the named path.
+func searchGlobRoot(pathGlob, workDir string) string {
+	if pathGlob == "" || !strings.Contains(pathGlob, "/") {
+		return workDir
+	}
+	abs := filepath.ToSlash(resolvePath(pathGlob, workDir))
+	var lit []string
+	wild := false
+	for _, seg := range strings.Split(abs, "/") {
+		if strings.ContainsAny(seg, "*?[") {
+			wild = true
+			break
+		}
+		lit = append(lit, seg)
+	}
+	root := strings.Join(lit, "/")
+	if !wild {
+		root = filepath.Dir(root)
+	}
+	if root == "" {
+		root = "/"
+	}
+	return filepath.Clean(root)
+}
+
 // resolveScope turns a stored scope back into an absolute path. Relative scopes
 // (rpath grants inside the working directory) are joined against workDir; scopes
 // are already "~"-free (dirScope expands home eagerly).
@@ -315,8 +344,10 @@ func normalizeURLPrefix(rawURL string) string {
 // ungranted writes and fetches, and every run_shell/web_search — needs approval.
 func approvalNeeded(toolName string, argsMap map[string]any, workDir string, g *grantSet) bool {
 	switch toolName {
-	case "read_file", "list_directory", "search_files":
+	case "read_file", "list_directory":
 		return !g.allowRead(resolvePath(str(argsMap, "path"), workDir), workDir)
+	case "search_files":
+		return !g.allowRead(searchGlobRoot(str(argsMap, "path_glob"), workDir), workDir)
 	case "write_file", "edit_file":
 		return !g.allowWrite(resolvePath(str(argsMap, "path"), workDir), workDir)
 	case "web_fetch":
