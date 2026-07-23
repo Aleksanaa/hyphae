@@ -27,17 +27,18 @@ import (
 // kept in sync with the controller's active session (which routes events), and
 // for a non-session tab the controller has no active session.
 type App struct {
-	tapp         *tview.Application
-	layout       *Layout
-	ctrl         *controller.Controller
-	cfg          *config.Config
-	shutdown     func() // cancels the controller context and closes the store
-	tabs         []*Tab // ordered tab strip; UI-owned arrangement
-	tabByID      map[string]*Tab
-	activeTabID  string
-	modelChoices []controller.Model // models shown in the last select-model listing
-	suspending   atomic.Bool        // guards against overlapping suspend/resume cycles
-	tstp         chan os.Signal     // catches stray SIGTSTP so only our controlled stop lands; see suspend
+	tapp             *tview.Application
+	layout           *Layout
+	ctrl             *controller.Controller
+	cfg              *config.Config
+	shutdown         func() // cancels the controller context and closes the store
+	tabs             []*Tab // ordered tab strip; UI-owned arrangement
+	tabByID          map[string]*Tab
+	activeTabID      string
+	modelChoices     []controller.Model // models shown in the last select-model listing
+	suspending       atomic.Bool        // guards against overlapping suspend/resume cycles
+	tstp             chan os.Signal     // catches stray SIGTSTP so only our controlled stop lands; see suspend
+	palettePrevFocus tview.Primitive    // focus to restore when the palette closes
 }
 
 // activeContent returns the TabContent for the active tab, or nil if the active
@@ -902,8 +903,9 @@ func (a *App) setupPalette() {
 		// onClose
 		func() {
 			a.layout.HidePalette()
-			if tc := a.activeContent(); tc != nil {
-				a.tapp.SetFocus(tc.Input.TextArea)
+			if a.palettePrevFocus != nil {
+				a.tapp.SetFocus(a.palettePrevFocus)
+				a.palettePrevFocus = nil
 			}
 		},
 		// onAddEndpoint — origName is "" when adding, or the endpoint being edited.
@@ -1156,6 +1158,7 @@ func (a *App) openPalette() {
 	p.menuItems[9].Action = func() { p.switchMode(paletteModeHotkeys) }
 	p.Open()
 	a.layout.ShowPalette()
+	a.palettePrevFocus = a.tapp.GetFocus()
 	a.tapp.SetFocus(p)
 }
 
