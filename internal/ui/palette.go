@@ -176,6 +176,10 @@ func NewCommandPalette() *CommandPalette {
 	return cp
 }
 
+// SetRedrawFunc forwards a repaint scheduler to the inner scrollbar so its thumb
+// highlight self-clears after scrolling stops.
+func (cp *CommandPalette) SetRedrawFunc(f func()) { cp.scrollbar.SetRedrawFunc(f) }
+
 // stylePaletteField applies theme colors to a palette input field.
 func stylePaletteField(f *tview.InputField) {
 	f.SetLabelStyle(tcell.StyleDefault.Foreground(Theme.Muted).Background(Theme.Surface))

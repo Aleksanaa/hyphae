@@ -1,19 +1,28 @@
 package ui
 
 import (
+	"time"
+
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 )
 
+// scrollHighlightWindow is how long the thumb stays highlighted after the last
+// scroll activity before it reverts to the idle color.
+const scrollHighlightWindow = 300 * time.Millisecond
+
 // Scrollbar is a 1-column primitive that reflects and controls a scroll position.
 type Scrollbar struct {
 	*tview.Box
-	getTotal    func() int
-	getPageH    func() int
-	getScrollY  func() int
-	scrollTo    func(int)
-	dragging    bool
-	lastScrollY int
+	getTotal      func() int
+	getPageH      func() int
+	getScrollY    func() int
+	scrollTo      func(int)
+	requestRedraw func() // optional; schedules a repaint so the highlight self-clears
+	dragging      bool
+	lastScrollY   int
+	lastScrollAt  time.Time
+	clearTimer    *time.Timer
 }
 
 // NewScrollbar creates a scrollbar driven by the provided callbacks.
@@ -55,6 +64,12 @@ func drawScrollbarTrack(screen tcell.Screen, x, y, trackH, total, pageH, scrollT
 	}
 }
 
+// SetRedrawFunc supplies a callback that schedules a repaint. It lets the thumb
+// highlight clear itself once scrolling stops, since tview otherwise leaves the
+// last-drawn (highlighted) frame on screen until the next unrelated event. Safe
+// to leave unset — the highlight then only clears on the next repaint.
+func (sb *Scrollbar) SetRedrawFunc(f func()) { sb.requestRedraw = f }
+
 // Draw renders the track and thumb.
 func (sb *Scrollbar) Draw(screen tcell.Screen) {
 	sb.Box.DrawForSubclass(screen, sb)
@@ -67,17 +82,38 @@ func (sb *Scrollbar) Draw(screen tcell.Screen) {
 	scrollY := sb.getScrollY()
 	pageH := sb.getPageH()
 
-	scrolled := scrollY != sb.lastScrollY
-	sb.lastScrollY = scrollY
+	// Treat a moved offset or an in-progress drag as scroll activity: stamp the
+	// time and arm a timer to repaint once activity stops, so the highlight
+	// reverts to the idle color instead of lingering on the last frame.
+	if scrollY != sb.lastScrollY || sb.dragging {
+		sb.lastScrollY = scrollY
+		sb.lastScrollAt = time.Now()
+		sb.armClear()
+	}
+	scrolling := sb.dragging || time.Since(sb.lastScrollAt) < scrollHighlightWindow
 
 	trackSt := tcell.StyleDefault.Background(Theme.Surface).Foreground(Theme.Muted)
 	thumbColor := Theme.Border
-	if sb.dragging || scrolled {
+	if scrolling {
 		thumbColor = Theme.Accent
 	}
 	thumbSt := tcell.StyleDefault.Background(thumbColor)
 
 	drawScrollbarTrack(screen, x, y, h, total, pageH, scrollY, ' ', ' ', trackSt, thumbSt)
+}
+
+// armClear schedules a repaint after the highlight window elapses so the thumb
+// reverts to its idle color. Each new activity resets the pending timer; the
+// callback only requests a repaint and touches no Scrollbar state, so it is safe
+// to fire from the timer goroutine.
+func (sb *Scrollbar) armClear() {
+	if sb.requestRedraw == nil {
+		return
+	}
+	if sb.clearTimer != nil {
+		sb.clearTimer.Stop()
+	}
+	sb.clearTimer = time.AfterFunc(scrollHighlightWindow, sb.requestRedraw)
 }
 
 // MouseHandler handles left-click and drag to set scroll position.

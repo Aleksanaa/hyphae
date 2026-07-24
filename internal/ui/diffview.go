@@ -89,6 +89,10 @@ func NewDiffView() *DiffView {
 	return dv
 }
 
+// SetRedrawFunc forwards a repaint scheduler to the inner scrollbar so its thumb
+// highlight self-clears after scrolling stops.
+func (dv *DiffView) SetRedrawFunc(f func()) { dv.scrollbar.SetRedrawFunc(f) }
+
 // ── Focus delegation ─────────────────────────────────────────────────────────
 
 func (dv *DiffView) Focus(delegate func(p tview.Primitive)) {

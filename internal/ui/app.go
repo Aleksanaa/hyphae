@@ -80,6 +80,7 @@ func (a *App) newTabContent() *TabContent {
 		func() int { y, _ := tc.Chat.GetScrollOffset(); return y },
 		func(y int) { tc.Chat.ScrollTo(y, 0) },
 	)
+	tc.Scrollbar.SetRedrawFunc(a.requestRedraw)
 	tc.Status = NewStatusBar()
 	tc.Status.SetStatusClickFunc(func() { a.openPalette() })
 	tc.Status.SetModelClickFunc(func() { a.openModelSelect() })
@@ -95,6 +96,7 @@ func (a *App) newTabContent() *TabContent {
 	})
 	tc.Approval = NewApprovalView()
 	tc.DiffView = NewDiffView()
+	tc.DiffView.SetRedrawFunc(a.requestRedraw)
 	tc.SelectView = NewSelectView()
 	tc.PlanMode = NewPlanModeView(func() { a.togglePlanMode() })
 
@@ -193,6 +195,7 @@ func New(cfg *config.Config) *App {
 	}
 
 	palette := NewCommandPalette()
+	palette.SetRedrawFunc(a.requestRedraw)
 	tabs := NewTabBar(
 		func(id string) { a.switchTab(id) },
 		func(id string) { a.closeTab(id) },
@@ -1368,6 +1371,12 @@ func (a *App) cycleTab(delta int) {
 	}
 	next := a.tabs[(i+delta+len(a.tabs))%len(a.tabs)]
 	a.switchTab(next.id)
+}
+
+// requestRedraw schedules a repaint on the tview event loop. Safe to call from
+// any goroutine; scrollbars use it to self-clear their highlight after scrolling.
+func (a *App) requestRedraw() {
+	a.tapp.QueueUpdateDraw(func() {})
 }
 
 // redrawActive refreshes the chat and status for the current session.
