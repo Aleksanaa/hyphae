@@ -12,7 +12,6 @@ import (
 	"github.com/atotto/clipboard"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
-	"golang.org/x/sys/unix"
 
 	"github.com/aleksanaa/hyphae/internal/config"
 	"github.com/aleksanaa/hyphae/internal/controller"
@@ -74,6 +73,9 @@ func (a *App) newTabContent() *TabContent {
 	tc := &TabContent{}
 
 	tc.Chat = NewChatView()
+	// Trailing drag-select redraws fire from a timer goroutine; Application.Draw
+	// queues the redraw safely (unlike ForceDraw), so hand it to the ChatView.
+	tc.Chat.requestDraw = func() { a.tapp.Draw() }
 	tc.Scrollbar = NewScrollbar(
 		func() int { return tc.Chat.TotalLines },
 		func() int { _, _, _, h := tc.Chat.GetInnerRect(); return h },
@@ -210,6 +212,11 @@ func New(cfg *config.Config) *App {
 	a.syncTabs()
 
 	a.tapp.EnableMouse(true)
+	// Bracketed paste coalesces a pasted blob into one EventPaste instead of one
+	// key event per character; without it a large paste is N keystrokes = N
+	// redraws + N Status.Reset calls. Requires PasteHandler delegation through
+	// the root gate and the custom views (see their PasteHandler methods).
+	a.tapp.EnablePaste(true)
 	a.tapp.SetMouseCapture(func(event *tcell.EventMouse, action tview.MouseAction) (*tcell.EventMouse, tview.MouseAction) {
 		atc := a.activeContent()
 		if atc != nil {
@@ -686,7 +693,7 @@ func flushTTYInput() {
 		return
 	}
 	defer f.Close() //nolint:errcheck
-	_ = unix.IoctlSetInt(int(f.Fd()), unix.TCFLSH, unix.TCIFLUSH)
+	flushTTYReadQueue(f.Fd())
 }
 
 // drawTextBox wraps the given lines in a single-line border sized to the widest
