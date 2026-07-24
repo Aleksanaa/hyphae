@@ -5,7 +5,8 @@ import (
 	_ "embed"
 	"fmt"
 
-	openai "github.com/openai/openai-go/v3"
+	"github.com/zendev-sh/goai"
+	"github.com/zendev-sh/goai/provider"
 
 	"github.com/aleksanaa/hyphae/internal/session"
 )
@@ -23,14 +24,12 @@ var compactPrompt string
 // otherwise it flushes on its own as a final answer. The result therefore only
 // ever contains assistant{tool_calls}, tool results, and standalone
 // assistant{content} — never both together, and never two assistants in a row.
-func appendHistory(msgs []openai.ChatCompletionMessageParamUnion, history []session.Message, startIdx int) ([]openai.ChatCompletionMessageParamUnion, bool) {
+func appendHistory(msgs []provider.Message, history []session.Message, startIdx int) ([]provider.Message, bool) {
 	hasContent := false
 	pendingText := ""
 	flushText := func() {
 		if pendingText != "" {
-			var p openai.ChatCompletionAssistantMessageParam
-			p.Content.OfString = openai.String(pendingText)
-			msgs = append(msgs, openai.ChatCompletionMessageParamUnion{OfAssistant: &p})
+			msgs = append(msgs, goai.AssistantMessage(pendingText))
 			pendingText = ""
 		}
 	}
@@ -50,7 +49,7 @@ func appendHistory(msgs []openai.ChatCompletionMessageParamUnion, history []sess
 			if m.SentLabel != "" {
 				content += "\n\n" + m.SentLabel
 			}
-			msgs = append(msgs, openai.UserMessage(content))
+			msgs = append(msgs, goai.UserMessage(content))
 			hasContent = true
 		case session.RoleAssistant:
 			flushText()
@@ -60,22 +59,20 @@ func appendHistory(msgs []openai.ChatCompletionMessageParamUnion, history []sess
 			// emit an assistant message with both content and tool_calls.
 			pendingText = ""
 			for _, tu := range m.ToolUses {
-				var p openai.ChatCompletionAssistantMessageParam
-				p.ToolCalls = append(p.ToolCalls, openai.ChatCompletionMessageToolCallUnionParam{
-					OfFunction: &openai.ChatCompletionMessageFunctionToolCallParam{
-						ID: tu.ID,
-						Function: openai.ChatCompletionMessageFunctionToolCallFunctionParam{
-							Name:      tu.Name,
-							Arguments: tu.Input,
-						},
-					},
+				msgs = append(msgs, provider.Message{
+					Role: provider.RoleAssistant,
+					Content: []provider.Part{{
+						Type:       provider.PartToolCall,
+						ToolCallID: tu.ID,
+						ToolName:   tu.Name,
+						ToolInput:  []byte(tu.Input),
+					}},
 				})
-				msgs = append(msgs, openai.ChatCompletionMessageParamUnion{OfAssistant: &p})
 				content := tu.Output
 				if tu.State == "error" {
 					content = fmt.Sprintf("[error] %s", content)
 				}
-				msgs = append(msgs, openai.ToolMessage(content, tu.ID))
+				msgs = append(msgs, goai.ToolMessage(tu.ID, tu.Name, content))
 			}
 		}
 	}
@@ -94,7 +91,7 @@ type CompactUsage struct {
 // are sent alongside the prior summary, avoiding redundant reprocessing.
 // After success, call sess.SetCompact.
 func (a *Agent) Compact(ctx context.Context, sess *session.Session) (string, CompactUsage, error) {
-	var msgs []openai.ChatCompletionMessageParamUnion
+	var msgs []provider.Message
 
 	history, _ := sess.Snapshot()
 	priorSummary, compactSeqs := sess.GetCompact()
@@ -102,10 +99,10 @@ func (a *Agent) Compact(ctx context.Context, sess *session.Session) (string, Com
 	startIdx := 0
 	if len(compactSeqs) > 0 {
 		// Include the prior summary as context, then only append new messages.
-		msgs = append(msgs, openai.UserMessage("[Prior conversation summary]\n\n"+priorSummary))
-		var ap openai.ChatCompletionAssistantMessageParam
-		ap.Content.OfString = openai.String("Understood, I have the prior context.")
-		msgs = append(msgs, openai.ChatCompletionMessageParamUnion{OfAssistant: &ap})
+		msgs = append(msgs,
+			goai.UserMessage("[Prior conversation summary]\n\n"+priorSummary),
+			goai.AssistantMessage("Understood, I have the prior context."),
+		)
 		startIdx = compactSeqs[len(compactSeqs)-1] + 1
 	}
 
@@ -116,21 +113,18 @@ func (a *Agent) Compact(ctx context.Context, sess *session.Session) (string, Com
 	}
 	// Compact prompt goes last so the history forms a stable cacheable prefix.
 	// No system message — the instruction is self-contained in the prompt.
-	msgs = append(msgs, openai.UserMessage(compactPrompt))
+	msgs = append(msgs, goai.UserMessage(compactPrompt))
 
-	resp, err := a.client.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
-		Model:    a.model,
-		Messages: msgs,
-	})
+	resp, err := a.model.DoGenerate(ctx, provider.GenerateParams{Messages: msgs})
 	if err != nil {
 		return "", CompactUsage{}, err
 	}
-	if len(resp.Choices) == 0 || resp.Choices[0].Message.Content == "" {
+	if resp.Text == "" {
 		return "", CompactUsage{}, fmt.Errorf("empty response from model")
 	}
 	usage := CompactUsage{
-		PromptTokens:     resp.Usage.PromptTokens,
-		CompletionTokens: resp.Usage.CompletionTokens,
+		PromptTokens:     int64(resp.Usage.InputTokens + resp.Usage.CacheReadTokens),
+		CompletionTokens: int64(resp.Usage.OutputTokens),
 	}
-	return resp.Choices[0].Message.Content, usage, nil
+	return resp.Text, usage, nil
 }

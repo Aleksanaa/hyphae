@@ -912,14 +912,14 @@ func (a *App) setupPalette() {
 			}
 		},
 		// onAddEndpoint — origName is "" when adding, or the endpoint being edited.
-		func(origName, name, baseURL, apiKey string) {
+		func(origName, name, baseURL, apiKey, providerType string) {
 			var err error
 			verb := "added"
 			if origName != "" {
-				err = a.ctrl.UpdateEndpoint(origName, name, baseURL, apiKey)
+				err = a.ctrl.UpdateEndpoint(origName, name, baseURL, apiKey, providerType)
 				verb = "updated"
 			} else {
-				err = a.ctrl.AddEndpoint(name, baseURL, apiKey)
+				err = a.ctrl.AddEndpoint(name, baseURL, apiKey, providerType)
 			}
 			if err != nil {
 				if tc := a.activeContent(); tc != nil {
@@ -1027,7 +1027,7 @@ func (a *App) setupPalette() {
 			eps := a.cfg.Endpoints
 			out := make([]paletteEndpointInfo, len(eps))
 			for i, ep := range eps {
-				out[i] = paletteEndpointInfo{Name: ep.Name, BaseURL: ep.BaseURL, APIKey: ep.APIKey}
+				out[i] = paletteEndpointInfo{Name: ep.Name, BaseURL: ep.BaseURL, APIKey: ep.APIKey, Type: ep.ProviderType()}
 			}
 			return out
 		},

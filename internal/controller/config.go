@@ -8,11 +8,12 @@ import (
 )
 
 // AddEndpoint appends an endpoint to the config and saves it.
-func (c *Controller) AddEndpoint(name, baseURL, apiKey string) error {
+func (c *Controller) AddEndpoint(name, baseURL, apiKey, providerType string) error {
 	c.cfg.Endpoints = append(c.cfg.Endpoints, config.Endpoint{
 		Name:    name,
 		BaseURL: baseURL,
 		APIKey:  apiKey,
+		Type:    providerType,
 	})
 	return c.cfg.Save()
 }
@@ -20,14 +21,14 @@ func (c *Controller) AddEndpoint(name, baseURL, apiKey string) error {
 // UpdateEndpoint replaces the endpoint named origName in place (keeping its
 // position) with the given fields and saves. Falls back to appending when
 // origName is not found.
-func (c *Controller) UpdateEndpoint(origName, name, baseURL, apiKey string) error {
+func (c *Controller) UpdateEndpoint(origName, name, baseURL, apiKey, providerType string) error {
 	for i, ep := range c.cfg.Endpoints {
 		if ep.Name == origName {
-			c.cfg.Endpoints[i] = config.Endpoint{Name: name, BaseURL: baseURL, APIKey: apiKey}
+			c.cfg.Endpoints[i] = config.Endpoint{Name: name, BaseURL: baseURL, APIKey: apiKey, Type: providerType}
 			return c.cfg.Save()
 		}
 	}
-	return c.AddEndpoint(name, baseURL, apiKey)
+	return c.AddEndpoint(name, baseURL, apiKey, providerType)
 }
 
 // RemoveEndpoint deletes an endpoint by name from the config and saves it.
@@ -75,7 +76,7 @@ func (c *Controller) SwitchModel(m Model) {
 // ListModels returns the models available at a given endpoint. Pricing is left
 // zero; call EnrichPricing to fill context window and pricing from models.dev.
 func (c *Controller) ListModels(ctx context.Context, ep config.Endpoint) ([]Model, error) {
-	ag := agent.New(ep.BaseURL, ep.APIKey, "")
+	ag := agent.New(ep.ProviderType(), ep.BaseURL, ep.APIKey, "")
 	raw, err := ag.ListModels(ctx)
 	if err != nil {
 		return nil, err

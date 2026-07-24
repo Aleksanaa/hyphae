@@ -303,12 +303,8 @@ func (c *Controller) processAgentEvents(sessionID string, agCh <-chan agent.Even
 		case agent.EventUsageUpdate:
 			pt := agEv.PromptTokens
 			ct := agEv.CompletionTokens
-			callCost := agEv.CallCost
 			c.mu.Lock()
-			cost := callCost
-			if cost == 0 {
-				cost = c.sessionModels[sessionID].Cost(pt, ct)
-			}
+			cost := c.sessionModels[sessionID].Cost(pt, ct)
 			if cost > 0 {
 				c.sessionCosts[sessionID] += cost
 			}

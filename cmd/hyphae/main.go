@@ -32,11 +32,12 @@ func main() {
 
 	if *listModels {
 		ep := cfg.ActiveEndpoint()
-		if ep.APIKey == "" {
+		// Ollama is local and unauthenticated; every other provider needs a key.
+		if ep.APIKey == "" && ep.ProviderType() != config.EndpointOllama {
 			fmt.Fprintln(os.Stderr, "no endpoint configured — add one via Ctrl+P in the app")
 			os.Exit(1)
 		}
-		ag := agent.New(ep.BaseURL, ep.APIKey, "")
+		ag := agent.New(ep.ProviderType(), ep.BaseURL, ep.APIKey, "")
 		models, err := ag.ListModels(context.Background())
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)

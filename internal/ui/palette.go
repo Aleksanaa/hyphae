@@ -31,6 +31,84 @@ const (
 // order the selector cycles through them.
 var permTypeOptions = []string{"readonly", "readwrite", "web_fetch"}
 
+// permFormLabelW is the display width of the permission form's "type ❯ " label;
+// the type pills begin at this indent (see drawPermFormFields).
+var permFormLabelW = tview.TaggedStringWidth("type ❯ ")
+
+// epTypeOptions are the provider types offered on the endpoint form, in the order
+// the selector cycles through them. Index 0 ("openai") is the default.
+var epTypeOptions = []string{"openai", "anthropic", "google", "ollama"}
+
+// endpointHelpByType is the explanation shown dimmed under the type selector for
+// the currently chosen provider. Word-wrapped to the palette width at draw time
+// (see endpointHelpLines).
+var endpointHelpByType = map[string]string{
+	"openai": "The Chat Completions API that most providers speak, like " +
+		"DeepSeek, OpenRouter, opencode-go, Groq, and more. Not the newer " +
+		"Responses API, which almost only OpenAI uses. Given a base URL and " +
+		"key, this is almost always the right choice.",
+	"anthropic": "Anthropic's native Claude API, used mostly by Anthropic " +
+		"itself. Lightly tested here, so your luck may vary; please report " +
+		"anything that breaks.",
+	"google": "Google's native Gemini API, used mostly by Google itself. " +
+		"Lightly tested here, so your luck may vary; please report anything " +
+		"that breaks.",
+	"ollama": "For a local or remote Ollama server, or other serving " +
+		"frameworks that speak the Ollama API, like Lemonade Server and FastFlowLM.",
+}
+
+// epFormLabelW is the display width of the aligned form labels ("type     ❯ ",
+// "name     ❯ ", "base url ❯ "), which all share one width. Form values, the type
+// choices, and the type explanation all begin at this indent.
+var epFormLabelW = tview.TaggedStringWidth("type     ❯ ")
+
+// endpointHelpLines word-wraps the selected provider's explanation to the region
+// to the right of the label, so it aligns under the type choices.
+func (cp *CommandPalette) endpointHelpLines(providerType string, w int) []string {
+	return tview.WordWrap(endpointHelpByType[providerType], w-4-epFormLabelW)
+}
+
+// epTypeIndex returns the epTypeOptions index for a provider type, defaulting to
+// 0 (openai) for empty or unknown values.
+func epTypeIndex(t string) int {
+	for i, o := range epTypeOptions {
+		if o == t {
+			return i
+		}
+	}
+	return 0
+}
+
+// epBaseURLHint returns the example (openai) or default (native providers) base
+// URL shown as a greyed-out placeholder for a provider type.
+func epBaseURLHint(providerType string) string {
+	switch providerType {
+	case "anthropic":
+		return "https://api.anthropic.com"
+	case "google":
+		return "https://generativelanguage.googleapis.com"
+	case "ollama":
+		return "http://localhost:11434"
+	default: // openai
+		return "https://api.openai.com/v1"
+	}
+}
+
+// epAPIKeyHint returns a demonstration of the API key format for a provider type,
+// shown as a greyed-out placeholder.
+func epAPIKeyHint(providerType string) string {
+	switch providerType {
+	case "anthropic":
+		return "sk-ant-..."
+	case "google":
+		return "AIza..."
+	case "ollama":
+		return "(not required)"
+	default: // openai
+		return "sk-..."
+	}
+}
+
 // PaletteItem is one selectable entry in the palette list. An entry occupies one
 // row normally, or two when Detail or DetailRight is set (they render on a dim
 // second line, Detail left-aligned and DetailRight right-aligned).
@@ -48,6 +126,7 @@ type paletteEndpointInfo struct {
 	Name    string
 	BaseURL string
 	APIKey  string
+	Type    string // provider type: "openai" (default) | "anthropic" | "google"
 }
 
 type paletteSkillInfo struct {
@@ -87,7 +166,8 @@ type CommandPalette struct {
 	keyField      *tview.InputField
 	permPathField *tview.InputField // path/URL input for the add-permission form
 	permType      int               // selected index into permTypeOptions (add-permission form)
-	activeForm    int               // 0=name 1=url 2=key 3=delete button (edit mode only)
+	epType        int               // selected index into epTypeOptions (endpoint form)
+	activeForm    int               // 0=type 1=name 2=url 3=key 4=delete button (edit mode only)
 	editEndpoint  string            // original name when editing an existing endpoint; "" when adding new
 	keyExisting   string            // the endpoint's stored api key when editing; shown masked as a grey hint
 
@@ -118,7 +198,7 @@ type CommandPalette struct {
 	// callbacks wired by App
 	onClose            func()
 	onBack             func() // step back a level (like Esc); backdrop click
-	onAddEndpoint      func(origName, name, baseURL, apiKey string)
+	onAddEndpoint      func(origName, name, baseURL, apiKey, providerType string)
 	onDeleteEndpoint   func(name, url string) // raises the delete-confirm dialog
 	onSelectModel      func(model string)
 	onSelectTheme      func(id string)
@@ -215,7 +295,7 @@ func (cp *CommandPalette) Focus(delegate func(p tview.Primitive)) {
 	cp.urlField.Blur()
 	cp.keyField.Blur()
 	if cp.mode == paletteModeAddEndpoint {
-		// The Delete button (index 3) is not a field, so leave the cursor off.
+		// The type selector and Delete button are not fields, so leave the cursor off.
 		if f := cp.activeFormPrimitive(); f != nil {
 			f.Focus(noop)
 		}
@@ -288,10 +368,11 @@ func (cp *CommandPalette) ReopenEndpointForm() {
 
 // EditEndpoint opens the endpoint form pre-filled with an existing endpoint's
 // values, in edit mode (a Delete button appears and saving updates in place).
-func (cp *CommandPalette) EditEndpoint(name, baseURL, apiKey string) {
+func (cp *CommandPalette) EditEndpoint(name, baseURL, apiKey, providerType string) {
 	cp.mode = paletteModeAddEndpoint
 	cp.editEndpoint = name
 	cp.activeForm = 0
+	cp.epType = epTypeIndex(providerType)
 	cp.nameField.SetText(name)
 	cp.urlField.SetText(baseURL)
 	// The api key is not pre-filled as editable text: it shows masked as a grey
@@ -314,32 +395,34 @@ func (cp *CommandPalette) isFormMode() bool {
 // IsFormMode is the exported form-mode check used by app.go key routing.
 func (cp *CommandPalette) IsFormMode() bool { return cp.isFormMode() }
 
-// maxFormIndex is the highest focusable form index. Endpoint: 3 (with Delete
-// button) when editing, 2 (three fields) when adding. Permission: 1 (type + path).
+// maxFormIndex is the highest focusable form index. Endpoint: 4 (with Delete
+// button) when editing, 3 (name/url/key/type) when adding. Permission: 1 (type + path).
 func (cp *CommandPalette) maxFormIndex() int {
 	if cp.mode == paletteModeAddPermission {
 		return 1
 	}
 	if cp.editEndpoint != "" {
-		return 3
-	}
-	return 2
-}
-
-// formRows is the number of content rows the active form occupies.
-func (cp *CommandPalette) formRows() int {
-	if cp.mode == paletteModeAddPermission {
-		return 2 // type selector + path input
-	}
-	if cp.editEndpoint != "" {
-		return 5
+		return 4
 	}
 	return 3
 }
 
+// formRows is the number of content rows the active form occupies. w is the
+// palette width, used to size the word-wrapped endpoint help text.
+func (cp *CommandPalette) formRows(w int) int {
+	if cp.mode == paletteModeAddPermission {
+		return 2 // type selector + path input
+	}
+	help := len(cp.endpointHelpLines(epTypeOptions[cp.epType], w))
+	if cp.editEndpoint != "" {
+		return help + 7 // type, help, blank, name, url, key, blank, delete
+	}
+	return help + 5 // type, help, blank, name, url, key
+}
+
 func (cp *CommandPalette) SetCallbacks(
 	onClose func(),
-	onAddEndpoint func(origName, name, baseURL, apiKey string),
+	onAddEndpoint func(origName, name, baseURL, apiKey, providerType string),
 	onDeleteEndpoint func(name, url string),
 	onSelectModel func(model string),
 	onSelectTheme func(id string),
@@ -422,6 +505,17 @@ func (cp *CommandPalette) InputHandler() func(*tcell.EventKey, func(tview.Primit
 				return
 			}
 		}
+		// In the endpoint form, ←/→ on the type row (index 0) cycles the provider type.
+		if cp.mode == paletteModeAddEndpoint && cp.activeForm == 0 {
+			switch event.Key() {
+			case tcell.KeyLeft:
+				cp.epType = (cp.epType - 1 + len(epTypeOptions)) % len(epTypeOptions)
+				return
+			case tcell.KeyRight:
+				cp.epType = (cp.epType + 1) % len(epTypeOptions)
+				return
+			}
+		}
 		var field tview.Primitive = cp.queryField
 		if cp.isFormMode() {
 			field = cp.activeFormPrimitive()
@@ -496,37 +590,42 @@ func (cp *CommandPalette) MouseHandler() func(tview.MouseAction, *tcell.EventMou
 		}
 
 		if cp.mode == paletteModeAddPermission {
-			// Rows: 0=type selector, 1=path. A click on the type row also cycles it.
+			// Rows: 0=type selector, 1=path. Clicking a type pill selects it directly.
 			if row == 0 || row == 1 {
 				switch action {
 				case tview.MouseLeftDown:
 					setFocus(cp)
 				case tview.MouseLeftClick:
 					cp.activeForm = row
-					setFocus(cp)
-				case tview.MouseLeftDoubleClick:
-					// Only cycle when the double-click's own first click already
-					// activated this row; a fast cross-row tap (tview reports it as
-					// a double-click because its detection ignores position) leaves
-					// activeForm on the other row, so it just selects instead.
-					if row == 0 && cp.activeForm == 0 {
-						cp.permType = (cp.permType + 1) % len(permTypeOptions)
+					if row == 0 {
+						if h := pillHitIndex(x+2+permFormLabelW, mx, permTypeOptions, cp.permType); h >= 0 {
+							cp.permType = h
+						}
 					}
+					setFocus(cp)
 				}
 			}
 			return true, nil
 		}
 
 		if cp.mode == paletteModeAddEndpoint {
-			// Rows: 0=name 1=url 2=key 3=blank 4=delete.
+			// Rows: 0=type, then the selected type's explanation, a blank spacer,
+			// then name, url, key, another blank spacer, and (edit only) delete.
+			// Clicks on the explanation or spacer rows are inert.
+			helpN := len(cp.endpointHelpLines(epTypeOptions[cp.epType], w))
 			idx := -1
 			switch {
-			case row < 3:
-				idx = row
-			case cp.editEndpoint != "" && row == 4:
-				idx = 3
+			case row == 0:
+				idx = 0 // type selector
+			case row > helpN+1 && row <= helpN+4:
+				idx = row - helpN - 1 // 1=name 2=url 3=key
+			case cp.editEndpoint != "" && row == helpN+6:
+				idx = 4 // delete button
 			}
 			if idx < 0 {
+				if action == tview.MouseLeftDown || action == tview.MouseLeftClick {
+					setFocus(cp)
+				}
 				return true, nil
 			}
 			switch action {
@@ -534,14 +633,18 @@ func (cp *CommandPalette) MouseHandler() func(tview.MouseAction, *tcell.EventMou
 				setFocus(cp)
 			case tview.MouseLeftClick:
 				cp.activeForm = idx
+				// On the type row, clicking a pill selects that provider directly.
+				if idx == 0 {
+					if h := pillHitIndex(x+2+epFormLabelW, mx, epTypeOptions, cp.epType); h >= 0 {
+						cp.epType = h
+					}
+				}
 				setFocus(cp)
 			case tview.MouseLeftDoubleClick:
 				// Delete is destructive, so require the double-click's own first
-				// click to have already selected the delete button (activeForm==3).
-				// A fast cross-field tap ending on delete — which tview reports as
-				// a double-click because its detection ignores position — leaves
-				// activeForm elsewhere and is treated as a plain select instead.
-				if idx == 3 && cp.activeForm == 3 { // Delete button
+				// click to have already selected it; a fast cross-field tap tview
+				// mis-reports as a double-click and falls through to a plain select.
+				if idx == 4 && cp.activeForm == 4 { // Delete button
 					cp.confirm()
 				}
 			}
@@ -634,7 +737,7 @@ func (cp *CommandPalette) Draw(screen tcell.Screen) {
 	}
 	h := 4 + visRows
 	if cp.isFormMode() {
-		h = 4 + cp.formRows()
+		h = 4 + cp.formRows(w)
 	}
 	if h < paletteMinH {
 		h = paletteMinH
@@ -681,7 +784,7 @@ func (cp *CommandPalette) Draw(screen tcell.Screen) {
 	// Query row (y+1).
 	switch cp.mode {
 	case paletteModeAddEndpoint:
-		drawText(screen, "fill in fields below, Enter to confirm", x+2, y+1, w-4, mutedSt)
+		drawText(screen, "fill fields · ←/→ pick type · Enter to confirm", x+2, y+1, w-4, mutedSt)
 	case paletteModeAddPermission:
 		drawText(screen, "←/→ pick type · type path · Enter to add", x+2, y+1, w-4, mutedSt)
 	case paletteModeConfirm:
@@ -735,17 +838,40 @@ func (cp *CommandPalette) drawDialogPrompt(screen tcell.Screen, x, y, w int, st 
 }
 
 func (cp *CommandPalette) drawFormFields(screen tcell.Screen, x, y, w int, bg tcell.Color) {
-	// name (row 0) and base url (row 1) are plain single-line inputs.
-	cp.drawFormInput(screen, cp.nameField, "name     ❯ ", x, y, w, bg, cp.activeForm == 0)
-	cp.drawFormInput(screen, cp.urlField, "base url ❯ ", x, y+1, w, bg, cp.activeForm == 1)
+	providerType := epTypeOptions[cp.epType]
 
-	// api key (row 2) is masked (never draws keyField directly).
-	cp.drawFormKey(screen, x, y+2, w, bg, cp.activeForm == 2)
+	// provider type (row 0) leads: a side-by-side pill selector like the permission form.
+	cp.drawEndpointType(screen, x, y, w, bg, cp.activeForm == 0)
 
-	// Delete button (edit mode only) at row 4, after a blank spacer row.
+	// Explanation for the currently selected type, right under the selector and
+	// aligned under the type choices (indented past the label). Filled with the
+	// same highlight background as a selected list item so it reads as one block.
+	helpFill := tcell.StyleDefault.Background(paletteSelBg)
+	helpSt := tcell.StyleDefault.Background(paletteSelBg).Foreground(Theme.Faint)
+	helpLines := cp.endpointHelpLines(providerType, w)
+	indentX := x + 2 + epFormLabelW
+	rightBound := x + w - 2
+	for i, line := range helpLines {
+		rowY := y + 1 + i
+		for col := indentX; col < rightBound; col++ {
+			screen.SetContent(col, rowY, ' ', nil, helpFill)
+		}
+		drawText(screen, line, indentX, rowY, rightBound-indentX, helpSt)
+	}
+	y += 2 + len(helpLines) // move past the type row, its explanation, and a blank spacer
+
+	// name and base url are plain single-line inputs. Each shows a greyed-out
+	// placeholder when empty (name usage hint; provider default/example URL).
+	cp.drawFormInput(screen, cp.nameField, "name     ❯ ", "(display name in hyphae)", x, y, w, bg, cp.activeForm == 1)
+	cp.drawFormInput(screen, cp.urlField, "base url ❯ ", epBaseURLHint(providerType), x, y+1, w, bg, cp.activeForm == 2)
+
+	// api key is masked (never draws keyField directly).
+	cp.drawFormKey(screen, x, y+2, w, bg, cp.activeForm == 3)
+
+	// Delete button (edit mode only), after a blank spacer row.
 	if cp.editEndpoint != "" {
 		rowY := y + 4
-		if cp.activeForm == 3 {
+		if cp.activeForm == 4 {
 			selSt := tcell.StyleDefault.Background(paletteSelBg).Foreground(Theme.Text)
 			for col := x + 1; col < x+w-1; col++ {
 				screen.SetContent(col, rowY, ' ', nil, selSt)
@@ -754,6 +880,61 @@ func (cp *CommandPalette) drawFormFields(screen tcell.Screen, x, y, w int, bg tc
 		label := fmt.Sprintf("[%s]Delete endpoint[-]", TC.ErrorColor)
 		tview.Print(screen, label, x+2, rowY, w-4, tview.AlignLeft, Theme.Text)
 	}
+}
+
+// drawEndpointType renders the provider-type selector row: all options side by
+// side with the active one highlighted, mirroring the permission form's type row.
+func (cp *CommandPalette) drawEndpointType(screen tcell.Screen, x, y, w int, bg tcell.Color, focused bool) {
+	labelColor := Theme.Text
+	if focused {
+		labelColor = Theme.Accent
+	}
+	col := x + 2
+	col += drawText(screen, "type     ❯ ", col, y, w-4, tcell.StyleDefault.Foreground(labelColor).Background(bg))
+
+	activeSt := tcell.StyleDefault.Foreground(Theme.Text).Background(paletteSelBg)
+	inactiveSt := tcell.StyleDefault.Foreground(Theme.Muted).Background(bg)
+	rightBound := x + w - 2
+	for i, opt := range epTypeOptions {
+		if i > 0 {
+			col += drawText(screen, "  ", col, y, rightBound-col, inactiveSt)
+		}
+		if i == cp.epType {
+			col += drawText(screen, " "+opt+" ", col, y, rightBound-col, activeSt)
+		} else {
+			col += drawText(screen, opt, col, y, rightBound-col, inactiveSt)
+		}
+	}
+
+	if focused {
+		hint := "←/→"
+		hw := tview.TaggedStringWidth(hint)
+		drawText(screen, hint, rightBound-hw, y, hw, tcell.StyleDefault.Foreground(Theme.Muted).Background(bg))
+	}
+}
+
+// pillHitIndex returns the index of the side-by-side pill (as laid out by the
+// type-selector rows in drawEndpointType / drawPermFormFields) that contains
+// screen column mx, or -1 if mx falls on a gap between pills. startX is the first
+// pill's left column; active is the highlighted index (its pill is padded with
+// surrounding spaces, so it is two columns wider). Both selector rows share this
+// so a click selects the pill under the cursor directly.
+func pillHitIndex(startX, mx int, options []string, active int) int {
+	col := startX
+	for i, opt := range options {
+		if i > 0 {
+			col += 2 // gap between pills
+		}
+		pillW := tview.TaggedStringWidth(opt)
+		if i == active {
+			pillW += 2 // active pill is padded with surrounding spaces
+		}
+		if mx >= col && mx < col+pillW {
+			return i
+		}
+		col += pillW
+	}
+	return -1
 }
 
 // drawPermFormFields draws the add-permission form: a type selector on row 0 that
@@ -795,31 +976,42 @@ func (cp *CommandPalette) drawPermFormFields(screen tcell.Screen, x, y, w int, b
 	if permTypeOptions[cp.permType] == "web_fetch" {
 		label = "url  ❯ "
 	}
-	cp.drawFormInput(screen, cp.permPathField, label, x, y+1, w, bg, cp.activeForm == 1)
+	cp.drawFormInput(screen, cp.permPathField, label, "", x, y+1, w, bg, cp.activeForm == 1)
 }
 
 // drawFormInput draws a single-line form input: the focused field renders
-// natively (with its cursor); the rest are drawn dimmed with a manual label.
-func (cp *CommandPalette) drawFormInput(screen tcell.Screen, f *tview.InputField, label string, x, rowY, w int, bg tcell.Color, active bool) {
+// natively (with its cursor); the rest are drawn dimmed with a manual label. When
+// the field is empty, placeholder (if any) is shown greyed-out as a hint — both
+// natively while focused and manually while dimmed.
+func (cp *CommandPalette) drawFormInput(screen tcell.Screen, f *tview.InputField, label, placeholder string, x, rowY, w int, bg tcell.Color, active bool) {
 	if active {
 		f.SetLabelColor(Theme.Accent)
 		f.SetBackgroundColor(bg)
 		f.SetFieldBackgroundColor(bg)
+		f.SetPlaceholder(placeholder)
+		f.SetPlaceholderStyle(tcell.StyleDefault.Background(bg).Foreground(Theme.Muted))
 		f.SetRect(x+2, rowY, w-4, 1)
 		f.Draw(screen)
 		return
 	}
-	labelSt := tcell.StyleDefault.Foreground(Theme.Muted).Background(bg)
+	// The label reads in full text color even when unfocused (only the value stays
+	// dim), so the form doesn't look greyed-out.
+	labelSt := tcell.StyleDefault.Foreground(Theme.Text).Background(bg)
+	valSt := tcell.StyleDefault.Foreground(Theme.Muted).Background(bg)
 	col := x + 2
 	used := drawText(screen, label, col, rowY, w-4, labelSt)
-	drawText(screen, f.GetText(), col+used, rowY, x+w-2-col-used, labelSt)
+	text := f.GetText()
+	if text == "" {
+		text = placeholder // greyed-out hint when empty
+	}
+	drawText(screen, text, col+used, rowY, x+w-2-col-used, valSt)
 }
 
 // drawFormKey renders the masked api-key row. keyField holds the real value; the
 // display is always masked (see maskAPIKey). When the field is empty during an
 // edit, the stored key is shown masked as a grey hint; typing replaces it.
 func (cp *CommandPalette) drawFormKey(screen tcell.Screen, x, rowY, w int, bg tcell.Color, active bool) {
-	labelColor := Theme.Muted
+	labelColor := Theme.Text
 	if active {
 		labelColor = Theme.Accent
 	}
@@ -834,10 +1026,16 @@ func (cp *CommandPalette) drawFormKey(screen tcell.Screen, x, rowY, w int, bg tc
 
 	real := cp.keyField.GetText()
 	if real == "" {
-		// Empty: show the stored key masked as a grey hint (edit mode only).
+		// Empty: show the stored key masked as a grey hint (edit mode), otherwise
+		// the provider's key-format demo. Both render greyed-out and typing replaces them.
+		hint := ""
 		if cp.keyExisting != "" {
-			hint := truncMiddle(maskAPIKey(cp.keyExisting), valW)
-			drawText(screen, hint, valX, rowY, valW, tcell.StyleDefault.Foreground(Theme.Muted).Background(bg))
+			hint = maskAPIKey(cp.keyExisting)
+		} else {
+			hint = epAPIKeyHint(epTypeOptions[cp.epType])
+		}
+		if hint != "" {
+			drawText(screen, truncMiddle(hint, valW), valX, rowY, valW, tcell.StyleDefault.Foreground(Theme.Muted).Background(bg))
 		}
 		if active {
 			screen.ShowCursor(valX, rowY)
@@ -1074,8 +1272,8 @@ func (cp *CommandPalette) itemAtRow(relRow, visH int) int {
 
 // ── internal helpers ──────────────────────────────────────────────────────────
 
-// activeFormPrimitive returns the focused form field (name input or url/key text
-// area), or nil when the Delete button (index 3) is focused.
+// activeFormPrimitive returns the focused form field (name/url/key text input),
+// or nil when the type selector (index 0) or Delete button (index 4) is focused.
 func (cp *CommandPalette) activeFormPrimitive() tview.Primitive {
 	if cp.mode == paletteModeAddPermission {
 		if cp.activeForm == 1 {
@@ -1084,14 +1282,14 @@ func (cp *CommandPalette) activeFormPrimitive() tview.Primitive {
 		return nil // the type selector row has no text field
 	}
 	switch cp.activeForm {
-	case 0:
-		return cp.nameField
 	case 1:
-		return cp.urlField
+		return cp.nameField
 	case 2:
+		return cp.urlField
+	case 3:
 		return cp.keyField
 	default:
-		return nil
+		return nil // 0=type selector, 4=delete button
 	}
 }
 
@@ -1108,6 +1306,7 @@ func (cp *CommandPalette) switchMode(m paletteMode) {
 		cp.editEndpoint = ""
 		cp.keyExisting = ""
 		cp.activeForm = 0
+		cp.epType = 0 // default to openai
 		cp.nameField.SetText("")
 		cp.urlField.SetText("")
 		cp.keyField.SetText("")
@@ -1227,7 +1426,7 @@ func (cp *CommandPalette) confirm() {
 		}
 
 	case paletteModeAddEndpoint:
-		if cp.editEndpoint != "" && cp.activeForm == 3 { // Delete button
+		if cp.editEndpoint != "" && cp.activeForm == 4 { // Delete button
 			// Confirm before deleting; the callback raises the dialog.
 			if cp.onDeleteEndpoint != nil {
 				cp.onDeleteEndpoint(cp.editEndpoint, cp.urlField.GetText())
@@ -1240,11 +1439,15 @@ func (cp *CommandPalette) confirm() {
 		if apiKey == "" && cp.editEndpoint != "" {
 			apiKey = cp.keyExisting // left untouched: keep the stored key
 		}
-		if name == "" || baseURL == "" || apiKey == "" {
+		// Native providers (anthropic/google/ollama) may leave the base URL blank
+		// to use their default host; only the OpenAI-compatible type requires one.
+		// Ollama is local and unauthenticated, so it needs no API key.
+		providerType := epTypeOptions[cp.epType]
+		if name == "" || (baseURL == "" && providerType == "openai") || (apiKey == "" && providerType != "ollama") {
 			return
 		}
 		if cp.onAddEndpoint != nil {
-			cp.onAddEndpoint(cp.editEndpoint, name, baseURL, apiKey)
+			cp.onAddEndpoint(cp.editEndpoint, name, baseURL, apiKey, providerType)
 		}
 		cp.Close()
 
@@ -1260,7 +1463,7 @@ func (cp *CommandPalette) confirm() {
 		// Open the pre-filled form for the chosen endpoint.
 		for _, ep := range cp.getEndpoints() {
 			if ep.Name == item.Value {
-				cp.EditEndpoint(ep.Name, ep.BaseURL, ep.APIKey)
+				cp.EditEndpoint(ep.Name, ep.BaseURL, ep.APIKey, ep.Type)
 				break
 			}
 		}
