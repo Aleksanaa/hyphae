@@ -61,9 +61,10 @@ about LLMs, endpoints, the DB, or display.
 ### `agent` (→ session)
 One `Agent` drives one session through a single API turn and the tool loop.
 
-- `New(baseURL, apiKey, model)` builds an openai-go client bound to a model.
-  Each agent serves exactly one session, so the `run`-tool starlark `namespace`
-  (persistent globals) is a plain field, not a per-session map.
+- `New(providerType, baseURL, apiKey, model)` builds a goai `provider.LanguageModel`
+  bound to a model (`compat` for openai-compatible endpoints, or native `anthropic`/
+  `google`). Each agent serves exactly one session, so the `run`-tool starlark
+  `namespace` (persistent globals) is a plain field, not a per-session map.
 - `Send(ctx, sess)` runs `loop`: call the model, stream `text_delta` /
   `reasoning_delta` into the session, execute tool calls (with approval gating
   for writes and `ask_user`), record results, repeat until the model returns a

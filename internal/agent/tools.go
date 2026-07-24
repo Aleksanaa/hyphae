@@ -2,15 +2,16 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"strings"
 
-	openai "github.com/openai/openai-go/v3"
+	"github.com/zendev-sh/goai/provider"
 )
 
 type toolDef struct {
-	schema  openai.ChatCompletionToolUnionParam
+	schema  provider.ToolDefinition
 	execute func(ctx context.Context, args map[string]any, workDir string) (string, error)
 }
 
@@ -18,9 +19,9 @@ type toolDef struct {
 // All individual operations are available as built-in functions inside run scripts.
 var builtinTools = []toolDef{
 	{
-		schema: openai.ChatCompletionFunctionTool(openai.FunctionDefinitionParam{
+		schema: provider.ToolDefinition{
 			Name: "run",
-			Description: openai.String(`Execute a Starlark program. All operations are available as built-in functions.
+			Description: `Execute a Starlark program. All operations are available as built-in functions.
 
 Built-ins (first arg positional, rest keyword-only):
   read_file(path, offset=?, limit=?) → string
@@ -51,15 +52,9 @@ Starlark limitations (sandboxed Python subset):
   no class        — use dicts or plain functions instead
   no try/except   — errors abort the script; validate inputs before calling
   no yield        — generators are not supported; use lists and comprehensions
-  no global/nonlocal — top-level variables are mutable globals by default`),
-			Parameters: openai.FunctionParameters{
-				"type": "object",
-				"properties": map[string]any{
-					"code": map[string]any{"type": "string", "description": "Starlark program to execute"},
-				},
-				"required": []string{"code"},
-			},
-		}),
+  no global/nonlocal — top-level variables are mutable globals by default`,
+			InputSchema: json.RawMessage(`{"type":"object","properties":{"code":{"type":"string","description":"Starlark program to execute"}},"required":["code"]}`),
+		},
 		// Handled specially in the agent loop; never reaches execute.
 		execute: func(_ context.Context, _ map[string]any, _ string) (string, error) {
 			return "", fmt.Errorf("run must be handled by the agent loop")
@@ -67,8 +62,8 @@ Starlark limitations (sandboxed Python subset):
 	},
 }
 
-func schemas() []openai.ChatCompletionToolUnionParam {
-	out := make([]openai.ChatCompletionToolUnionParam, len(builtinTools))
+func schemas() []provider.ToolDefinition {
+	out := make([]provider.ToolDefinition, len(builtinTools))
 	for i, t := range builtinTools {
 		out[i] = t.schema
 	}

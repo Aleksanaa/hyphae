@@ -233,7 +233,7 @@ func (c *Controller) agentForModel(m Model) *agent.Agent {
 			break
 		}
 	}
-	return agent.New(ep.BaseURL, ep.APIKey, m.ID)
+	return agent.New(ep.ProviderType(), ep.BaseURL, ep.APIKey, m.ID)
 }
 
 // agentFor returns the agent that serves a session, lazily creating one from the

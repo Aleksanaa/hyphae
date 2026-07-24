@@ -6,7 +6,8 @@ import (
 	"regexp"
 	"strings"
 
-	openai "github.com/openai/openai-go/v3"
+	"github.com/zendev-sh/goai"
+	"github.com/zendev-sh/goai/provider"
 
 	"github.com/aleksanaa/hyphae/internal/strutil"
 )
@@ -26,20 +27,16 @@ const maxTitleLen = 60
 // uses. Returns "" if the model gives nothing usable (callers keep their
 // placeholder title on empty/error).
 func (a *Agent) GenerateTitle(ctx context.Context, conversation string) (string, error) {
-	resp, err := a.client.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
-		Model: a.model,
-		Messages: []openai.ChatCompletionMessageParamUnion{
-			openai.SystemMessage(titlePrompt),
-			openai.UserMessage("Generate a title for this conversation:\n" + conversation),
+	resp, err := a.model.DoGenerate(ctx, provider.GenerateParams{
+		System: titlePrompt,
+		Messages: []provider.Message{
+			goai.UserMessage("Generate a title for this conversation:\n" + conversation),
 		},
 	})
 	if err != nil {
 		return "", err
 	}
-	if len(resp.Choices) == 0 {
-		return "", nil
-	}
-	return cleanTitle(resp.Choices[0].Message.Content), nil
+	return cleanTitle(resp.Text), nil
 }
 
 // cleanTitle strips reasoning tags, takes the first non-empty line, and clamps

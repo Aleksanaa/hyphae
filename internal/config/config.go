@@ -7,11 +7,33 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
+// Provider type identifiers for an endpoint, selecting which goai provider
+// drives it. An empty Type is treated as EndpointOpenAI (OpenAI-compatible).
+const (
+	EndpointOpenAI    = "openai"    // generic OpenAI-compatible (compat provider)
+	EndpointAnthropic = "anthropic" // native Anthropic API
+	EndpointGoogle    = "google"    // native Google Gemini API
+	EndpointOllama    = "ollama"    // native Ollama API (/api/chat)
+)
+
 // Endpoint is a named API endpoint with its own key.
 type Endpoint struct {
 	Name    string `toml:"name"`
 	BaseURL string `toml:"base_url"`
 	APIKey  string `toml:"api_key"`
+	// Type selects the provider transport: "openai" (default), "anthropic", or
+	// "google". Empty means "openai" for backward compatibility with configs
+	// written before native providers existed.
+	Type string `toml:"type"`
+}
+
+// ProviderType returns the endpoint's provider type, defaulting to EndpointOpenAI
+// when unset.
+func (e Endpoint) ProviderType() string {
+	if e.Type == "" {
+		return EndpointOpenAI
+	}
+	return e.Type
 }
 
 // Config holds all runtime settings.
